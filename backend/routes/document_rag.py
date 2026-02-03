@@ -6,13 +6,15 @@ Completely independent from existing chatbot routes.
 """
 
 import os
+import io
 import shutil
 import logging
+import zipfile
 from pathlib import Path
 from typing import Optional, List
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from backend.modules.document_rag import RAGService
@@ -211,6 +213,82 @@ async def upload_and_index(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"Error in upload-and-index: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DownloadAndIndexRequest(BaseModel):
+    """Request model for downloading and indexing from URL"""
+    url: str
+    filename: str
+
+
+@router.post("/download-and-index", response_model=IngestResponse)
+async def download_and_index(request: DownloadAndIndexRequest):
+    """
+    Download a PDF from URL and index it.
+    
+    Used for Canvas LMS integration where files have signed download URLs.
+    """
+    import httpx
+    
+    logger.info(f"Download and index: {request.filename} from URL")
+    
+    # Validate filename
+    if not request.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    try:
+        # Download file from URL (follow redirects like curl -L)
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            response = await client.get(request.url)
+            response.raise_for_status()
+            content = response.content
+        
+        # Sanitize filename
+        safe_filename = "".join(c for c in request.filename if c.isalnum() or c in "._- ")
+        if not safe_filename:
+            safe_filename = "downloaded_file.pdf"
+        if not safe_filename.lower().endswith('.pdf'):
+            safe_filename += '.pdf'
+        
+        # Save file
+        file_path = RAG_UPLOAD_DIR / safe_filename
+        
+        # Ensure unique filename
+        counter = 1
+        base_name = file_path.stem
+        while file_path.exists():
+            file_path = RAG_UPLOAD_DIR / f"{base_name}_{counter}.pdf"
+            counter += 1
+        
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        logger.info(f"File downloaded and saved to: {file_path}")
+        
+        # Index the document
+        rag_service = get_rag_service()
+        result = rag_service.ingest_document(str(file_path))
+        
+        return IngestResponse(
+            success=result.get("success", False),
+            message=result.get("message", ""),
+            filename=result.get("filename"),
+            file_hash=result.get("file_hash"),
+            pages_loaded=result.get("pages_loaded"),
+            chunks_added=result.get("chunks_added"),
+            already_indexed=result.get("already_indexed", False),
+            error=result.get("error")
+        )
+        
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error downloading file: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to download file: HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        logger.error(f"Network error downloading file: {e}")
+        raise HTTPException(status_code=502, detail="Network error during download")
+    except Exception as e:
+        logger.error(f"Error in download-and-index: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -542,13 +620,13 @@ async def extract_topics_from_documents():
 @router.post("/export-quiz-qti")
 async def export_quiz_to_qti(request: ExportQuizRequest):
     """
-    Export quiz questions to QTI 2.1 format.
+    Export quiz questions to QTI 2.1 format as a ZIP package.
     
     Args:
         request: Quiz questions and metadata
         
     Returns:
-        QTI XML file
+        ZIP file containing QTI XML and manifest
     """
     try:
         rag_service = get_rag_service()
@@ -563,12 +641,38 @@ async def export_quiz_to_qti(request: ExportQuizRequest):
             description=request.description
         )
         
-        # Return as downloadable file
-        return Response(
-            content=qti_xml,
-            media_type="application/xml",
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        safe_title = request.title.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add QTI XML file
+            zip_file.writestr(f"{safe_title}.xml", qti_xml)
+            
+            # Add imsmanifest.xml for IMS Content Packaging compliance
+            manifest_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="{safe_title}_manifest" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1">
+  <metadata>
+    <schema>IMS Content</schema>
+    <schemaversion>1.1</schemaversion>
+  </metadata>
+  <organizations/>
+  <resources>
+    <resource identifier="{safe_title}_resource" type="imsqti_xmlv1p2" href="{safe_title}.xml">
+      <file href="{safe_title}.xml"/>
+    </resource>
+  </resources>
+</manifest>'''
+            zip_file.writestr("imsmanifest.xml", manifest_xml)
+        
+        zip_buffer.seek(0)
+        
+        # Return as downloadable ZIP file
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
             headers={
-                "Content-Disposition": f"attachment; filename=quiz_{request.title.replace(' ', '_')}.xml"
+                "Content-Disposition": f"attachment; filename=quiz_{safe_title}.zip"
             }
         )
         

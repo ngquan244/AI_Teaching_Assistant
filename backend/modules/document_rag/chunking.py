@@ -21,9 +21,7 @@ def create_text_splitter(
     chunk_overlap: Optional[int] = None,
     separators: Optional[List[str]] = None
 ) -> RecursiveCharacterTextSplitter:
-    """
-    Create a text splitter with RAG_AI_Tutor.ipynb parameters.
-    
+    """   
     Default parameters (from notebook):
     - chunk_size: 800
     - chunk_overlap: 100

@@ -26,7 +26,7 @@ except ImportError:
 class RAGConfig:
     """Configuration for Document RAG module"""
     
-    # ===== Chunking Settings (from RAG_AI_Tutor.ipynb) =====
+    # ===== Chunking Settings =====
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 100
     CHUNK_SEPARATORS: List[str] = field(default_factory=lambda: [

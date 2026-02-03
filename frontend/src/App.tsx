@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
-import { Sidebar, ChatPanel, UploadPanel, QuizPanel, GradingPanel, SettingsPanel, DocumentRAGPanel } from './components';
+import { Sidebar, ChatPanel, UploadPanel, QuizPanel, GradingPanel, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, type TabType } from './types';
 import './App.css';
@@ -38,6 +38,9 @@ const AppContent: React.FC = () => {
         </div>
         <div style={{ display: activeTab === TABS.DOCUMENT_RAG ? 'block' : 'none', height: '100%' }}>
           <DocumentRAGPanel />
+        </div>
+        <div style={{ display: activeTab === TABS.CANVAS ? 'block' : 'none', height: '100%' }}>
+          <CanvasFilesPanel />
         </div>
         <div style={{ display: activeTab === TABS.SETTINGS ? 'block' : 'none', height: '100%' }}>
           <SettingsPanel />

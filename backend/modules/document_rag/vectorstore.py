@@ -119,6 +119,11 @@ class ChromaVectorStore:
             logger.warning(f"Could not load indexed hashes: {e}")
             self._indexed_hashes = set()
     
+    def _save_indexed_hashes(self):
+        """Save indexed hashes (no-op as hashes are stored in collection metadata)."""
+        # Indexed hashes are derived from collection metadata, no separate save needed
+        pass
+    
     def is_document_indexed(self, file_hash: str) -> bool:
         """
         Check if a document with given hash is already indexed.
@@ -233,6 +238,49 @@ class ChromaVectorStore:
             raise RuntimeError("Vector store not initialized")
         
         return self._vector_store.similarity_search(query, k=k, **kwargs)
+    
+    def delete_by_filter(self, filter_dict: Dict[str, Any]) -> int:
+        """
+        Delete documents matching a filter.
+        
+        Args:
+            filter_dict: Dictionary with metadata filters (e.g., {"file_hash": "abc123"})
+            
+        Returns:
+            Number of documents deleted
+        """
+        try:
+            if not self._vector_store:
+                return 0
+            
+            collection = self._vector_store._collection
+            
+            # Get IDs of documents matching filter
+            result = collection.get(
+                where=filter_dict,
+                include=[]
+            )
+            
+            if result and result.get("ids"):
+                ids_to_delete = result["ids"]
+                collection.delete(ids=ids_to_delete)
+                
+                # Remove from indexed hashes if file_hash is in filter
+                if "file_hash" in filter_dict:
+                    self._indexed_hashes.discard(filter_dict["file_hash"])
+                    self._save_indexed_hashes()
+                
+                logger.info(f"Deleted {len(ids_to_delete)} documents matching filter: {filter_dict}")
+                return len(ids_to_delete)
+            
+            return 0
+        except Exception as e:
+            logger.error(f"Error deleting by filter: {e}")
+            return 0
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Alias for get_collection_stats for compatibility."""
+        return self.get_collection_stats()
     
     def get_collection_stats(self) -> Dict[str, Any]:
         """

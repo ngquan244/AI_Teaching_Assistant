@@ -221,6 +221,27 @@ export const uploadAndIndexDocument = async (file: File): Promise<RAGIngestRespo
 };
 
 /**
+ * Download a file from URL and index it (for Canvas integration)
+ */
+export interface DownloadAndIndexRequest {
+  url: string;
+  filename: string;
+}
+
+export const downloadAndIndexFromUrl = async (
+  request: DownloadAndIndexRequest
+): Promise<RAGIngestResponse> => {
+  const response = await apiClient.post<RAGIngestResponse>(
+    '/api/document-rag/download-and-index',
+    request,
+    {
+      timeout: 120000, // 2 minutes for download + processing
+    }
+  );
+  return response.data;;
+};
+
+/**
  * Query the document knowledge base
  */
 export const queryRAG = async (request: RAGQueryRequest): Promise<RAGQueryResponse> => {

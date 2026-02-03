@@ -27,6 +27,7 @@ import {
   Clock,
   FileUp,
   XCircle,
+  FolderOpen,
 } from 'lucide-react';
 import {
   uploadAndIndexDocument,
@@ -50,6 +51,14 @@ import {
   type TopicSuggestion,
   type LLMProviderInfo,
 } from '../api/documentRag';
+import {
+  listIndexedCanvasDocuments,
+  getCanvasDocumentTopics,
+  updateCanvasDocumentTopics,
+  generateCanvasQuiz,
+} from '../api/canvasRag';
+import { isCanvasConfigured } from '../utils/canvasStorage';
+import CanvasImportModal from './CanvasImportModal';
 
 // Indexed document info
 interface IndexedDocument {
@@ -58,6 +67,9 @@ interface IndexedDocument {
   topic_count: number;
   indexed_at: string;
 }
+
+// Topic source type
+type TopicSource = 'upload' | 'canvas';
 
 interface QueryResult {
   answer: string;
@@ -120,6 +132,11 @@ const DocumentRAGPanel: React.FC = () => {
   const [tempSelectedTopics, setTempSelectedTopics] = useState<{topic: string, documentFilename: string}[]>([]);
   const [tempTopicsByDocument, setTempTopicsByDocument] = useState<Record<string, TopicSuggestion[]>>({});
   
+  // Topic source state (upload or canvas)
+  const [topicSource, setTopicSource] = useState<TopicSource>('upload');
+  const [canvasIndexedDocuments, setCanvasIndexedDocuments] = useState<IndexedDocument[]>([]);
+  const [canvasTopicsCache, setCanvasTopicsCache] = useState<Record<string, TopicSuggestion[]>>({});
+  
   // Edit topics modal states
   const [showEditTopicsModal, setShowEditTopicsModal] = useState(false);
   const [editingDocumentFilename, setEditingDocumentFilename] = useState<string>('');
@@ -131,6 +148,10 @@ const DocumentRAGPanel: React.FC = () => {
   
   // Quiz modal state
   const [showQuizModal, setShowQuizModal] = useState(false);
+  
+  // Canvas Import Modal state
+  const [showCanvasImportModal, setShowCanvasImportModal] = useState(false);
+  const [qtiZipBlob, setQtiZipBlob] = useState<Blob | null>(null);
   
   // Loading states
   const [isUploading, setIsUploading] = useState(false);
@@ -159,8 +180,46 @@ const DocumentRAGPanel: React.FC = () => {
     loadOllamaStatus();
     loadUploadedFiles();
     loadIndexedDocuments();
+    loadCanvasIndexedDocuments();
     loadLLMProviderInfo();
   }, []);
+
+  // Listen for canvas topics updates from CanvasFilesPanel
+  useEffect(() => {
+    const handleCanvasTopicsUpdated = () => {
+      console.log('Canvas topics updated event received, reloading...');
+      loadCanvasIndexedDocuments();
+      // Clear canvas topics cache to force reload
+      setCanvasTopicsCache({});
+    };
+
+    window.addEventListener('canvas-topics-updated', handleCanvasTopicsUpdated);
+    return () => {
+      window.removeEventListener('canvas-topics-updated', handleCanvasTopicsUpdated);
+    };
+  }, []);
+
+  // Load Canvas indexed documents
+  const loadCanvasIndexedDocuments = async () => {
+    // Always try to load - don't require Canvas configuration
+    // since documents may already be indexed locally
+    try {
+      const response = await listIndexedCanvasDocuments();
+      console.log('Canvas indexed documents response:', response);
+      if (response.success && response.documents) {
+        const docs: IndexedDocument[] = response.documents.map(d => ({
+          filename: d.filename,
+          original_filename: d.original_filename || d.filename,
+          topic_count: d.topic_count,
+          indexed_at: d.indexed_at,
+        }));
+        setCanvasIndexedDocuments(docs);
+        console.log('Set canvasIndexedDocuments:', docs.length, 'documents');
+      }
+    } catch (error) {
+      console.error('Error loading Canvas indexed documents:', error);
+    }
+  };
 
   // Load LLM Provider info
   const loadLLMProviderInfo = async () => {
@@ -307,24 +366,36 @@ const DocumentRAGPanel: React.FC = () => {
       // Add document
       setTempSelectedDocuments(prev => [...prev, filename]);
       
-      // Auto-load topics for this document
-      if (!topicsCache[filename]) {
+      // Auto-load topics for this document based on source
+      const cache = topicSource === 'canvas' ? canvasTopicsCache : topicsCache;
+      
+      if (!cache[filename]) {
         try {
-          const response = await getDocumentTopics(filename);
+          // Use appropriate API based on source
+          const response = topicSource === 'canvas' 
+            ? await getCanvasDocumentTopics(filename)
+            : await getDocumentTopics(filename);
+          
           if (response.success && response.topics) {
             const topics: TopicSuggestion[] = response.topics.map((name, idx) => ({
               name,
               relevance_score: 1 - (idx * 0.05),
               description: ''
             }));
-            setTopicsCache(prev => ({ ...prev, [filename]: topics }));
+            
+            // Update appropriate cache
+            if (topicSource === 'canvas') {
+              setCanvasTopicsCache(prev => ({ ...prev, [filename]: topics }));
+            } else {
+              setTopicsCache(prev => ({ ...prev, [filename]: topics }));
+            }
             setTempTopicsByDocument(prev => ({ ...prev, [filename]: topics }));
           }
         } catch (error) {
           console.error('Error loading topics for document:', error);
         }
       } else {
-        setTempTopicsByDocument(prev => ({ ...prev, [filename]: topicsCache[filename] }));
+        setTempTopicsByDocument(prev => ({ ...prev, [filename]: cache[filename] }));
       }
     }
   };
@@ -369,7 +440,10 @@ const DocumentRAGPanel: React.FC = () => {
 
   // ===== Edit Topics Modal Handlers =====
   const openEditTopicsModal = (filename: string) => {
-    const docTopics = tempTopicsByDocument[filename] || topicsCache[filename] || [];
+    // Get topics from appropriate cache based on topic source
+    const docTopics = topicSource === 'canvas'
+      ? (tempTopicsByDocument[filename] || canvasTopicsCache[filename] || [])
+      : (tempTopicsByDocument[filename] || topicsCache[filename] || []);
     setEditingDocumentFilename(filename);
     setEditingTopics(docTopics.map(t => t.name));
     setNewTopicInput('');
@@ -433,7 +507,10 @@ const DocumentRAGPanel: React.FC = () => {
     
     setIsSavingTopics(true);
     try {
-      const response = await updateDocumentTopics(editingDocumentFilename, topicsToSave);
+      // Use appropriate API based on topic source
+      const response = topicSource === 'canvas'
+        ? await updateCanvasDocumentTopics(editingDocumentFilename, topicsToSave)
+        : await updateDocumentTopics(editingDocumentFilename, topicsToSave);
       
       if (response.success) {
         // Update local caches
@@ -443,16 +520,25 @@ const DocumentRAGPanel: React.FC = () => {
           description: ''
         }));
         
-        setTopicsCache(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
+        // Update appropriate cache based on source
+        if (topicSource === 'canvas') {
+          setCanvasTopicsCache(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
+          setCanvasIndexedDocuments(prev => prev.map(doc => 
+            doc.filename === editingDocumentFilename 
+              ? { ...doc, topic_count: topicsToSave.length }
+              : doc
+          ));
+        } else {
+          setTopicsCache(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
+          setIndexedDocuments(prev => prev.map(doc => 
+            doc.filename === editingDocumentFilename 
+              ? { ...doc, topic_count: topicsToSave.length }
+              : doc
+          ));
+        }
+        
         setTempTopicsByDocument(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
         setTopicsByDocument(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
-        
-        // Update indexed documents count
-        setIndexedDocuments(prev => prev.map(doc => 
-          doc.filename === editingDocumentFilename 
-            ? { ...doc, topic_count: topicsToSave.length }
-            : doc
-        ));
         
         closeEditTopicsModal();
       } else {
@@ -618,6 +704,11 @@ const DocumentRAGPanel: React.FC = () => {
     await loadUploadedFiles();
     await loadIndexedDocuments();
     
+    // Clear upload topics cache to reflect new indexed documents
+    if (successCount > 0) {
+      setTopicsCache({});
+    }
+    
     setIsUploading(false);
     setIsProcessingQueue(false);
     
@@ -726,16 +817,25 @@ const DocumentRAGPanel: React.FC = () => {
     setEditingQuestion(null);
 
     try {
-      const response = await generateQuiz({
-        topics: topicsList,
-        num_questions: numQuestions,
-        difficulty: quizDifficulty,
-        language: quizLanguage,
-        selected_documents: selectedDocuments.length > 0 ? selectedDocuments : undefined,
-      });
+      // Use appropriate API based on topic source
+      const response = topicSource === 'canvas'
+        ? await generateCanvasQuiz({
+            topics: topicsList,
+            num_questions: numQuestions,
+            difficulty: quizDifficulty,
+            language: quizLanguage,
+            selected_documents: selectedDocuments.length > 0 ? selectedDocuments : undefined,
+          })
+        : await generateQuiz({
+            topics: topicsList,
+            num_questions: numQuestions,
+            difficulty: quizDifficulty,
+            language: quizLanguage,
+            selected_documents: selectedDocuments.length > 0 ? selectedDocuments : undefined,
+          });
 
       if (response.success && response.questions.length > 0) {
-        setGeneratedQuiz(response.questions);
+        setGeneratedQuiz(response.questions as QuizQuestion[]);
         setShowQuizModal(true); // Auto open quiz modal
       } else {
         setQuizError(response.error || 'Không thể tạo quiz. Hãy thử lại với chủ đề khác.');
@@ -788,6 +888,7 @@ const DocumentRAGPanel: React.FC = () => {
     setEditingQuestion(null);
   };
 
+  // Generate QTI blob and open Canvas import modal
   const handleExportQTI = async () => {
     if (generatedQuiz.length === 0) {
       setQuizError('Không có quiz để export');
@@ -798,18 +899,40 @@ const DocumentRAGPanel: React.FC = () => {
     try {
       const blob = await exportQuizToQTI(generatedQuiz, quizTopic || 'Generated Quiz');
       
-      // Download file
+      // Store the blob and open the Canvas import modal
+      setQtiZipBlob(blob);
+      setShowCanvasImportModal(true);
+    } catch (error) {
+      console.error('Export error:', error);
+      setQuizError('Lỗi khi tạo QTI package');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Download QTI as local file (alternative to Canvas import)
+  const handleDownloadQTI = async () => {
+    if (generatedQuiz.length === 0) {
+      setQuizError('Không có quiz để download');
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const blob = await exportQuizToQTI(generatedQuiz, quizTopic || 'Generated Quiz');
+      
+      // Download ZIP file locally
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `quiz_${quizTopic.replace(/\s+/g, '_')}.xml`;
+      link.download = `quiz_${quizTopic.replace(/\s+/g, '_')}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Export error:', error);
-      setQuizError('Lỗi khi export quiz');
+      console.error('Download error:', error);
+      setQuizError('Lỗi khi download quiz');
     } finally {
       setIsExporting(false);
     }
@@ -1468,6 +1591,36 @@ const DocumentRAGPanel: React.FC = () => {
                 <span>Đóng</span>
               </button>
             </div>
+
+            {/* Topic Source Selector */}
+            <div className="topic-source-selector">
+              <button
+                className={`source-tab ${topicSource === 'upload' ? 'active' : ''}`}
+                onClick={() => {
+                  setTopicSource('upload');
+                  setTempSelectedDocuments([]);
+                  setTempSelectedTopics([]);
+                  setTempTopicsByDocument({});
+                }}
+              >
+                <Upload size={16} />
+                File tải lên
+                <span className="source-count">{indexedDocuments.length}</span>
+              </button>
+              <button
+                className={`source-tab ${topicSource === 'canvas' ? 'active' : ''}`}
+                onClick={() => {
+                  setTopicSource('canvas');
+                  setTempSelectedDocuments([]);
+                  setTempSelectedTopics([]);
+                  setTempTopicsByDocument({});
+                }}
+              >
+                <FolderOpen size={16} />
+                Canvas LMS
+                <span className="source-count">{canvasIndexedDocuments.length}</span>
+              </button>
+            </div>
             
             <div className="modal-body">
               {/* Selected topics summary */}
@@ -1482,7 +1635,17 @@ const DocumentRAGPanel: React.FC = () => {
 
               {/* Document list */}
               <div className="modal-documents">
-                {indexedDocuments.map((doc) => {
+                {(topicSource === 'upload' ? indexedDocuments : canvasIndexedDocuments).length === 0 ? (
+                  <div className="modal-empty-state">
+                    <FileText size={32} />
+                    <p>
+                      {topicSource === 'upload' 
+                        ? 'Chưa có tài liệu nào được index. Vui lòng upload và index tài liệu trước.'
+                        : 'Chưa có tài liệu Canvas nào được index. Vui lòng vào tab Canvas LMS để tải và index tài liệu.'
+                      }
+                    </p>
+                  </div>
+                ) : (topicSource === 'upload' ? indexedDocuments : canvasIndexedDocuments).map((doc) => {
                   const isDocSelected = tempSelectedDocuments.includes(doc.filename);
                   const docTopics = tempTopicsByDocument[doc.filename] || [];
                   const selectedCount = tempSelectedTopics.filter(t => t.documentFilename === doc.filename).length;
@@ -1606,7 +1769,10 @@ const DocumentRAGPanel: React.FC = () => {
             <div className="modal-header">
               <h3>
                 <Pencil size={20} />
-                Sửa chủ đề - {indexedDocuments.find(d => d.filename === editingDocumentFilename)?.original_filename || editingDocumentFilename}
+                Sửa chủ đề - {(topicSource === 'upload' 
+                  ? indexedDocuments.find(d => d.filename === editingDocumentFilename)?.original_filename 
+                  : canvasIndexedDocuments.find(d => d.filename === editingDocumentFilename)?.original_filename
+                ) || editingDocumentFilename}
               </h3>
               <button className="modal-close" onClick={closeEditTopicsModal}>
                 <X size={16} />
@@ -1855,20 +2021,40 @@ const DocumentRAGPanel: React.FC = () => {
                 Đóng
               </button>
               <button
+                className="btn btn-outline btn-download-local"
+                onClick={handleDownloadQTI}
+                disabled={isExporting || editingQuestionIndex !== null}
+                title="Download QTI package to local machine"
+              >
+                <Download size={16} />
+                Download
+              </button>
+              <button
                 className="btn btn-primary btn-export"
                 onClick={handleExportQTI}
                 disabled={isExporting || editingQuestionIndex !== null}
               >
                 {isExporting ? (
-                  <><Loader2 size={16} className="spin" /> Đang export...</>
+                  <><Loader2 size={16} className="spin" /> Đang chuẩn bị...</>
                 ) : (
-                  <><Download size={16} /> Export QTI</>
+                  <><Upload size={16} /> Import to Canvas</>
                 )}
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Canvas Import Modal */}
+      <CanvasImportModal
+        isOpen={showCanvasImportModal}
+        onClose={() => {
+          setShowCanvasImportModal(false);
+          setQtiZipBlob(null);
+        }}
+        qtiZipBlob={qtiZipBlob}
+        defaultBankName={`AI-TA Bank - ${quizTopic || new Date().toLocaleDateString()}`}
+      />
 
       <style>{`
         .document-rag-panel {
@@ -4115,6 +4301,84 @@ const DocumentRAGPanel: React.FC = () => {
           transform: scale(0.98);
         }
 
+        /* Topic Source Selector */
+        .topic-source-selector {
+          display: flex;
+          gap: 8px;
+          padding: 16px 24px;
+          background: #f8fafc;
+          border-bottom: 1px solid #e5e7eb;
+        }
+
+        .source-tab {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 12px 16px;
+          border: 2px solid #e5e7eb;
+          border-radius: 10px;
+          background: white;
+          color: #64748b;
+          font-size: 0.9rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .source-tab:hover {
+          border-color: #3b82f6;
+          color: #3b82f6;
+          background: #f0f7ff;
+        }
+
+        .source-tab.active {
+          border-color: #3b82f6;
+          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          color: white;
+        }
+
+        .source-tab .source-count {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 24px;
+          height: 24px;
+          padding: 0 8px;
+          border-radius: 12px;
+          font-size: 0.8rem;
+          font-weight: 700;
+          background: rgba(0, 0, 0, 0.1);
+        }
+
+        .source-tab.active .source-count {
+          background: rgba(255, 255, 255, 0.25);
+        }
+
+        /* Modal Empty State */
+        .modal-empty-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 48px 24px;
+          color: #94a3b8;
+          text-align: center;
+        }
+
+        .modal-empty-state svg {
+          margin-bottom: 16px;
+          opacity: 0.5;
+        }
+
+        .modal-empty-state p {
+          margin: 0;
+          font-size: 0.95rem;
+          line-height: 1.6;
+          max-width: 300px;
+        }
+
         .modal-body {
           flex: 1;
           overflow-y: auto;
@@ -4782,16 +5046,32 @@ const DocumentRAGPanel: React.FC = () => {
           color: #374151;
         }
 
+        .quiz-modal-footer .btn-outline {
+          background: white;
+          border: 2px solid #3b82f6;
+          color: #3b82f6;
+        }
+
+        .quiz-modal-footer .btn-outline:hover:not(:disabled) {
+          background: #eff6ff;
+        }
+
+        .quiz-modal-footer .btn-download-local {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
         .quiz-modal-footer .btn-export {
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+          background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
           border: none;
           color: white;
         }
 
         .quiz-modal-footer .btn-export:hover:not(:disabled) {
-          background: linear-gradient(135deg, #059669 0%, #047857 100%);
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
         }
 
         .quiz-modal-footer .btn-export:disabled {

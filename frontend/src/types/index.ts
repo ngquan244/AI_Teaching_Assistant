@@ -116,7 +116,11 @@ export const TABS = {
   QUIZ: 'quiz',
   GRADING: 'grading',
   DOCUMENT_RAG: 'document_rag',
+  CANVAS: 'canvas',
   SETTINGS: 'settings',
 } as const;
 
 export type TabType = typeof TABS[keyof typeof TABS];
+
+// Re-export Canvas types
+export * from './canvas';
