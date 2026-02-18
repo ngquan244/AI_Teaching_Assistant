@@ -64,6 +64,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+# Alias for get_db (used in routes)
+get_async_session = get_db
+
+
 def get_sync_db() -> Session:
     """
     Get synchronous database session.

@@ -76,6 +76,7 @@ export interface CanvasDownloadResponse {
 
 export interface CanvasIndexRequest {
   filename: string;
+  course_id?: number;  // Canvas course ID for collection naming
 }
 
 export interface CanvasIndexResponse {
@@ -200,11 +201,12 @@ export async function downloadCanvasFile(
  * Index a downloaded Canvas file
  */
 export async function indexCanvasFile(
-  filename: string
+  filename: string,
+  courseId?: number
 ): Promise<CanvasIndexResponse> {
   const response = await axios.post<CanvasIndexResponse>(
     `${API_BASE}/index`,
-    { filename }
+    { filename, course_id: courseId }
   );
   return response.data;
 }

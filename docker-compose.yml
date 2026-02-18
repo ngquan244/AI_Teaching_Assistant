@@ -98,6 +98,175 @@ services:
     networks:
       - grader_network
 
+  # ===========================================================================
+  # Celery Workers - Process background jobs
+  # ===========================================================================
+  
+  # RAG Worker: Document ingestion, indexing, retrieval
+  worker-rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_worker_rag
+    restart: unless-stopped
+    command: celery -A backend.celery_app worker -Q rag -c 2 --loglevel=INFO -n rag@%h
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
+      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
+    volumes:
+      - ./data:/app/data
+      - ./kaggle:/app/kaggle
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - grader_network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # LLM Worker: Quiz generation, chat, topic extraction
+  worker-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_worker_llm
+    restart: unless-stopped
+    command: celery -A backend.celery_app worker -Q llm -c 1 --loglevel=INFO -n llm@%h
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
+      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - grader_network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # Canvas Worker: Canvas API operations
+  worker-canvas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_worker_canvas
+    restart: unless-stopped
+    command: celery -A backend.celery_app worker -Q canvas -c 4 --loglevel=INFO -n canvas@%h
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
+      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
+      - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - grader_network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # Misc Worker: Grading, file operations, etc.
+  worker-misc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_worker_misc
+    restart: unless-stopped
+    command: celery -A backend.celery_app worker -Q misc,celery -c 2 --loglevel=INFO -n misc@%h
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
+      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
+    volumes:
+      - ./data:/app/data
+      - ./kaggle:/app/kaggle
+      - ./exports:/app/exports
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - grader_network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ===========================================================================
+  # Flower - Celery monitoring dashboard (optional)
+  # ===========================================================================
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_flower
+    restart: unless-stopped
+    command: celery -A backend.celery_app flower --port=5555 --broker=redis://redis:6379/0
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - grader_network
+    profiles:
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
 # =============================================================================
 # Named Volumes (Persistent Storage)
 # =============================================================================

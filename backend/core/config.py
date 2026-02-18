@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 
 # Development-only default keys (DO NOT USE IN PRODUCTION)
 _DEV_JWT_SECRET = "dev-only-secret-key-change-in-production-min-32-chars"
+_DEV_JWT_REFRESH_SECRET = "dev-only-refresh-secret-key-change-in-production-min-32"
 _DEV_ENCRYPTION_KEY = "dev-only-encryption-key-32chars!"  # Must be 32 chars for Fernet
 
 
@@ -49,6 +50,40 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "grader_secret_password"  # Same as docker-compose default
     POSTGRES_DB: str = "grader_db"
     
+    # ==========================================================================
+    # Redis & Celery Configuration
+    # ==========================================================================
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: Optional[str] = None
+    
+    @property
+    def REDIS_URL(self) -> str:
+        """Redis connection URL."""
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
+    
+    @property
+    def CELERY_BROKER_URL(self) -> str:
+        """Celery broker URL (Redis DB 0)."""
+        return f"{self.REDIS_URL}/0"
+    
+    @property
+    def CELERY_RESULT_BACKEND(self) -> str:
+        """Celery result backend URL (Redis DB 1)."""
+        return f"{self.REDIS_URL}/1"
+    
+    # Rate limits
+    LLM_RATE_LIMIT: str = "10/m"  # 10 requests per minute for LLM tasks
+    CANVAS_RATE_LIMIT: str = "30/m"  # 30 requests per minute for Canvas API
+    
+    # Worker concurrency
+    WORKER_CONCURRENCY_RAG: int = 4
+    WORKER_CONCURRENCY_LLM: int = 2
+    WORKER_CONCURRENCY_CANVAS: int = 2
+    WORKER_CONCURRENCY_MISC: int = 4
+    
     @property
     def DATABASE_URL(self) -> str:
         """Async PostgreSQL connection URL for FastAPI."""
@@ -69,9 +104,18 @@ class Settings(BaseSettings):
     # JWT Configuration
     # ==========================================================================
     JWT_SECRET_KEY: str = _DEV_JWT_SECRET  # Override in .env for production
+    JWT_REFRESH_SECRET_KEY: str = _DEV_JWT_REFRESH_SECRET  # Separate key for refresh tokens
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # 30 minutes (short-lived)
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    
+    # ==========================================================================
+    # Login Security Configuration
+    # ==========================================================================
+    LOGIN_RATE_LIMIT_MAX_ATTEMPTS: int = 5  # Max login attempts per window
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300  # 5-minute window
+    LOGIN_LOCKOUT_DURATION_SECONDS: int = 900  # 15-minute lockout after max attempts
+    TOKEN_BLACKLIST_REDIS_DB: int = 2  # Redis DB for token blacklist
     
     # ==========================================================================
     # Encryption Configuration (for Canvas tokens)
@@ -115,6 +159,12 @@ class Settings(BaseSettings):
                     "Set JWT_SECRET_KEY in your .env file.",
                     UserWarning
                 )
+            if self.JWT_REFRESH_SECRET_KEY == _DEV_JWT_REFRESH_SECRET:
+                warnings.warn(
+                    "Using development JWT_REFRESH_SECRET_KEY in non-development environment! "
+                    "Set JWT_REFRESH_SECRET_KEY in your .env file.",
+                    UserWarning
+                )
             if self.ENCRYPTION_KEY == _DEV_ENCRYPTION_KEY:
                 warnings.warn(
                     "Using development ENCRYPTION_KEY in non-development environment! "
@@ -124,17 +174,52 @@ class Settings(BaseSettings):
         return self
     
     # ==========================================================================
-    # AI Model Configuration (preserved from original)
+    # LLM Provider Configuration
     # ==========================================================================
-    DEFAULT_MODEL: str = "llama3.1:latest"
-    AVAILABLE_MODELS: List[str] = [
+    LLM_PROVIDER: str = "ollama"  # "ollama" or "groq"
+    
+    # Ollama settings (local LLM)
+    OLLAMA_MODEL: str = "llama3.1:latest"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_TEMPERATURE: float = 0.3
+    
+    # Groq Cloud settings
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_FALLBACK_TO_OLLAMA: bool = True
+    
+    # Groq available models
+    GROQ_AVAILABLE_MODELS: List[str] = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768",
+    ]
+    
+    # Ollama available models
+    OLLAMA_AVAILABLE_MODELS: List[str] = [
         "llama3.1:latest",
         "phi3:latest",
         "mistral:latest",
-        "gemma2:latest"
+        "gemma2:latest",
     ]
+    
+    # AI Model settings
     MAX_ITERATIONS: int = 10
     TEMPERATURE: float = 0.3
+    
+    @property
+    def DEFAULT_MODEL(self) -> str:
+        if self.LLM_PROVIDER == "groq":
+            return self.GROQ_MODEL
+        return self.OLLAMA_MODEL
+    
+    @property
+    def AVAILABLE_MODELS(self) -> List[str]:
+        if self.LLM_PROVIDER == "groq":
+            return self.GROQ_AVAILABLE_MODELS
+        return self.OLLAMA_AVAILABLE_MODELS
     
     class Config:
         env_file = ".env"

@@ -4,6 +4,12 @@ Configuration settings for FastAPI backend
 from pydantic_settings import BaseSettings
 from pathlib import Path
 from typing import List, Optional
+from enum import Enum
+
+
+class LLMProviderType(str, Enum):
+    OLLAMA = "ollama"
+    GROQ = "groq"
 
 
 class Settings(BaseSettings):
@@ -35,16 +41,53 @@ class Settings(BaseSettings):
     CONFIG_DIR: Path = PROJECT_ROOT / "config"
     MODELS_DIR: Path = PROJECT_ROOT / "models"
     
-    # AI Model settings
-    DEFAULT_MODEL: str = "llama3.1:latest"
-    AVAILABLE_MODELS: List[str] = [
+    # ==========================================================================
+    # LLM Provider Configuration
+    # ==========================================================================
+    LLM_PROVIDER: str = "ollama"  # "ollama" or "groq"
+    
+    # Ollama settings (local LLM)
+    OLLAMA_MODEL: str = "llama3.1:latest"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_TEMPERATURE: float = 0.3
+    
+    # Groq Cloud settings
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_FALLBACK_TO_OLLAMA: bool = True
+    
+    # Groq available models
+    GROQ_AVAILABLE_MODELS: List[str] = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768",
+    ]
+    
+    # Ollama available models
+    OLLAMA_AVAILABLE_MODELS: List[str] = [
         "llama3.1:latest",
         "phi3:latest",
         "mistral:latest",
-        "gemma2:latest"
+        "gemma2:latest",
     ]
+    
+    # AI Model settings (computed from provider)
     MAX_ITERATIONS: int = 10
     TEMPERATURE: float = 0.3
+    
+    @property
+    def DEFAULT_MODEL(self) -> str:
+        if self.LLM_PROVIDER == LLMProviderType.GROQ:
+            return self.GROQ_MODEL
+        return self.OLLAMA_MODEL
+    
+    @property
+    def AVAILABLE_MODELS(self) -> List[str]:
+        if self.LLM_PROVIDER == LLMProviderType.GROQ:
+            return self.GROQ_AVAILABLE_MODELS
+        return self.OLLAMA_AVAILABLE_MODELS
     
     # Email settings
     EMAIL_RECEIVER: str = "22028171@vnu.edu.vn"

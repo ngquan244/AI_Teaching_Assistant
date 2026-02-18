@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { configApi } from '../api/config';
 import type { ConfigResponse, ChatMessage, ToolUsage } from '../types';
 
@@ -9,6 +9,9 @@ interface AppContextType {
   setModel: (model: string) => void;
   maxIterations: number;
   setMaxIterations: (n: number) => void;
+  // Provider switching
+  switchingProvider: boolean;
+  switchProvider: (provider: string) => Promise<void>;
   // Chat state - persisted across tab switches
   chatMessages: ChatMessage[];
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -22,8 +25,9 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [model, setModel] = useState('llama3.1:latest');
+  const [model, setModel] = useState('llama-3.3-70b-versatile');
   const [maxIterations, setMaxIterations] = useState(10);
+  const [switchingProvider, setSwitchingProvider] = useState(false);
   
   // Chat state - persisted across tab switches
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -51,6 +55,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const switchProvider = useCallback(async (provider: string) => {
+    setSwitchingProvider(true);
+    try {
+      const res = await configApi.switchProvider(provider);
+      // Update config with new provider info
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              llm_provider: res.provider,
+              available_models: res.available_models,
+              default_model: res.default_model,
+            }
+          : prev
+      );
+      // Reset model to default for the new provider
+      setModel(res.default_model);
+    } catch (error) {
+      console.error('Failed to switch provider:', error);
+      throw error;
+    } finally {
+      setSwitchingProvider(false);
+    }
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -60,6 +89,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setModel,
         maxIterations,
         setMaxIterations,
+        switchingProvider,
+        switchProvider,
         chatMessages,
         setChatMessages,
         chatToolsUsed,

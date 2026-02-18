@@ -27,9 +27,17 @@ from .rag_service import RAGService
 from .ingest import load_pdf_documents
 from .chunking import chunk_documents
 from .vectorstore import ChromaVectorStore
-from .retriever import DocumentRetriever
+from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
+from .collection_manager import (
+    PerFileCollectionManager,
+    CollectionNameGenerator,
+    CollectionRegistry,
+    get_collection_manager,
+    get_uploads_collection_manager,
+    get_canvas_collection_manager,
+)
 from .llm_providers import (
     BaseLLM,
     OllamaLLM,
@@ -44,8 +52,15 @@ __all__ = [
     "chunk_documents", 
     "ChromaVectorStore",
     "DocumentRetriever",
+    "MultiCollectionRetriever",
     "RAGChain",
     "QuizGenerator",
+    "PerFileCollectionManager",
+    "CollectionNameGenerator",
+    "CollectionRegistry",
+    "get_collection_manager",
+    "get_uploads_collection_manager",
+    "get_canvas_collection_manager",
     "BaseLLM",
     "OllamaLLM",
     "GroqLLM",

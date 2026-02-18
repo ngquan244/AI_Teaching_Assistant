@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   FileText,
   Upload,
@@ -29,6 +29,17 @@ import {
   XCircle,
   FolderOpen,
 } from 'lucide-react';
+
+/* ---------- tiny helper: random stars for background ---------- */
+const generateRAGStars = (count: number) =>
+  Array.from({ length: count }, (_, i) => ({
+    id: i,
+    top: `${Math.random() * 100}%`,
+    left: `${Math.random() * 100}%`,
+    duration: `${3 + Math.random() * 4}s`,
+    delay: `${Math.random() * 5}s`,
+    size: `${1.5 + Math.random() * 1.5}px`,
+  }));
 import {
   uploadAndIndexDocument,
   queryRAG,
@@ -57,7 +68,6 @@ import {
   updateCanvasDocumentTopics,
   generateCanvasQuiz,
 } from '../api/canvasRag';
-import { isCanvasConfigured } from '../utils/canvasStorage';
 import CanvasImportModal from './CanvasImportModal';
 
 // Indexed document info
@@ -95,6 +105,9 @@ interface UploadFileItem {
 type ActiveTab = 'query' | 'quiz';
 
 const DocumentRAGPanel: React.FC = () => {
+  // Decorative stars
+  const ragStars = useMemo(() => generateRAGStars(24), []);
+
   // State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<UploadFileItem[]>([]);
@@ -946,107 +959,93 @@ const DocumentRAGPanel: React.FC = () => {
 
   return (
     <div className="document-rag-panel">
-      <div className="panel-header">
-        <FileText size={24} />
-        <h2>RAG Tài liệu</h2>
+      {/* ---- Decorative background (matching Chat panel) ---- */}
+      <div className="rag-bg-decoration">
+        <div className="rag-bg-orb rag-bg-orb-1" />
+        <div className="rag-bg-orb rag-bg-orb-2" />
+        <div className="rag-bg-orb rag-bg-orb-3" />
+      </div>
+      <div className="rag-stars">
+        {ragStars.map((s) => (
+          <span
+            key={s.id}
+            className="rag-star"
+            style={{ top: s.top, left: s.left, '--duration': s.duration, '--delay': s.delay, width: s.size, height: s.size } as React.CSSProperties}
+          />
+        ))}
+      </div>
+      <div className="rag-glow-line rag-glow-line-1" />
+      <div className="rag-glow-line rag-glow-line-2" />
+
+      <div className="rag-hero-header">
+        <div className="rag-hero-icon">
+          <FileText size={28} />
+        </div>
+        <div className="rag-hero-text">
+          <h2>RAG Tài liệu</h2>
+          <p>Upload tài liệu PDF, tạo quiz và hỏi đáp thông minh</p>
+        </div>
+        <button
+          className="btn-hero-refresh"
+          onClick={() => {
+            loadIndexStats();
+            loadOllamaStatus();
+            loadUploadedFiles();
+            loadLLMProviderInfo();
+          }}
+          title="Làm mới trạng thái"
+        >
+          <RefreshCw size={18} />
+        </button>
       </div>
 
       <div className="rag-content">
-        {/* Top Section - 2 Column Layout */}
-        <div className="top-section-grid">
-          {/* Left Column - Status Cards */}
-          <div className="status-column">
-            {/* LLM Provider Selector */}
-            <div className="status-card llm-provider-card">
-              <Zap size={20} className="provider-icon" />
-              <div className="status-info">
-                <span className="status-label">LLM Provider</span>
-                <div className="provider-dropdown-wrapper">
-                  <select
-                    className="provider-dropdown"
-                    value={llmProviderInfo?.current_provider || 'ollama'}
-                    onChange={(e) => handleSwitchProvider(e.target.value as 'ollama' | 'groq')}
-                    disabled={isSwitchingProvider}
-                  >
-                    <option value="ollama">
-                      🖥️ Ollama (Local)
-                    </option>
-                    <option 
-                      value="groq" 
-                      disabled={!llmProviderInfo?.groq_configured}
-                    >
-                      ☁️ Groq Cloud {!llmProviderInfo?.groq_configured ? '(Chưa cấu hình)' : ''}
-                    </option>
-                  </select>
-                  {isSwitchingProvider && (
-                    <Loader2 size={14} className="spin provider-dropdown-loading" />
-                  )}
-                </div>
-              </div>
+        {/* Status Bar - Compact Inline */}
+        <div className="rag-status-bar">
+          <div className="rag-status-item llm-provider-item">
+            <Zap size={16} className="provider-icon" />
+            <span className="rag-status-label">Provider:</span>
+            <div className="provider-dropdown-wrapper">
+              <select
+                className="provider-dropdown-inline"
+                value={llmProviderInfo?.current_provider || 'ollama'}
+                onChange={(e) => handleSwitchProvider(e.target.value as 'ollama' | 'groq')}
+                disabled={isSwitchingProvider}
+              >
+                <option value="ollama">🖥️ Ollama</option>
+                <option value="groq" disabled={!llmProviderInfo?.groq_configured}>
+                  ☁️ Groq {!llmProviderInfo?.groq_configured ? '(N/A)' : ''}
+                </option>
+              </select>
+              {isSwitchingProvider && (
+                <Loader2 size={12} className="spin provider-dropdown-loading" />
+              )}
             </div>
-
-            {/* Current Model Status */}
-            <div className={`status-card model-status-card ${ollamaStatus?.connected ? 'connected' : 'disconnected'}`}>
-              <Server size={20} />
-              <div className="status-info">
-                <span className="status-label">Model Status</span>
-                <span className="status-value">
-                  {ollamaStatus?.connected ? (
-                    <>
-                      <CheckCircle size={14} className="status-icon success" />
-                      <span className="model-name">{llmProviderInfo?.current_model || ollamaStatus.model || 'Connected'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertCircle size={14} className="status-icon error" />
-                      <span className="status-text">Chưa kết nối</span>
-                    </>
-                  )}
-                </span>
-              </div>
-            </div>
-
-            {/* Index Stats */}
-            <div className="status-card">
-              <Database size={20} />
-              <div className="status-info">
-                <span className="status-label">Documents</span>
-                <span className="status-value">
-                  {indexStats?.total_documents ?? 0} chunks
-                </span>
-              </div>
-            </div>
-
-            {/* Indexed Files */}
-            <div className="status-card">
-              <FileIcon size={20} />
-              <div className="status-info">
-                <span className="status-label">Files Indexed</span>
-                <span className="status-value">
-                  {indexStats?.indexed_file_hashes ?? 0}
-                </span>
-              </div>
-            </div>
-
-            {/* Refresh Button */}
-            <button
-              className="btn btn-secondary btn-refresh-status"
-              onClick={() => {
-                loadIndexStats();
-                loadOllamaStatus();
-                loadUploadedFiles();
-                loadLLMProviderInfo();
-              }}
-              title="Refresh status"
-            >
-              <RefreshCw size={16} />
-              Làm mới
-            </button>
           </div>
+          <div className="rag-status-divider" />
+          <div className={`rag-status-item model-status-item ${ollamaStatus?.connected ? 'connected' : 'disconnected'}`}>
+            <Server size={16} />
+            <span className="rag-status-label">Model:</span>
+            <span className="rag-status-value">
+              {ollamaStatus?.connected ? (
+                <>
+                  <CheckCircle size={13} className="status-icon success" />
+                  <span className="model-name-inline">{llmProviderInfo?.current_model || ollamaStatus.model || 'Connected'}</span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle size={13} className="status-icon error" />
+                  <span className="status-text-inline">Chưa kết nối</span>
+                </>
+              )}
+            </span>
+          </div>
+        </div>
 
-          {/* Right Column - Upload Section */}
-          <div className="upload-column">
-            <div className="upload-section-compact">
+        {/* Upload Section - Full Width */}
+        <div className="upload-section-redesign">
+          <div className="upload-section-compact">
+
               <h3>
                 <Upload size={18} />
                 Upload & Index PDF
@@ -1233,7 +1232,6 @@ const DocumentRAGPanel: React.FC = () => {
                   {uploadMessage.text}
                 </div>
               )}
-            </div>
           </div>
         </div>
 
@@ -2057,217 +2055,477 @@ const DocumentRAGPanel: React.FC = () => {
       />
 
       <style>{`
+        /* ===================================================================
+           DOCUMENT RAG PANEL — PREMIUM DARK THEME
+           Matching Chat AI Panel aesthetics with vibrant accent colors
+        =================================================================== */
+
         .document-rag-panel {
           display: flex;
           flex-direction: column;
           height: 100%;
           overflow: hidden;
+          background: #080b18;
+          border-radius: 0;
+          box-shadow: none;
+          position: relative;
         }
 
-        .panel-header {
+        /* Ambient gradient layer */
+        .document-rag-panel::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(ellipse 80% 60% at 20% 10%, rgba(56, 189, 248, 0.10) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 50% at 80% 90%, rgba(139, 92, 246, 0.08) 0%, transparent 60%),
+            radial-gradient(ellipse 50% 40% at 50% 50%, rgba(6, 182, 212, 0.05) 0%, transparent 60%);
+          pointer-events: none;
+          z-index: 0;
+        }
+
+        /* Grid overlay */
+        .document-rag-panel::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image:
+            linear-gradient(rgba(56, 189, 248, 0.02) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(56, 189, 248, 0.02) 1px, transparent 1px);
+          background-size: 50px 50px;
+          mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 75%);
+          -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 50%, black 20%, transparent 75%);
+          pointer-events: none;
+          animation: rag-grid-drift 30s linear infinite;
+          z-index: 0;
+        }
+
+        @keyframes rag-grid-drift {
+          0% { transform: translate(0, 0); }
+          100% { transform: translate(50px, 50px); }
+        }
+
+        /* Decorative floating orbs */
+        .rag-bg-decoration {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: 0;
+        }
+
+        .rag-bg-orb {
+          position: absolute;
+          border-radius: 50%;
+          filter: blur(70px);
+        }
+
+        .rag-bg-orb-1 {
+          width: 350px;
+          height: 350px;
+          background: radial-gradient(circle, rgba(56, 189, 248, 0.13) 0%, rgba(56, 189, 248, 0) 70%);
+          top: -12%;
+          right: -6%;
+          animation: rag-orb-1 22s ease-in-out infinite;
+        }
+
+        .rag-bg-orb-2 {
+          width: 300px;
+          height: 300px;
+          background: radial-gradient(circle, rgba(139, 92, 246, 0.10) 0%, rgba(139, 92, 246, 0) 70%);
+          bottom: 3%;
+          left: -10%;
+          animation: rag-orb-2 26s ease-in-out infinite;
+        }
+
+        .rag-bg-orb-3 {
+          width: 220px;
+          height: 220px;
+          background: radial-gradient(circle, rgba(34, 211, 238, 0.07) 0%, rgba(34, 211, 238, 0) 70%);
+          top: 45%;
+          left: 55%;
+          animation: rag-orb-3 18s ease-in-out infinite;
+        }
+
+        @keyframes rag-orb-1 {
+          0%, 100% { transform: translate(0, 0) scale(1); }
+          25% { transform: translate(30px, 20px) scale(1.08); }
+          50% { transform: translate(-15px, 40px) scale(0.95); }
+          75% { transform: translate(20px, -15px) scale(1.03); }
+        }
+
+        @keyframes rag-orb-2 {
+          0%, 100% { transform: translate(0, 0) scale(1); }
+          25% { transform: translate(-25px, -30px) scale(1.05); }
+          50% { transform: translate(30px, -15px) scale(0.97); }
+          75% { transform: translate(-15px, 25px) scale(1.04); }
+        }
+
+        @keyframes rag-orb-3 {
+          0%, 100% { transform: translate(0, 0) scale(1); }
+          33% { transform: translate(20px, -25px) scale(1.1); }
+          66% { transform: translate(-22px, 18px) scale(0.9); }
+        }
+
+        /* Twinkling stars */
+        .rag-stars {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: 0;
+        }
+
+        .rag-star {
+          position: absolute;
+          background: #ffffff;
+          border-radius: 50%;
+          animation: rag-twinkle var(--duration, 4s) ease-in-out infinite;
+          animation-delay: var(--delay, 0s);
+          opacity: 0;
+        }
+
+        .rag-star::after {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          background: inherit;
+          border-radius: 50%;
+          box-shadow: 0 0 6px 1px rgba(255, 255, 255, 0.35);
+        }
+
+        @keyframes rag-twinkle {
+          0%, 100% { opacity: 0; transform: scale(0.5); }
+          50% { opacity: 0.85; transform: scale(1.3); }
+        }
+
+        /* Glowing line accents */
+        .rag-glow-line {
+          position: absolute;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: 0;
+        }
+
+        .rag-glow-line-1 {
+          top: 18%;
+          left: 0;
+          width: 45%;
+          height: 1px;
+          background: linear-gradient(90deg, transparent 0%, rgba(56, 189, 248, 0.30) 50%, transparent 100%);
+          animation: rag-line-slide 8s ease-in-out infinite;
+        }
+
+        .rag-glow-line-2 {
+          bottom: 25%;
+          right: 0;
+          width: 38%;
+          height: 1px;
+          background: linear-gradient(90deg, transparent 0%, rgba(167, 139, 250, 0.22) 50%, transparent 100%);
+          animation: rag-line-slide 10s ease-in-out infinite reverse;
+        }
+
+        @keyframes rag-line-slide {
+          0%, 100% { transform: translateX(-20px); opacity: 0.3; }
+          50% { transform: translateX(20px); opacity: 1; }
+        }
+
+        /* ===== HERO HEADER ===== */
+        .rag-hero-header {
           display: flex;
           align-items: center;
-          gap: 10px;
-          padding: 12px 24px;
-          border-bottom: 1px solid var(--border-color, #e5e7eb);
+          gap: 16px;
+          padding: 20px 28px;
+          background: rgba(15, 23, 42, 0.85);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+          flex-shrink: 0;
+          position: relative;
+          z-index: 3;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
         }
 
-        .panel-header h2 {
+        .rag-hero-header::after {
+          content: '';
+          position: absolute;
+          bottom: -1px;
+          left: 5%;
+          width: 90%;
+          height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.4), rgba(139, 92, 246, 0.3), rgba(34, 211, 238, 0.2), transparent);
+        }
+
+        .rag-hero-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 48px;
+          height: 48px;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+          border-radius: 14px;
+          color: white;
+          box-shadow:
+            0 6px 20px -4px rgba(56, 189, 248, 0.5),
+            0 0 0 3px rgba(56, 189, 248, 0.08);
+          flex-shrink: 0;
+          position: relative;
+          transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .rag-hero-icon::after {
+          content: '';
+          position: absolute;
+          inset: -4px;
+          border-radius: 18px;
+          border: 1.5px dashed rgba(56, 189, 248, 0.35);
+          animation: rag-icon-orbit 12s linear infinite;
+        }
+
+        @keyframes rag-icon-orbit {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+
+        .rag-hero-icon:hover {
+          transform: scale(1.08) rotate(-5deg);
+          box-shadow:
+            0 10px 28px -4px rgba(56, 189, 248, 0.6),
+            0 0 0 4px rgba(56, 189, 248, 0.12);
+        }
+
+        .rag-hero-text {
+          flex: 1;
+        }
+
+        .rag-hero-text h2 {
           margin: 0;
-          font-size: 1.25rem;
-          font-weight: 600;
+          font-size: 1.3rem;
+          font-weight: 700;
+          background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 40%, #7dd3fc 80%, #38bdf8 100%);
+          background-clip: text;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          letter-spacing: -0.01em;
         }
 
+        .rag-hero-text p {
+          margin: 2px 0 0 0;
+          font-size: 0.85rem;
+          color: #94a3b8;
+          font-weight: 400;
+        }
+
+        .btn-hero-refresh {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          background: rgba(22, 33, 55, 0.75);
+          border: 1px solid rgba(56, 189, 248, 0.22);
+          border-radius: 10px;
+          color: #64748b;
+          cursor: pointer;
+          transition: all 0.3s ease;
+          flex-shrink: 0;
+        }
+
+        .btn-hero-refresh:hover {
+          background: rgba(56, 189, 248, 0.1);
+          border-color: rgba(56, 189, 248, 0.4);
+          color: #38bdf8;
+          transform: rotate(90deg);
+          box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+        }
+
+        /* ===== CONTENT AREA ===== */
         .rag-content {
           flex: 1;
           overflow-y: auto;
           padding: 24px;
           display: flex;
           flex-direction: column;
-          gap: 24px;
+          gap: 20px;
+          background: transparent;
+          position: relative;
+          z-index: 2;
         }
 
-        /* ===== TOP SECTION - 2 COLUMN LAYOUT ===== */
-        .top-section-grid {
-          display: grid;
-          grid-template-columns: 280px 1fr;
-          gap: 24px;
-          align-items: stretch;
+        .rag-content::-webkit-scrollbar {
+          width: 8px;
         }
 
-        /* Left Column - Status Cards */
-        .status-column {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
+        .rag-content::-webkit-scrollbar-track {
+          background: transparent;
         }
 
-        .status-card {
+        .rag-content::-webkit-scrollbar-thumb {
+          background: rgba(56, 189, 248, 0.2);
+          border-radius: 10px;
+        }
+
+        .rag-content::-webkit-scrollbar-thumb:hover {
+          background: rgba(56, 189, 248, 0.35);
+        }
+
+        /* ===== STATUS BAR ===== */
+        .rag-status-bar {
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 14px 16px;
-          background: white;
-          border: 1px solid var(--border-color, #e5e7eb);
-          border-radius: 12px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-          transition: all 0.2s ease;
+          gap: 16px;
+          padding: 12px 20px;
+          background: rgba(22, 33, 55, 0.8);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.2);
+          border-radius: 14px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
         }
 
-        .status-card:hover {
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-          transform: translateY(-1px);
+        .rag-status-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 0.85rem;
         }
 
-        .status-card.connected {
-          border-color: #10b981;
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-        }
-
-        .status-card.disconnected {
-          border-color: #ef4444;
-          background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-        }
-
-        .status-card svg {
+        .rag-status-item svg {
           color: #64748b;
           flex-shrink: 0;
         }
 
-        .status-card.connected svg {
-          color: #10b981;
+        .rag-status-item.llm-provider-item .provider-icon {
+          color: #a78bfa;
         }
 
-        .status-card.disconnected svg {
-          color: #ef4444;
+        .rag-status-item.connected svg:first-child {
+          color: #34d399;
         }
 
-        .status-info {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-          flex: 1;
-          min-width: 0;
+        .rag-status-item.disconnected svg:first-child {
+          color: #f87171;
         }
 
-        .status-label {
-          font-size: 0.7rem;
-          color: var(--text-secondary, #6b7280);
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
+        .rag-status-label {
           font-weight: 600;
+          color: #cbd5e1;
+          font-size: 0.82rem;
+          white-space: nowrap;
         }
 
-        .status-value {
+        .rag-status-value {
           display: flex;
           align-items: center;
-          gap: 6px;
-          font-size: 0.875rem;
+          gap: 5px;
+        }
+
+        .rag-status-divider {
+          width: 1px;
+          height: 24px;
+          background: rgba(56, 189, 248, 0.15);
+          flex-shrink: 0;
+        }
+
+        .provider-dropdown-inline {
+          padding: 5px 24px 5px 8px;
+          border: 1px solid rgba(139, 92, 246, 0.35);
+          border-radius: 8px;
+          background: rgba(22, 33, 55, 0.85);
+          color: #e2e8f0;
+          font-size: 0.82rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 6px center;
+          background-size: 10px;
+        }
+
+        .provider-dropdown-inline:hover:not(:disabled) {
+          border-color: #a78bfa;
+          background-color: rgba(139, 92, 246, 0.12);
+        }
+
+        .provider-dropdown-inline:focus {
+          outline: none;
+          border-color: #a78bfa;
+          box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.15);
+        }
+
+        .provider-dropdown-inline:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .provider-dropdown-inline option {
+          background: #0f172a;
+          color: #e2e8f0;
+        }
+
+        .provider-dropdown-inline option:disabled {
+          color: #64748b;
+        }
+
+        .model-name-inline {
+          font-family: 'Consolas', 'Monaco', monospace;
+          font-size: 0.8rem;
+          background: rgba(56, 189, 248, 0.1);
+          padding: 2px 8px;
+          border-radius: 5px;
+          color: #7dd3fc;
           font-weight: 600;
-          color: #1e293b;
+          border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+
+        .status-text-inline {
+          color: #f87171;
+          font-weight: 500;
+          font-size: 0.82rem;
+        }
+
+        /* ===== UPLOAD SECTION REDESIGN ===== */
+        .upload-section-redesign {
+          /* Remove old grid, just full width */
         }
 
         .status-icon.success {
-          color: #10b981;
+          color: #34d399;
         }
 
         .status-icon.error {
-          color: #ef4444;
-        }
-
-        /* LLM Provider Dropdown Styling */
-        .llm-provider-card {
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-        }
-
-        .llm-provider-card .provider-icon {
-          color: #8b5cf6;
+          color: #f87171;
         }
 
         .provider-dropdown-wrapper {
           position: relative;
         }
 
-        .provider-dropdown {
-          width: 100%;
-          padding: 8px 12px;
-          padding-right: 32px;
-          border: 2px solid #e2e8f0;
-          border-radius: 8px;
-          background: white;
-          color: #334155;
-          font-size: 0.85rem;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          appearance: none;
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 10px center;
-        }
-
-        .provider-dropdown:hover:not(:disabled) {
-          border-color: #8b5cf6;
-          background-color: #faf5ff;
-        }
-
-        .provider-dropdown:focus {
-          outline: none;
-          border-color: #8b5cf6;
-          box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
-        }
-
-        .provider-dropdown:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-          background-color: #f1f5f9;
-        }
-
-        .provider-dropdown option {
-          padding: 10px;
-          background: white;
-          color: #334155;
-        }
-
-        .provider-dropdown option:disabled {
-          color: #94a3b8;
-        }
-
         .provider-dropdown-loading {
           position: absolute;
-          right: 32px;
+          right: 6px;
           top: 50%;
           transform: translateY(-50%);
-          color: #8b5cf6;
+          color: #a78bfa;
         }
 
-        .btn-refresh-status {
-          margin-top: 4px;
-          justify-content: center;
-          padding: 10px 16px;
-          font-size: 0.85rem;
-        }
-
-        /* Right Column - Upload Section */
-        .upload-column {
-          display: flex;
-          flex-direction: column;
-        }
-
+        /* ===== UPLOAD SECTION ===== */
         .upload-section-compact {
-          background: white;
-          border: 1px solid var(--border-color, #e5e7eb);
+          background: rgba(22, 33, 55, 0.8);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.2);
           border-radius: 16px;
-          padding: 20px;
-          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-          transition: box-shadow 0.2s ease;
-          height: 100%;
+          padding: 24px;
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
+          transition: all 0.3s ease;
           display: flex;
           flex-direction: column;
         }
 
         .upload-section-compact:hover {
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+          box-shadow: 0 8px 32px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px rgba(56, 189, 248, 0.1);
+          border-color: rgba(56, 189, 248, 0.35);
         }
 
         .upload-section-compact h3 {
@@ -2275,25 +2533,26 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 10px;
           margin: 0 0 16px 0;
-          font-size: 1rem;
+          font-size: 1.05rem;
           font-weight: 700;
-          color: #1e293b;
+          color: #f1f5f9;
           padding-bottom: 12px;
-          border-bottom: 2px solid #e2e8f0;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
         }
 
         .upload-section-compact h3 svg {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .files-count-badge {
           margin-left: auto;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
           padding: 4px 10px;
           border-radius: 20px;
           font-size: 0.75rem;
           font-weight: 600;
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
         }
 
         .upload-area-compact {
@@ -2305,60 +2564,60 @@ const DocumentRAGPanel: React.FC = () => {
           display: flex;
           align-items: center;
           gap: 16px;
-          padding: 24px;
-          border: 2px dashed #cbd5e1;
-          border-radius: 16px;
+          padding: 20px;
+          border: 2px dashed rgba(56, 189, 248, 0.3);
+          border-radius: 14px;
           cursor: pointer;
           transition: all 0.3s ease;
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-          min-height: 100px;
+          background: rgba(22, 33, 55, 0.6);
+          min-height: 90px;
           position: relative;
         }
 
         .file-label-compact:hover {
-          border-color: #3b82f6;
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          transform: translateY(-2px);
-          box-shadow: 0 8px 25px rgba(59, 130, 246, 0.15);
+          border-color: #38bdf8;
+          background: rgba(56, 189, 248, 0.06);
+          transform: translateY(-1px);
+          box-shadow: 0 6px 20px rgba(56, 189, 248, 0.1);
         }
 
         .file-label-compact.has-file {
           border-style: solid;
-          border-color: #10b981;
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+          border-color: #34d399;
+          background: rgba(34, 211, 153, 0.06);
         }
 
         .file-label-compact.has-file:hover {
-          border-color: #059669;
-          background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+          border-color: #10b981;
+          background: rgba(34, 211, 153, 0.1);
         }
 
         .upload-icon-wrapper {
           display: flex;
           align-items: center;
           justify-content: center;
-          width: 64px;
-          height: 64px;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-          border-radius: 16px;
+          width: 52px;
+          height: 52px;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+          border-radius: 14px;
           color: white;
           flex-shrink: 0;
           transition: all 0.3s ease;
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+          box-shadow: 0 3px 10px rgba(56, 189, 248, 0.25);
         }
 
         .file-label-compact.has-file .upload-icon-wrapper {
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+          background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+          box-shadow: 0 4px 12px rgba(52, 211, 153, 0.3);
         }
 
         .file-label-compact:hover .upload-icon-wrapper {
           transform: scale(1.08);
-          box-shadow: 0 6px 20px rgba(59, 130, 246, 0.35);
+          box-shadow: 0 6px 20px rgba(56, 189, 248, 0.4);
         }
 
         .file-label-compact.has-file:hover .upload-icon-wrapper {
-          box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
+          box-shadow: 0 6px 20px rgba(52, 211, 153, 0.4);
         }
 
         .upload-text {
@@ -2372,14 +2631,14 @@ const DocumentRAGPanel: React.FC = () => {
         .upload-main-text {
           font-size: 1rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
 
         .file-label-compact.has-file .upload-main-text {
-          color: #065f46;
+          color: #34d399;
         }
 
         .upload-hint {
@@ -2387,11 +2646,11 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           font-size: 0.85rem;
-          color: #64748b;
+          color: #94a3b8;
         }
 
         .upload-hint svg {
-          color: #94a3b8;
+          color: #64748b;
         }
 
         .file-meta {
@@ -2402,17 +2661,18 @@ const DocumentRAGPanel: React.FC = () => {
 
         .file-size {
           font-size: 0.8rem;
-          color: #047857;
-          background: rgba(16, 185, 129, 0.15);
+          color: #34d399;
+          background: rgba(52, 211, 153, 0.1);
           padding: 3px 10px;
           border-radius: 20px;
           font-weight: 500;
+          border: 1px solid rgba(52, 211, 153, 0.2);
         }
 
         .file-type {
           font-size: 0.8rem;
-          color: #64748b;
-          background: #e2e8f0;
+          color: #94a3b8;
+          background: rgba(100, 116, 139, 0.15);
           padding: 3px 10px;
           border-radius: 20px;
           font-weight: 500;
@@ -2429,7 +2689,7 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           border: none;
           background: rgba(239, 68, 68, 0.1);
-          color: #ef4444;
+          color: #f87171;
           border-radius: 50%;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -2459,21 +2719,22 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-outline-danger {
-          background: white;
-          color: #dc2626;
-          border: 2px solid #fecaca;
+          background: rgba(22, 33, 55, 0.75);
+          color: #f87171;
+          border: 2px solid rgba(248, 113, 113, 0.35);
           transition: all 0.2s ease;
         }
 
         .btn-outline-danger:hover:not(:disabled) {
-          background: #fef2f2;
+          background: rgba(220, 38, 38, 0.15);
           border-color: #f87171;
+          box-shadow: 0 0 16px rgba(248, 113, 113, 0.2);
         }
 
         .btn-outline-danger:disabled {
           opacity: 0.5;
-          color: #9ca3af;
-          border-color: #e5e7eb;
+          color: #475569;
+          border-color: rgba(71, 85, 105, 0.3);
         }
 
         .btn-reset {
@@ -2486,10 +2747,10 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 8px 14px;
-          background: white;
-          border: 2px solid #3b82f6;
+          background: rgba(22, 33, 55, 0.75);
+          border: 2px solid rgba(56, 189, 248, 0.35);
           border-radius: 8px;
-          color: #3b82f6;
+          color: #38bdf8;
           font-size: 0.85rem;
           font-weight: 600;
           cursor: pointer;
@@ -2498,8 +2759,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-add-more:hover {
-          background: #3b82f6;
-          color: white;
+          background: rgba(56, 189, 248, 0.15);
+          border-color: #38bdf8;
+          box-shadow: 0 0 16px rgba(56, 189, 248, 0.2);
         }
 
         .file-label-compact.disabled {
@@ -2509,8 +2771,8 @@ const DocumentRAGPanel: React.FC = () => {
 
         .files-queue {
           margin-bottom: 16px;
-          background: #f8fafc;
-          border: 1px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.6);
+          border: 1px solid rgba(56, 189, 248, 0.15);
           border-radius: 12px;
           padding: 12px;
         }
@@ -2521,7 +2783,7 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: space-between;
           margin-bottom: 12px;
           padding-bottom: 10px;
-          border-bottom: 1px solid #e2e8f0;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.15);
         }
 
         .queue-title {
@@ -2530,7 +2792,7 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           font-size: 0.9rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .queue-title svg {
@@ -2543,9 +2805,9 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 6px;
           padding: 6px 12px;
           background: transparent;
-          border: 1px solid #fca5a5;
+          border: 1px solid rgba(248, 113, 113, 0.3);
           border-radius: 6px;
-          color: #dc2626;
+          color: #f87171;
           font-size: 0.8rem;
           font-weight: 500;
           cursor: pointer;
@@ -2553,7 +2815,8 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-clear-all-files:hover {
-          background: #fef2f2;
+          background: rgba(220, 38, 38, 0.1);
+          border-color: #f87171;
         }
 
         .files-list {
@@ -2570,12 +2833,12 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .files-list::-webkit-scrollbar-track {
-          background: #f1f5f9;
+          background: rgba(15, 23, 42, 0.3);
           border-radius: 10px;
         }
 
         .files-list::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
+          background: rgba(56, 189, 248, 0.2);
           border-radius: 10px;
         }
 
@@ -2584,35 +2847,35 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 12px;
           padding: 10px 12px;
-          background: white;
-          border: 1px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.6);
+          border: 1px solid rgba(56, 189, 248, 0.14);
           border-radius: 10px;
           transition: all 0.3s ease;
         }
 
         .file-queue-item.status-waiting {
-          border-color: #e2e8f0;
+          border-color: rgba(100, 116, 139, 0.2);
         }
 
         .file-queue-item.status-uploading {
-          border-color: #3b82f6;
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+          background: rgba(56, 189, 248, 0.06);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.1);
         }
 
         .file-queue-item.status-success {
-          border-color: #10b981;
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+          border-color: rgba(52, 211, 153, 0.4);
+          background: rgba(52, 211, 153, 0.06);
         }
 
         .file-queue-item.status-error {
-          border-color: #ef4444;
-          background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+          border-color: rgba(248, 113, 113, 0.4);
+          background: rgba(248, 113, 113, 0.06);
         }
 
         .file-queue-item.status-already_indexed {
-          border-color: #8b5cf6;
-          background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+          border-color: rgba(167, 139, 250, 0.4);
+          background: rgba(167, 139, 250, 0.06);
         }
 
         .file-queue-icon {
@@ -2626,28 +2889,28 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .status-waiting .file-queue-icon {
-          background: #f1f5f9;
-          color: #64748b;
+          background: rgba(100, 116, 139, 0.15);
+          color: #94a3b8;
         }
 
         .status-uploading .file-queue-icon {
-          background: #3b82f6;
-          color: white;
+          background: rgba(56, 189, 248, 0.15);
+          color: #38bdf8;
         }
 
         .status-success .file-queue-icon {
-          background: #10b981;
-          color: white;
+          background: rgba(52, 211, 153, 0.15);
+          color: #34d399;
         }
 
         .status-error .file-queue-icon {
-          background: #ef4444;
-          color: white;
+          background: rgba(248, 113, 113, 0.15);
+          color: #f87171;
         }
 
         .status-already_indexed .file-queue-icon {
-          background: #8b5cf6;
-          color: white;
+          background: rgba(167, 139, 250, 0.15);
+          color: #a78bfa;
         }
 
         .file-queue-info {
@@ -2661,7 +2924,7 @@ const DocumentRAGPanel: React.FC = () => {
         .file-queue-name {
           font-size: 0.9rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -2675,8 +2938,8 @@ const DocumentRAGPanel: React.FC = () => {
 
         .file-queue-size {
           font-size: 0.75rem;
-          color: #64748b;
-          background: #e2e8f0;
+          color: #94a3b8;
+          background: rgba(100, 116, 139, 0.12);
           padding: 2px 8px;
           border-radius: 4px;
         }
@@ -2689,28 +2952,28 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .file-queue-status.waiting {
-          background: #f1f5f9;
-          color: #64748b;
+          background: rgba(100, 116, 139, 0.12);
+          color: #94a3b8;
         }
 
         .file-queue-status.uploading {
-          background: #dbeafe;
-          color: #1d4ed8;
+          background: rgba(56, 189, 248, 0.12);
+          color: #38bdf8;
         }
 
         .file-queue-status.success {
-          background: #d1fae5;
-          color: #047857;
+          background: rgba(52, 211, 153, 0.12);
+          color: #34d399;
         }
 
         .file-queue-status.error {
-          background: #fee2e2;
-          color: #dc2626;
+          background: rgba(248, 113, 113, 0.12);
+          color: #f87171;
         }
 
         .file-queue-status.already-indexed {
-          background: #ede9fe;
-          color: #7c3aed;
+          background: rgba(167, 139, 250, 0.12);
+          color: #a78bfa;
         }
 
         .btn-remove-file {
@@ -2720,7 +2983,7 @@ const DocumentRAGPanel: React.FC = () => {
           width: 28px;
           height: 28px;
           background: transparent;
-          border: 1px solid #e2e8f0;
+          border: 1px solid rgba(100, 116, 139, 0.2);
           border-radius: 6px;
           color: #64748b;
           cursor: pointer;
@@ -2729,21 +2992,21 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-remove-file:hover {
-          background: #fef2f2;
-          border-color: #fca5a5;
-          color: #dc2626;
+          background: rgba(220, 38, 38, 0.1);
+          border-color: rgba(248, 113, 113, 0.4);
+          color: #f87171;
         }
 
         .upload-progress-summary {
           margin-top: 12px;
           padding-top: 12px;
-          border-top: 1px solid #e2e8f0;
+          border-top: 1px solid rgba(56, 189, 248, 0.08);
         }
 
         .progress-bar {
           width: 100%;
           height: 8px;
-          background: #e2e8f0;
+          background: rgba(15, 23, 42, 0.5);
           border-radius: 10px;
           overflow: hidden;
           margin-bottom: 8px;
@@ -2751,15 +3014,16 @@ const DocumentRAGPanel: React.FC = () => {
 
         .progress-fill {
           height: 100%;
-          background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+          background: linear-gradient(90deg, #34d399 0%, #10b981 100%);
           border-radius: 10px;
           transition: width 0.5s ease;
+          box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
         }
 
         .progress-text {
           font-size: 0.8rem;
           font-weight: 500;
-          color: #64748b;
+          color: #94a3b8;
           text-align: center;
           display: block;
         }
@@ -2809,32 +3073,32 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-primary {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
         }
 
         .btn-primary:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+          box-shadow: 0 4px 16px rgba(56, 189, 248, 0.45);
           transform: translateY(-1px);
         }
 
         .btn-danger {
-          background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
-          color: #dc2626;
-          border: 1px solid #fca5a5;
+          background: rgba(248, 113, 113, 0.12);
+          color: #f87171;
+          border: 1px solid rgba(248, 113, 113, 0.3);
         }
 
         .btn-danger:hover:not(:disabled) {
-          background: linear-gradient(135deg, #fecaca 0%, #fca5a5 100%);
+          background: rgba(248, 113, 113, 0.2);
           transform: translateY(-1px);
         }
 
         .btn-icon {
           padding: 10px;
-          background: white;
-          border: 2px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.75);
+          border: 2px solid rgba(56, 189, 248, 0.22);
           border-radius: 10px;
           cursor: pointer;
           color: #64748b;
@@ -2842,9 +3106,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-icon:hover {
-          background: #f1f5f9;
-          border-color: #94a3b8;
-          color: #475569;
+          background: rgba(56, 189, 248, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+          color: #38bdf8;
         }
 
         /* Messages */
@@ -2852,43 +3116,49 @@ const DocumentRAGPanel: React.FC = () => {
           display: flex;
           align-items: center;
           gap: 10px;
-          padding: 14px 16px;
+          padding: 12px 16px;
           border-radius: 12px;
-          font-size: 0.9rem;
+          font-size: 0.875rem;
           font-weight: 500;
-          margin-top: 16px;
+          margin-top: 12px;
         }
 
         .message.success {
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          color: #065f46;
-          border: 2px solid #10b981;
+          background: rgba(52, 211, 153, 0.08);
+          color: #34d399;
+          border: 1px solid rgba(52, 211, 153, 0.2);
         }
 
         .message.error {
-          background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-          color: #991b1b;
-          border: 2px solid #ef4444;
+          background: rgba(248, 113, 113, 0.08);
+          color: #f87171;
+          border: 1px solid rgba(248, 113, 113, 0.2);
         }
 
         .message.info {
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          color: #1e40af;
-          border: 2px solid #3b82f6;
+          background: rgba(56, 189, 248, 0.08);
+          color: #7dd3fc;
+          border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+
+        .provider-message {
+          border-radius: 12px;
         }
 
         /* Query Section */
         .query-section, .results-section, .files-section {
-          background: white;
-          border: 1px solid var(--border-color, #e5e7eb);
+          background: rgba(22, 33, 55, 0.8);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.2);
           border-radius: 16px;
           padding: 24px;
-          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-          transition: box-shadow 0.2s ease;
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
+          transition: all 0.3s ease;
         }
 
         .query-section:hover, .results-section:hover, .files-section:hover {
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+          box-shadow: 0 8px 32px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px rgba(56, 189, 248, 0.1);
+          border-color: rgba(56, 189, 248, 0.35);
         }
 
         .query-section h3, .results-section h3, .files-section h3 {
@@ -2896,39 +3166,39 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 10px;
           margin: 0 0 20px 0;
-          font-size: 1.1rem;
+          font-size: 1.05rem;
           font-weight: 700;
-          color: #1e293b;
+          color: #f1f5f9;
           padding-bottom: 12px;
-          border-bottom: 2px solid #e2e8f0;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
         }
 
         .query-section h3 svg, .results-section h3 svg, .files-section h3 svg {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .query-input-area textarea {
           width: 100%;
           padding: 14px;
-          border: 2px solid #e2e8f0;
+          border: 2px solid rgba(56, 189, 248, 0.22);
           border-radius: 12px;
           resize: vertical;
           font-family: inherit;
           font-size: 0.9rem;
-          color: #1e293b;
-          background: #f8fafc;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
           transition: all 0.2s ease;
         }
 
         .query-input-area textarea::placeholder {
-          color: #94a3b8;
+          color: #64748b;
         }
 
         .query-input-area textarea:focus {
           outline: none;
-          border-color: #3b82f6;
-          background: white;
-          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+          border-color: #38bdf8;
+          background: rgba(15, 23, 42, 0.8);
+          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
         }
 
         .query-options {
@@ -2940,7 +3210,7 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 10px;
           font-size: 0.9rem;
-          color: #475569;
+          color: #cbd5e1;
           cursor: pointer;
           font-weight: 500;
         }
@@ -2949,7 +3219,7 @@ const DocumentRAGPanel: React.FC = () => {
           cursor: pointer;
           width: 18px;
           height: 18px;
-          accent-color: #3b82f6;
+          accent-color: #38bdf8;
         }
 
         .btn-ask {
@@ -2961,18 +3231,19 @@ const DocumentRAGPanel: React.FC = () => {
 
         /* Results */
         .answer-box, .sources-box, .context-box {
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+          background: rgba(22, 33, 55, 0.65);
           border-radius: 12px;
           padding: 20px;
           margin-bottom: 16px;
-          border: 1px solid #e2e8f0;
+          border: 1px solid rgba(56, 189, 248, 0.18);
+          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.03);
         }
 
         .answer-box h4, .sources-box h4, .context-box h4 {
           margin: 0 0 14px 0;
           font-size: 0.95rem;
           font-weight: 700;
-          color: #1e293b;
+          color: #e2e8f0;
           display: flex;
           align-items: center;
           gap: 8px;
@@ -2994,7 +3265,7 @@ const DocumentRAGPanel: React.FC = () => {
           font-size: 0.95rem;
           line-height: 1.7;
           white-space: pre-wrap;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .sources-toggle {
@@ -3006,6 +3277,7 @@ const DocumentRAGPanel: React.FC = () => {
           border: none;
           cursor: pointer;
           padding: 0;
+          color: #94a3b8;
         }
 
         .sources-toggle h4 {
@@ -3020,16 +3292,17 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .source-item {
-          background: white;
-          border: 2px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.6);
+          border: 1px solid rgba(56, 189, 248, 0.15);
           border-radius: 10px;
           padding: 14px;
           transition: all 0.2s ease;
         }
 
         .source-item:hover {
-          border-color: #93c5fd;
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+          border-color: rgba(56, 189, 248, 0.35);
+          box-shadow: 0 2px 12px rgba(56, 189, 248, 0.1);
+          background: rgba(22, 33, 55, 0.75);
         }
 
         .source-header {
@@ -3042,22 +3315,22 @@ const DocumentRAGPanel: React.FC = () => {
 
         .source-name {
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .source-page {
           margin-left: auto;
-          color: #64748b;
+          color: #94a3b8;
           font-size: 0.8rem;
           font-weight: 500;
-          background: #f1f5f9;
+          background: rgba(100, 116, 139, 0.15);
           padding: 2px 8px;
           border-radius: 4px;
         }
 
         .source-snippet {
           font-size: 0.875rem;
-          color: #475569;
+          color: #cbd5e1;
           line-height: 1.6;
         }
 
@@ -3069,7 +3342,7 @@ const DocumentRAGPanel: React.FC = () => {
           white-space: pre-wrap;
           margin: 0;
           font-family: inherit;
-          color: #475569;
+          color: #cbd5e1;
         }
 
         /* Files List */
@@ -3084,27 +3357,31 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 12px;
           padding: 12px 16px;
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-          border: 1px solid #e2e8f0;
+          background: rgba(15, 23, 42, 0.5);
+          border: 1px solid rgba(56, 189, 248, 0.08);
           border-radius: 10px;
           font-size: 0.9rem;
           transition: all 0.2s ease;
         }
 
         .file-item:hover {
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          border-color: #93c5fd;
+          background: rgba(56, 189, 248, 0.06);
+          border-color: rgba(56, 189, 248, 0.2);
+        }
+
+        .file-item svg {
+          color: #38bdf8;
         }
 
         .file-name {
           flex: 1;
-          color: #1e293b;
+          color: #e2e8f0;
           font-weight: 500;
         }
 
         .file-size {
           font-size: 0.8rem;
-          color: #64748b;
+          color: #94a3b8;
           font-weight: 500;
         }
 
@@ -3125,19 +3402,20 @@ const DocumentRAGPanel: React.FC = () => {
         /* Tab Navigation */
         .tab-navigation {
           display: flex;
-          gap: 8px;
-          padding: 6px;
-          background: white;
-          border-radius: 12px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-          border: 1px solid #e5e7eb;
+          gap: 6px;
+          padding: 5px;
+          background: rgba(22, 33, 55, 0.8);
+          backdrop-filter: blur(12px);
+          border-radius: 14px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
+          border: 1px solid rgba(56, 189, 248, 0.2);
         }
 
         .tab-btn {
           display: flex;
           align-items: center;
           gap: 8px;
-          padding: 12px 24px;
+          padding: 11px 24px;
           background: transparent;
           border: none;
           border-radius: 10px;
@@ -3151,13 +3429,14 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .tab-btn:hover {
-          background: rgba(255, 255, 255, 0.5);
+          background: rgba(56, 189, 248, 0.08);
+          color: #cbd5e1;
         }
 
         .tab-btn.active {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+          box-shadow: 0 2px 12px rgba(56, 189, 248, 0.35);
         }
 
         .tab-btn.active svg {
@@ -3166,11 +3445,12 @@ const DocumentRAGPanel: React.FC = () => {
 
         /* Quiz Section */
         .quiz-section {
-          background: white;
-          border: 1px solid var(--border-color, #e5e7eb);
+          background: rgba(22, 33, 55, 0.8);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.2);
           border-radius: 16px;
           padding: 24px;
-          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
         }
 
         .quiz-section h3 {
@@ -3178,15 +3458,15 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 10px;
           margin: 0 0 20px 0;
-          font-size: 1.1rem;
+          font-size: 1.05rem;
           font-weight: 700;
-          color: #1e293b;
+          color: #f1f5f9;
           padding-bottom: 12px;
-          border-bottom: 2px solid #e2e8f0;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
         }
 
         .quiz-section h3 svg {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .quiz-form {
@@ -3212,27 +3492,28 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 6px;
           font-size: 0.875rem;
           font-weight: 500;
-          color: var(--text-secondary, #64748b);
+          color: #94a3b8;
         }
 
         .document-select {
           padding: 8px 12px;
-          border: 1px solid var(--border-color, #e2e8f0);
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 8px;
           font-size: 0.875rem;
-          background: white;
+          background: rgba(22, 33, 55, 0.7);
+          color: #e2e8f0;
           cursor: pointer;
           transition: all 0.2s;
         }
 
         .document-select:hover {
-          border-color: var(--primary, #3b82f6);
+          border-color: rgba(56, 189, 248, 0.4);
         }
 
         .document-select:focus {
           outline: none;
-          border-color: var(--primary, #3b82f6);
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
         }
 
         .topic-input-group {
@@ -3253,20 +3534,20 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 8px 12px;
-          background: var(--bg-secondary, #f3f4f6);
-          border: 1px solid var(--border-color, #d1d5db);
+          background: rgba(22, 33, 55, 0.75);
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 8px;
           font-size: 0.8125rem;
-          color: var(--text-secondary, #6b7280);
+          color: #94a3b8;
           cursor: pointer;
           transition: all 0.2s;
           white-space: nowrap;
         }
 
         .btn-suggest-topics:hover:not(:disabled) {
-          background: var(--primary-light, #eff6ff);
-          border-color: var(--primary, #3b82f6);
-          color: var(--primary, #3b82f6);
+          background: rgba(56, 189, 248, 0.08);
+          border-color: #38bdf8;
+          color: #38bdf8;
         }
 
         .btn-suggest-topics:disabled {
@@ -3280,10 +3561,11 @@ const DocumentRAGPanel: React.FC = () => {
           left: 0;
           right: 0;
           margin-top: 4px;
-          background: white;
-          border: 1px solid var(--border-color, #d1d5db);
+          background: rgba(22, 33, 55, 0.97);
+          backdrop-filter: blur(16px);
+          border: 1px solid rgba(56, 189, 248, 0.25);
           border-radius: 8px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(56, 189, 248, 0.08);
           z-index: 100;
           max-height: 300px;
           overflow-y: auto;
@@ -3294,10 +3576,10 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: space-between;
           align-items: center;
           padding: 10px 12px;
-          border-bottom: 1px solid var(--border-color, #e5e7eb);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
           font-size: 0.8125rem;
           font-weight: 500;
-          color: var(--text-secondary, #6b7280);
+          color: #94a3b8;
         }
 
         .btn-close-suggestions {
@@ -3307,14 +3589,14 @@ const DocumentRAGPanel: React.FC = () => {
           padding: 4px;
           background: none;
           border: none;
-          color: var(--text-tertiary, #9ca3af);
+          color: #64748b;
           cursor: pointer;
           border-radius: 4px;
         }
 
         .btn-close-suggestions:hover {
-          background: var(--bg-secondary, #f3f4f6);
-          color: var(--text-secondary, #6b7280);
+          background: rgba(56, 189, 248, 0.08);
+          color: #94a3b8;
         }
 
         .suggestions-list {
@@ -3330,7 +3612,7 @@ const DocumentRAGPanel: React.FC = () => {
           padding: 10px 12px;
           cursor: pointer;
           transition: background 0.15s;
-          border-bottom: 1px solid var(--border-light, #f3f4f6);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.06);
         }
 
         .suggestion-item:last-child {
@@ -3338,48 +3620,48 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .suggestion-item:hover {
-          background: var(--primary-light, #eff6ff);
+          background: rgba(56, 189, 248, 0.08);
         }
 
         .topic-name {
           font-size: 0.9rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .topic-description {
           font-size: 0.8rem;
-          color: #64748b;
+          color: #94a3b8;
           line-height: 1.4;
         }
 
         .form-group label {
           font-size: 0.875rem;
           font-weight: 600;
-          color: #374151;
+          color: #cbd5e1;
         }
 
         .form-group input,
         .form-group select {
           padding: 12px 14px;
-          border: 2px solid #e2e8f0;
+          border: 2px solid rgba(56, 189, 248, 0.22);
           border-radius: 10px;
           font-size: 0.9rem;
-          color: #1e293b;
-          background: #f8fafc;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
           transition: all 0.2s ease;
         }
 
         .form-group input::placeholder {
-          color: #94a3b8;
+          color: #64748b;
         }
 
         .form-group input:focus,
         .form-group select:focus {
           outline: none;
-          border-color: #3b82f6;
-          background: white;
-          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+          border-color: #38bdf8;
+          background: rgba(15, 23, 42, 0.8);
+          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
         }
 
         .form-row {
@@ -3397,7 +3679,7 @@ const DocumentRAGPanel: React.FC = () => {
         /* Quiz Display */
         .quiz-display {
           margin-top: 24px;
-          border-top: 1px solid var(--border-color, #e5e7eb);
+          border-top: 1px solid rgba(56, 189, 248, 0.1);
           padding-top: 24px;
         }
 
@@ -3414,12 +3696,12 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           margin: 0;
           font-size: 1.1rem;
-          color: var(--text-primary, #111827);
+          color: #e2e8f0;
         }
 
         .quiz-score {
           padding: 8px 16px;
-          background: var(--primary, #3b82f6);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
           border-radius: 20px;
           font-weight: 600;
@@ -3433,33 +3715,35 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-question {
-          background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-          border: 2px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 16px;
           padding: 24px;
           transition: all 0.2s ease;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
         }
 
         .quiz-question:hover {
-          border-color: #cbd5e1;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+          border-color: rgba(56, 189, 248, 0.2);
+          box-shadow: 0 4px 20px rgba(56, 189, 248, 0.06);
         }
 
         .quiz-question.editing {
-          border-color: #3b82f6;
-          background: linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%);
-          box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+          background: rgba(56, 189, 248, 0.04);
+          box-shadow: 0 4px 20px rgba(56, 189, 248, 0.1);
         }
 
         .quiz-question.correct {
           border-color: #10b981;
-          background: #ecfdf5;
+          background: rgba(34, 197, 94, 0.08);
         }
 
         .quiz-question.incorrect {
           border-color: #ef4444;
-          background: #fef2f2;
+          background: rgba(220, 38, 38, 0.08);
         }
 
         .question-header {
@@ -3473,10 +3757,10 @@ const DocumentRAGPanel: React.FC = () => {
           font-weight: 700;
           color: white;
           font-size: 0.8rem;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           padding: 6px 14px;
           border-radius: 20px;
-          box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
         }
 
         .btn-edit-question {
@@ -3485,11 +3769,11 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           gap: 6px;
           padding: 6px 12px;
-          border: 1px solid #cbd5e1;
-          background: #f8fafc;
+          border: 1px solid rgba(56, 189, 248, 0.15);
+          background: rgba(15, 23, 42, 0.6);
           border-radius: 8px;
           cursor: pointer;
-          color: #475569;
+          color: #94a3b8;
           transition: all 0.2s;
           font-size: 13px;
           font-weight: 500;
@@ -3497,9 +3781,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-edit-question:hover {
-          background: #e0e7ff;
-          border-color: #3b82f6;
-          color: #3b82f6;
+          background: rgba(56, 189, 248, 0.08);
+          border-color: #38bdf8;
+          color: #38bdf8;
         }
 
         .question-edit-actions {
@@ -3508,7 +3792,7 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           margin-top: 16px;
           padding-top: 16px;
-          border-top: 1px solid #e2e8f0;
+          border-top: 1px solid rgba(56, 189, 248, 0.1);
         }
 
         .btn.btn-sm {
@@ -3535,11 +3819,11 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .answer-status.correct {
-          color: #10b981;
+          color: #34d399;
         }
 
         .answer-status.incorrect {
-          color: #ef4444;
+          color: #f87171;
         }
 
         .question-text {
@@ -3547,7 +3831,7 @@ const DocumentRAGPanel: React.FC = () => {
           font-weight: 600;
           margin-bottom: 20px;
           line-height: 1.6;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .question-options {
@@ -3561,31 +3845,31 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 14px;
           padding: 14px 18px;
-          background: white;
-          border: 2px solid #e2e8f0;
+          background: rgba(15, 23, 42, 0.5);
+          border: 1px solid rgba(56, 189, 248, 0.1);
           border-radius: 12px;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .option-label:hover:not(.correct-answer):not(.wrong-answer) {
-          border-color: var(--primary, #3b82f6);
-          background: #eff6ff;
+          border-color: rgba(56, 189, 248, 0.3);
+          background: rgba(56, 189, 248, 0.06);
         }
 
         .option-label.selected {
-          border-color: var(--primary, #3b82f6);
-          background: #eff6ff;
+          border-color: #38bdf8;
+          background: rgba(56, 189, 248, 0.1);
         }
 
         .option-label.correct-answer {
           border-color: #10b981;
-          background: #ecfdf5;
+          background: rgba(34, 197, 94, 0.1);
         }
 
         .option-label.wrong-answer {
           border-color: #ef4444;
-          background: #fef2f2;
+          background: rgba(220, 38, 38, 0.1);
         }
 
         .option-label input {
@@ -3594,38 +3878,38 @@ const DocumentRAGPanel: React.FC = () => {
 
         .option-key {
           font-weight: 700;
-          color: #475569;
+          color: #94a3b8;
           min-width: 28px;
           height: 28px;
           display: flex;
           align-items: center;
           justify-content: center;
-          background: #f1f5f9;
-          border: 1px solid #e2e8f0;
+          background: rgba(100, 116, 139, 0.15);
+          border: 1px solid rgba(100, 116, 139, 0.2);
           border-radius: 8px;
           font-size: 0.85rem;
         }
 
         .correct-answer .option-key {
-          background: #dcfce7;
-          border-color: #10b981;
-          color: #166534;
+          background: rgba(52, 211, 153, 0.15);
+          border-color: #34d399;
+          color: #34d399;
         }
 
         .option-value {
           font-size: 0.9rem;
-          color: #1e293b;
+          color: #e2e8f0;
           font-weight: 500;
         }
 
         .question-explanation {
           margin-top: 20px;
           padding: 16px;
-          background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-          border: 2px solid #f59e0b;
+          background: rgba(251, 191, 36, 0.06);
+          border: 1px solid rgba(251, 191, 36, 0.2);
           border-radius: 12px;
           font-size: 0.875rem;
-          color: #78350f;
+          color: #fbbf24;
           font-weight: 500;
           line-height: 1.5;
         }
@@ -3653,34 +3937,35 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-secondary {
-          background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
-          color: #475569;
-          border: 1px solid #cbd5e1;
+          background: rgba(22, 33, 55, 0.75);
+          color: #94a3b8;
+          border: 1px solid rgba(56, 189, 248, 0.22);
         }
 
         .btn-secondary:hover:not(:disabled) {
-          background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
-          color: #334155;
+          background: rgba(56, 189, 248, 0.12);
+          color: #e2e8f0;
+          border-color: rgba(56, 189, 248, 0.4);
         }
 
         .edit-question-text {
           width: 100%;
           padding: 14px;
-          border: 2px solid #e2e8f0;
+          border: 2px solid rgba(56, 189, 248, 0.22);
           border-radius: 10px;
           font-size: 1rem;
           font-weight: 500;
           margin-bottom: 16px;
           font-family: inherit;
           resize: vertical;
-          color: #1e293b;
-          background: #f8fafc;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
         }
 
         .edit-question-text:focus {
           outline: none;
-          border-color: var(--primary, #3b82f6);
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
         }
 
         .question-options.edit-mode {
@@ -3694,24 +3979,24 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 12px;
           padding: 14px;
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-          border: 2px solid #e2e8f0;
+          background: rgba(15, 23, 42, 0.5);
+          border: 1px solid rgba(56, 189, 248, 0.1);
           border-radius: 12px;
         }
 
         .edit-option-input {
           flex: 1;
           padding: 10px 14px;
-          border: 2px solid #e2e8f0;
+          border: 2px solid rgba(56, 189, 248, 0.15);
           border-radius: 8px;
           font-size: 0.9rem;
-          color: #1e293b;
-          background: white;
+          color: #e2e8f0;
+          background: rgba(15, 23, 42, 0.6);
         }
 
         .edit-option-input:focus {
           outline: none;
-          border-color: var(--primary, #3b82f6);
+          border-color: #38bdf8;
         }
 
         .correct-label {
@@ -3719,7 +4004,7 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           font-size: 0.8125rem;
-          color: #10b981;
+          color: #34d399;
           font-weight: 500;
           white-space: nowrap;
           cursor: pointer;
@@ -3735,23 +4020,25 @@ const DocumentRAGPanel: React.FC = () => {
         .edit-explanation label {
           font-size: 0.875rem;
           font-weight: 500;
-          color: var(--text-secondary, #6b7280);
+          color: #94a3b8;
         }
 
         .edit-explanation textarea {
           width: 100%;
           padding: 10px 12px;
-          border: 1px solid var(--border-color, #d1d5db);
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 8px;
           font-size: 0.8125rem;
           font-family: inherit;
           resize: vertical;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
         }
 
         .edit-explanation textarea:focus {
           outline: none;
-          border-color: var(--primary, #3b82f6);
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
         }
 
         .correct-icon {
@@ -3762,11 +4049,12 @@ const DocumentRAGPanel: React.FC = () => {
         
         /* Selected Topics Preview at Top */
         .selected-topics-preview {
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          border: 2px solid #10b981;
+          background: rgba(52, 211, 153, 0.08);
+          border: 1px solid rgba(52, 211, 153, 0.25);
           border-radius: 16px;
           padding: 16px;
           margin-bottom: 20px;
+          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(52, 211, 153, 0.05);
         }
 
         .selected-topics-header {
@@ -3782,7 +4070,7 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           font-size: 0.9rem;
           font-weight: 600;
-          color: #065f46;
+          color: #34d399;
         }
 
         .btn-clear-all {
@@ -3790,19 +4078,19 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 4px;
           padding: 6px 12px;
-          background: white;
-          border: 1px solid #fca5a5;
+          background: rgba(248, 113, 113, 0.08);
+          border: 1px solid rgba(248, 113, 113, 0.2);
           border-radius: 8px;
           font-size: 0.8rem;
           font-weight: 500;
-          color: #dc2626;
+          color: #f87171;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .btn-clear-all:hover {
-          background: #fee2e2;
-          border-color: #f87171;
+          background: rgba(248, 113, 113, 0.15);
+          border-color: rgba(248, 113, 113, 0.3);
         }
 
         .selected-topics-chips {
@@ -3816,12 +4104,12 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 6px 12px;
-          background: white;
-          border: 1px solid #10b981;
+          background: rgba(52, 211, 153, 0.08);
+          border: 1px solid rgba(52, 211, 153, 0.2);
           border-radius: 20px;
           font-size: 0.85rem;
           font-weight: 500;
-          color: #065f46;
+          color: #34d399;
         }
 
         .chip-remove {
@@ -3831,17 +4119,17 @@ const DocumentRAGPanel: React.FC = () => {
           width: 18px;
           height: 18px;
           padding: 0;
-          background: #dcfce7;
+          background: rgba(248, 113, 113, 0.1);
           border: none;
           border-radius: 50%;
           cursor: pointer;
-          color: #065f46;
+          color: #f87171;
           transition: all 0.15s ease;
         }
 
         .chip-remove:hover {
-          background: #fecaca;
-          color: #dc2626;
+          background: rgba(248, 113, 113, 0.2);
+          color: #ef4444;
         }
 
         /* Document Topic Selector */
@@ -3855,7 +4143,7 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           font-size: 0.9rem;
           font-weight: 600;
-          color: #374151;
+          color: #cbd5e1;
           margin-bottom: 12px;
         }
 
@@ -3866,21 +4154,23 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .document-card {
-          background: white;
-          border: 2px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.75);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 16px;
           overflow: hidden;
           transition: all 0.2s ease;
+          box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.03);
         }
 
         .document-card:hover {
-          border-color: #cbd5e1;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+          border-color: rgba(56, 189, 248, 0.35);
+          box-shadow: 0 4px 20px rgba(56, 189, 248, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
         }
 
         .document-card.expanded {
-          border-color: #3b82f6;
-          box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+          box-shadow: 0 6px 24px rgba(56, 189, 248, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .document-card-header {
@@ -3893,12 +4183,12 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .document-card-header:hover {
-          background: #f8fafc;
+          background: rgba(56, 189, 248, 0.04);
         }
 
         .document-card.expanded .document-card-header {
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          border-bottom: 1px solid #bfdbfe;
+          background: rgba(56, 189, 248, 0.08);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
         }
 
         .doc-info {
@@ -3908,7 +4198,7 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .doc-icon {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .doc-details {
@@ -3920,7 +4210,7 @@ const DocumentRAGPanel: React.FC = () => {
         .doc-details .doc-name {
           font-size: 0.95rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .doc-details .doc-meta {
@@ -3949,22 +4239,22 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           width: 32px;
           height: 32px;
-          background: #f1f5f9;
+          background: rgba(100, 116, 139, 0.15);
           border-radius: 8px;
           color: #64748b;
           transition: all 0.2s ease;
         }
 
         .expand-icon.expanded {
-          background: #3b82f6;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
           transform: rotate(180deg);
         }
 
         .document-card-content {
           padding: 16px;
-          background: #fafbfc;
-          border-top: 1px solid #e2e8f0;
+          background: rgba(15, 23, 42, 0.5);
+          border-top: 1px solid rgba(56, 189, 248, 0.12);
         }
 
         .topics-toolbar {
@@ -3978,19 +4268,20 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 6px 12px;
-          background: white;
-          border: 1px solid #d1d5db;
+          background: rgba(22, 33, 55, 0.75);
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 8px;
           font-size: 0.8rem;
           font-weight: 500;
-          color: #4b5563;
+          color: #94a3b8;
           cursor: pointer;
           transition: all 0.15s ease;
         }
 
         .btn-select-all:hover {
-          background: #f3f4f6;
-          border-color: #9ca3af;
+          background: rgba(56, 189, 248, 0.12);
+          border-color: rgba(56, 189, 248, 0.4);
+          color: #38bdf8;
         }
 
         .topics-grid {
@@ -4004,27 +4295,27 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 10px 16px;
-          background: white;
-          border: 2px solid #e2e8f0;
+          background: rgba(22, 33, 55, 0.65);
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 25px;
           font-size: 0.875rem;
           font-weight: 500;
-          color: #374151;
+          color: #cbd5e1;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .topic-tag:hover:not(:disabled) {
-          border-color: #3b82f6;
-          background: #eff6ff;
+          border-color: rgba(56, 189, 248, 0.4);
+          background: rgba(56, 189, 248, 0.12);
           transform: translateY(-1px);
         }
 
         .topic-tag.selected {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-          border-color: #2563eb;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+          border-color: #0ea5e9;
           color: white;
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.35);
         }
 
         .topic-tag .check-icon {
@@ -4056,7 +4347,7 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 8px;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           margin-bottom: 12px;
           font-size: 0.95rem;
         }
@@ -4067,9 +4358,9 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: space-between;
           width: 100%;
           padding: 16px 20px;
-          border: 2px dashed #cbd5e1;
+          border: 2px dashed rgba(56, 189, 248, 0.3);
           border-radius: 12px;
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+          background: rgba(22, 33, 55, 0.55);
           color: #64748b;
           font-size: 0.95rem;
           font-weight: 500;
@@ -4078,9 +4369,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-select-topics:hover:not(:disabled) {
-          border-color: #3b82f6;
-          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-          color: #3b82f6;
+          border-color: rgba(56, 189, 248, 0.5);
+          background: rgba(56, 189, 248, 0.08);
+          color: #38bdf8;
         }
 
         .btn-select-topics:disabled {
@@ -4100,18 +4391,20 @@ const DocumentRAGPanel: React.FC = () => {
           gap: 8px;
           margin-top: 8px;
           padding: 12px 16px;
-          background: #fef3c7;
-          border: 1px solid #fcd34d;
+          background: rgba(251, 191, 36, 0.08);
+          border: 1px solid rgba(251, 191, 36, 0.25);
           border-radius: 10px;
-          color: #92400e;
+          color: #fbbf24;
           font-size: 0.85rem;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
 
         .selected-topics-preview {
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          border: 1px solid #6ee7b7;
+          background: rgba(52, 211, 153, 0.08);
+          border: 1px solid rgba(52, 211, 153, 0.25);
           border-radius: 12px;
           padding: 16px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
 
         .selected-topics-header {
@@ -4125,7 +4418,7 @@ const DocumentRAGPanel: React.FC = () => {
           display: flex;
           align-items: center;
           gap: 8px;
-          color: #059669;
+          color: #34d399;
           font-weight: 600;
           font-size: 0.9rem;
         }
@@ -4150,21 +4443,21 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-edit-topics {
-          background: #3b82f6;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
         }
 
         .btn-edit-topics:hover {
-          background: #2563eb;
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
         }
 
         .btn-clear-all {
-          background: #fee2e2;
-          color: #dc2626;
+          background: rgba(248, 113, 113, 0.08);
+          color: #f87171;
         }
 
         .btn-clear-all:hover {
-          background: #fecaca;
+          background: rgba(248, 113, 113, 0.15);
         }
 
         .selected-topics-chips {
@@ -4178,17 +4471,17 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 6px 12px;
-          background: white;
-          border: 1px solid #d1fae5;
+          background: rgba(52, 211, 153, 0.08);
+          border: 1px solid rgba(52, 211, 153, 0.2);
           border-radius: 20px;
           font-size: 0.82rem;
-          color: #047857;
+          color: #34d399;
           font-weight: 500;
         }
 
         .topic-chip.more {
-          background: #ecfdf5;
-          color: #059669;
+          background: rgba(52, 211, 153, 0.06);
+          color: #34d399;
           font-style: italic;
         }
 
@@ -4199,13 +4492,14 @@ const DocumentRAGPanel: React.FC = () => {
           left: 0;
           right: 0;
           bottom: 0;
-          background: rgba(0, 0, 0, 0.5);
+          background: rgba(0, 0, 0, 0.75);
           display: flex;
           align-items: center;
           justify-content: center;
           z-index: 1000;
           padding: 20px;
           animation: fadeIn 0.2s ease;
+          backdrop-filter: blur(4px);
         }
 
         @keyframes fadeIn {
@@ -4214,14 +4508,16 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .topic-modal {
-          background: white;
+          background: rgba(22, 33, 55, 0.97);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(56, 189, 248, 0.25);
           border-radius: 16px;
           width: 100%;
           max-width: 700px;
           max-height: 85vh;
           display: flex;
           flex-direction: column;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(56, 189, 248, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05);
           animation: slideUp 0.3s ease;
         }
 
@@ -4241,7 +4537,8 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           justify-content: space-between;
           padding: 20px 24px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
+          background: rgba(15, 23, 42, 0.4);
         }
 
         .modal-header h3 {
@@ -4251,11 +4548,11 @@ const DocumentRAGPanel: React.FC = () => {
           margin: 0;
           font-size: 1.15rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .modal-header h3 svg {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .modal-close {
@@ -4266,16 +4563,15 @@ const DocumentRAGPanel: React.FC = () => {
           padding: 0 12px;
           height: 40px;
           min-width: 80px;
-          border: 2px solid #e5e7eb;
+          border: 1px solid rgba(248, 113, 113, 0.2);
           border-radius: 12px;
-          background: white;
-          color: #6b7280;
+          background: rgba(248, 113, 113, 0.06);
+          color: #f87171;
           font-size: 0.9rem;
           font-weight: 600;
           cursor: pointer;
           transition: all 0.2s ease;
           flex-shrink: 0;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
         .modal-close svg {
@@ -4290,11 +4586,10 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .modal-close:hover {
-          background: #fee2e2;
-          border-color: #fca5a5;
-          color: #dc2626;
+          background: rgba(248, 113, 113, 0.12);
+          border-color: rgba(248, 113, 113, 0.35);
+          color: #ef4444;
           transform: scale(1.02);
-          box-shadow: 0 4px 8px rgba(220, 38, 38, 0.2);
         }
 
         .modal-close:active {
@@ -4306,8 +4601,8 @@ const DocumentRAGPanel: React.FC = () => {
           display: flex;
           gap: 8px;
           padding: 16px 24px;
-          background: #f8fafc;
-          border-bottom: 1px solid #e5e7eb;
+          background: rgba(15, 23, 42, 0.5);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.12);
         }
 
         .source-tab {
@@ -4317,9 +4612,9 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           gap: 8px;
           padding: 12px 16px;
-          border: 2px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 10px;
-          background: white;
+          background: rgba(22, 33, 55, 0.65);
           color: #64748b;
           font-size: 0.9rem;
           font-weight: 600;
@@ -4328,14 +4623,14 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .source-tab:hover {
-          border-color: #3b82f6;
-          color: #3b82f6;
-          background: #f0f7ff;
+          border-color: rgba(56, 189, 248, 0.4);
+          color: #38bdf8;
+          background: rgba(56, 189, 248, 0.1);
         }
 
         .source-tab.active {
-          border-color: #3b82f6;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          border-color: #38bdf8;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
         }
 
@@ -4363,7 +4658,7 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           justify-content: center;
           padding: 48px 24px;
-          color: #94a3b8;
+          color: #64748b;
           text-align: center;
         }
 
@@ -4393,37 +4688,38 @@ const DocumentRAGPanel: React.FC = () => {
 
         .modal-body::-webkit-scrollbar-track,
         .quiz-modal-body::-webkit-scrollbar-track {
-          background: #f1f5f9;
+          background: rgba(15, 23, 42, 0.3);
           border-radius: 10px;
         }
 
         .modal-body::-webkit-scrollbar-thumb,
         .quiz-modal-body::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
+          background: rgba(56, 189, 248, 0.15);
           border-radius: 10px;
-          border: 2px solid #f1f5f9;
+          border: 2px solid transparent;
         }
 
         .modal-body::-webkit-scrollbar-thumb:hover,
         .quiz-modal-body::-webkit-scrollbar-thumb:hover {
-          background: #94a3b8;
+          background: rgba(56, 189, 248, 0.25);
         }
 
         .modal-selected-summary {
           display: flex;
           align-items: center;
           padding: 12px 16px;
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          border: 1px solid #6ee7b7;
+          background: rgba(52, 211, 153, 0.08);
+          border: 1px solid rgba(52, 211, 153, 0.25);
           border-radius: 10px;
           margin-bottom: 16px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
 
         .summary-label {
           display: flex;
           align-items: center;
           gap: 8px;
-          color: #059669;
+          color: #34d399;
           font-weight: 600;
           font-size: 0.9rem;
         }
@@ -4435,19 +4731,20 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .modal-doc-card {
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 12px;
           overflow: hidden;
           transition: all 0.2s ease;
+          background: rgba(22, 33, 55, 0.5);
         }
 
         .modal-doc-card:hover {
-          border-color: #94a3b8;
+          border-color: rgba(56, 189, 248, 0.35);
         }
 
         .modal-doc-card.expanded {
-          border-color: #3b82f6;
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+          box-shadow: 0 4px 20px rgba(56, 189, 248, 0.12);
         }
 
         .modal-doc-header {
@@ -4455,18 +4752,18 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 12px;
           padding: 14px 16px;
-          background: #f8fafc;
+          background: rgba(15, 23, 42, 0.5);
           cursor: pointer;
           transition: background 0.2s ease;
         }
 
         .modal-doc-header:hover {
-          background: #f1f5f9;
+          background: rgba(56, 189, 248, 0.08);
         }
 
         .modal-doc-card.expanded .modal-doc-header {
-          background: #eff6ff;
-          border-bottom: 1px solid #e5e7eb;
+          background: rgba(56, 189, 248, 0.08);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.14);
         }
 
         .modal-doc-checkbox {
@@ -4478,7 +4775,7 @@ const DocumentRAGPanel: React.FC = () => {
           width: 18px;
           height: 18px;
           cursor: pointer;
-          accent-color: #3b82f6;
+          accent-color: #38bdf8;
         }
 
         .modal-doc-info {
@@ -4489,7 +4786,7 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .modal-doc-info .doc-icon {
-          color: #3b82f6;
+          color: #38bdf8;
         }
 
         .modal-doc-details {
@@ -4500,7 +4797,7 @@ const DocumentRAGPanel: React.FC = () => {
 
         .modal-doc-name {
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           font-size: 0.9rem;
         }
 
@@ -4517,11 +4814,11 @@ const DocumentRAGPanel: React.FC = () => {
 
         .modal-selected-badge {
           padding: 4px 10px;
-          background: #dbeafe;
+          background: rgba(56, 189, 248, 0.12);
           border-radius: 20px;
           font-size: 0.75rem;
           font-weight: 600;
-          color: #2563eb;
+          color: #38bdf8;
         }
 
         .modal-expand-icon {
@@ -4537,7 +4834,7 @@ const DocumentRAGPanel: React.FC = () => {
 
         .modal-doc-topics {
           padding: 16px;
-          background: white;
+          background: rgba(15, 23, 42, 0.5);
         }
 
         .modal-topics-toolbar {
@@ -4549,10 +4846,10 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 6px 12px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 8px;
-          background: white;
-          color: #64748b;
+          background: rgba(22, 33, 55, 0.65);
+          color: #94a3b8;
           font-size: 0.8rem;
           font-weight: 500;
           cursor: pointer;
@@ -4560,9 +4857,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-modal-select-all:hover {
-          border-color: #3b82f6;
-          color: #3b82f6;
-          background: #eff6ff;
+          border-color: rgba(56, 189, 248, 0.4);
+          color: #38bdf8;
+          background: rgba(56, 189, 248, 0.1);
         }
 
         .modal-topics-grid {
@@ -4576,25 +4873,25 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 8px 14px;
-          border: 2px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 20px;
-          background: white;
+          background: rgba(22, 33, 55, 0.65);
           font-size: 0.85rem;
-          color: #374151;
+          color: #cbd5e1;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .modal-topic-tag:hover {
-          border-color: #3b82f6;
-          background: #eff6ff;
+          border-color: rgba(56, 189, 248, 0.4);
+          background: rgba(56, 189, 248, 0.12);
         }
 
         .modal-topic-tag.selected {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-          border-color: #2563eb;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+          border-color: #0ea5e9;
           color: white;
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.35);
         }
 
         .modal-topic-tag .check-icon {
@@ -4617,8 +4914,8 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: flex-end;
           gap: 12px;
           padding: 16px 24px;
-          border-top: 1px solid #e5e7eb;
-          background: #f8fafc;
+          border-top: 1px solid rgba(56, 189, 248, 0.18);
+          background: rgba(15, 23, 42, 0.5);
         }
 
         .modal-footer .btn {
@@ -4634,30 +4931,30 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .modal-footer .btn-secondary {
-          background: white;
-          border: 1px solid #e5e7eb;
-          color: #64748b;
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(56, 189, 248, 0.15);
+          color: #94a3b8;
         }
 
         .modal-footer .btn-secondary:hover {
-          background: #f1f5f9;
-          color: #374151;
+          background: rgba(56, 189, 248, 0.08);
+          color: #e2e8f0;
         }
 
         .modal-footer .btn-primary {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           border: none;
           color: white;
         }
 
         .modal-footer .btn-primary:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+          box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4);
         }
 
         .modal-footer .btn-primary:disabled {
-          background: #cbd5e1;
+          background: rgba(100, 116, 139, 0.3);
           cursor: not-allowed;
         }
 
@@ -4671,8 +4968,8 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           justify-content: space-between;
           padding: 16px 20px;
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          border: 1px solid #6ee7b7;
+          background: rgba(52, 211, 153, 0.06);
+          border: 1px solid rgba(52, 211, 153, 0.2);
           border-radius: 12px;
           gap: 16px;
         }
@@ -4685,7 +4982,7 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-preview-info .quiz-icon {
-          color: #059669;
+          color: #34d399;
         }
 
         .quiz-preview-details {
@@ -4696,13 +4993,13 @@ const DocumentRAGPanel: React.FC = () => {
 
         .quiz-preview-title {
           font-weight: 600;
-          color: #047857;
+          color: #34d399;
           font-size: 0.95rem;
         }
 
         .quiz-preview-meta {
           font-size: 0.82rem;
-          color: #059669;
+          color: #94a3b8;
           max-width: 300px;
           white-space: nowrap;
           overflow: hidden;
@@ -4727,38 +5024,40 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-preview-actions .btn-primary {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           border: none;
           color: white;
         }
 
         .quiz-preview-actions .btn-primary:hover {
-          background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+          box-shadow: 0 4px 12px rgba(56, 189, 248, 0.35);
         }
 
         .quiz-preview-actions .btn-new-quiz {
-          background: white;
-          border: 1px solid #d1fae5;
-          color: #059669;
+          background: rgba(52, 211, 153, 0.06);
+          border: 1px solid rgba(52, 211, 153, 0.2);
+          color: #34d399;
         }
 
         .quiz-preview-actions .btn-new-quiz:hover {
-          background: #ecfdf5;
-          border-color: #6ee7b7;
+          background: rgba(52, 211, 153, 0.12);
+          border-color: rgba(52, 211, 153, 0.3);
         }
 
         /* Quiz Modal Styles */
         .quiz-modal {
-          background: white;
+          background: rgba(22, 33, 55, 0.97);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(56, 189, 248, 0.25);
           border-radius: 16px;
           width: 100%;
           max-width: 800px;
           max-height: 90vh;
           display: flex;
           flex-direction: column;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(56, 189, 248, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05);
           animation: slideUp 0.3s ease;
         }
 
@@ -4767,8 +5066,8 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 12px;
           padding: 20px 24px;
-          border-bottom: 1px solid #e5e7eb;
-          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
+          background: rgba(15, 23, 42, 0.5);
           border-radius: 16px 16px 0 0;
         }
 
@@ -4779,7 +5078,7 @@ const DocumentRAGPanel: React.FC = () => {
           margin: 0;
           font-size: 1.1rem;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           flex: 1;
           white-space: nowrap;
           overflow: hidden;
@@ -4787,7 +5086,7 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-modal-header h3 svg {
-          color: #3b82f6;
+          color: #38bdf8;
           flex-shrink: 0;
         }
 
@@ -4799,11 +5098,11 @@ const DocumentRAGPanel: React.FC = () => {
 
         .quiz-count {
           padding: 4px 12px;
-          background: #dbeafe;
+          background: rgba(56, 189, 248, 0.12);
           border-radius: 20px;
           font-size: 0.8rem;
           font-weight: 600;
-          color: #2563eb;
+          color: #38bdf8;
         }
 
         .quiz-modal-body {
@@ -4819,21 +5118,21 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-modal .quiz-question {
-          background: white;
-          border: 1px solid #e5e7eb;
+          background: rgba(22, 33, 55, 0.65);
+          border: 1px solid rgba(56, 189, 248, 0.16);
           border-radius: 12px;
           padding: 16px;
           transition: all 0.2s ease;
         }
 
         .quiz-modal .quiz-question:hover {
-          border-color: #94a3b8;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+          border-color: rgba(56, 189, 248, 0.3);
+          box-shadow: 0 2px 16px rgba(56, 189, 248, 0.1);
         }
 
         .quiz-modal .quiz-question.editing {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+          border-color: rgba(56, 189, 248, 0.3);
+          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.06);
         }
 
         .quiz-modal .question-header {
@@ -4845,10 +5144,10 @@ const DocumentRAGPanel: React.FC = () => {
 
         .quiz-modal .question-number {
           font-weight: 700;
-          color: #3b82f6;
+          color: #38bdf8;
           font-size: 0.9rem;
           padding: 4px 12px;
-          background: #eff6ff;
+          background: rgba(56, 189, 248, 0.1);
           border-radius: 6px;
         }
 
@@ -4857,25 +5156,25 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 4px;
           padding: 4px 10px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.22);
           border-radius: 6px;
-          background: white;
-          color: #64748b;
+          background: rgba(22, 33, 55, 0.65);
+          color: #94a3b8;
           font-size: 0.75rem;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .quiz-modal .btn-edit-question:hover {
-          border-color: #3b82f6;
-          color: #3b82f6;
-          background: #eff6ff;
+          border-color: #38bdf8;
+          color: #38bdf8;
+          background: rgba(56, 189, 248, 0.06);
         }
 
         .quiz-modal .question-text {
           font-size: 0.95rem;
           line-height: 1.6;
-          color: #1e293b;
+          color: #e2e8f0;
           margin-bottom: 12px;
         }
 
@@ -4890,37 +5189,37 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 10px;
           padding: 10px 14px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.14);
           border-radius: 8px;
-          background: #f8fafc;
+          background: rgba(15, 23, 42, 0.5);
           transition: all 0.2s ease;
         }
 
         .quiz-modal .option-label.correct-answer {
-          background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-          border-color: #6ee7b7;
+          background: rgba(52, 211, 153, 0.08);
+          border-color: rgba(52, 211, 153, 0.2);
         }
 
         .quiz-modal .option-key {
           font-weight: 700;
-          color: #3b82f6;
+          color: #38bdf8;
           min-width: 24px;
         }
 
         .quiz-modal .option-value {
           flex: 1;
-          color: #374151;
+          color: #cbd5e1;
           font-size: 0.9rem;
         }
 
         .quiz-modal .question-explanation {
           margin-top: 12px;
           padding: 12px;
-          background: #fffbeb;
-          border: 1px solid #fcd34d;
+          background: rgba(251, 191, 36, 0.06);
+          border: 1px solid rgba(251, 191, 36, 0.2);
           border-radius: 8px;
           font-size: 0.85rem;
-          color: #92400e;
+          color: #fbbf24;
         }
 
         .quiz-modal .edit-question-text,
@@ -4928,19 +5227,21 @@ const DocumentRAGPanel: React.FC = () => {
         .quiz-modal .edit-explanation textarea {
           width: 100%;
           padding: 10px 12px;
-          border: 2px solid #e5e7eb;
+          border: 2px solid rgba(56, 189, 248, 0.15);
           border-radius: 8px;
           font-size: 0.9rem;
           font-family: inherit;
           resize: vertical;
           transition: border-color 0.2s ease;
+          color: #e2e8f0;
+          background: rgba(15, 23, 42, 0.6);
         }
 
         .quiz-modal .edit-question-text:focus,
         .quiz-modal .edit-option-input:focus,
         .quiz-modal .edit-explanation textarea:focus {
           outline: none;
-          border-color: #3b82f6;
+          border-color: #38bdf8;
         }
 
         .quiz-modal .edit-option {
@@ -4955,7 +5256,7 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 4px;
           font-size: 0.8rem;
-          color: #64748b;
+          color: #94a3b8;
           cursor: pointer;
         }
 
@@ -4968,7 +5269,7 @@ const DocumentRAGPanel: React.FC = () => {
           margin-bottom: 6px;
           font-size: 0.85rem;
           font-weight: 500;
-          color: #64748b;
+          color: #94a3b8;
         }
 
         .quiz-modal .question-edit-actions {
@@ -4990,13 +5291,14 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-modal .btn-secondary {
-          background: #f1f5f9;
-          border: 1px solid #e5e7eb;
-          color: #64748b;
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(56, 189, 248, 0.15);
+          color: #94a3b8;
         }
 
         .quiz-modal .btn-secondary:hover {
-          background: #e2e8f0;
+          background: rgba(56, 189, 248, 0.08);
+          color: #e2e8f0;
         }
 
         .quiz-modal .btn-success {
@@ -5016,8 +5318,8 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: flex-end;
           gap: 12px;
           padding: 16px 24px;
-          border-top: 1px solid #e5e7eb;
-          background: #f8fafc;
+          border-top: 1px solid rgba(56, 189, 248, 0.18);
+          background: rgba(15, 23, 42, 0.5);
           border-radius: 0 0 16px 16px;
           position: sticky;
           bottom: 0;
@@ -5036,24 +5338,24 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-modal-footer .btn-secondary {
-          background: white;
-          border: 1px solid #e5e7eb;
-          color: #64748b;
+          background: rgba(22, 33, 55, 0.75);
+          border: 1px solid rgba(56, 189, 248, 0.22);
+          color: #94a3b8;
         }
 
         .quiz-modal-footer .btn-secondary:hover {
-          background: #f1f5f9;
-          color: #374151;
+          background: rgba(56, 189, 248, 0.12);
+          color: #e2e8f0;
         }
 
         .quiz-modal-footer .btn-outline {
-          background: white;
-          border: 2px solid #3b82f6;
-          color: #3b82f6;
+          background: rgba(22, 33, 55, 0.75);
+          border: 2px solid #38bdf8;
+          color: #38bdf8;
         }
 
         .quiz-modal-footer .btn-outline:hover:not(:disabled) {
-          background: #eff6ff;
+          background: rgba(56, 189, 248, 0.12);
         }
 
         .quiz-modal-footer .btn-download-local {
@@ -5063,19 +5365,19 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .quiz-modal-footer .btn-export {
-          background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
           border: none;
           color: white;
         }
 
         .quiz-modal-footer .btn-export:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+          box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4);
         }
 
         .quiz-modal-footer .btn-export:disabled {
-          background: #cbd5e1;
+          background: rgba(100, 116, 139, 0.3);
           cursor: not-allowed;
         }
 
@@ -5085,14 +5387,16 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .edit-topics-modal {
-          background: white;
+          background: rgba(22, 33, 55, 0.97);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(56, 189, 248, 0.25);
           border-radius: 16px;
           width: 100%;
           max-width: 750px;
           max-height: 85vh;
           display: flex;
           flex-direction: column;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(56, 189, 248, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05);
           animation: slideUp 0.3s ease;
         }
 
@@ -5100,21 +5404,21 @@ const DocumentRAGPanel: React.FC = () => {
           flex: 1;
           overflow-y: auto;
           padding: 20px 24px;
-          padding-bottom: 40px; /* Giảm padding để khoảng cách hợp lý hơn */
+          padding-bottom: 40px;
         }
 
         .edit-topics-body {
           display: flex;
           flex-direction: column;
           gap: 20px;
-          overflow: visible; /* Bỏ scroll inner */
+          overflow: visible;
         }
 
         .add-topic-section label,
         .edit-topics-list label {
           display: block;
           font-weight: 600;
-          color: #1e293b;
+          color: #e2e8f0;
           margin-bottom: 10px;
           font-size: 0.9rem;
         }
@@ -5127,16 +5431,18 @@ const DocumentRAGPanel: React.FC = () => {
         .add-topic-input {
           flex: 1;
           padding: 12px 16px;
-          border: 2px solid #e5e7eb;
+          border: 2px solid rgba(56, 189, 248, 0.22);
           border-radius: 10px;
           font-size: 0.9rem;
           transition: all 0.2s ease;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
         }
 
         .add-topic-input:focus {
           outline: none;
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
         }
 
         .btn-add-topic {
@@ -5160,7 +5466,7 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-add-topic:disabled {
-          background: #cbd5e1;
+          background: rgba(100, 116, 139, 0.3);
           cursor: not-allowed;
         }
 
@@ -5170,8 +5476,8 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           gap: 10px;
           padding: 40px 20px;
-          background: #f8fafc;
-          border: 2px dashed #e5e7eb;
+          background: rgba(22, 33, 55, 0.5);
+          border: 2px dashed rgba(56, 189, 248, 0.22);
           border-radius: 12px;
           color: #64748b;
           font-size: 0.9rem;
@@ -5181,25 +5487,22 @@ const DocumentRAGPanel: React.FC = () => {
           display: flex;
           flex-direction: column;
           gap: 8px;
-          /* Bỏ max-height và overflow để sử dụng scroll của modal-body */
         }
-
-        /* Bỏ scrollbar styles cho topics-edit-grid */
 
         .topic-edit-item {
           display: flex;
           align-items: center;
           gap: 12px;
           padding: 12px 16px;
-          background: #f8fafc;
-          border: 1px solid #e5e7eb;
+          background: rgba(22, 33, 55, 0.55);
+          border: 1px solid rgba(56, 189, 248, 0.15);
           border-radius: 10px;
           transition: all 0.2s ease;
         }
 
         .topic-edit-item:hover {
-          background: #f1f5f9;
-          border-color: #94a3b8;
+          background: rgba(56, 189, 248, 0.08);
+          border-color: rgba(56, 189, 248, 0.3);
         }
 
         .topic-number {
@@ -5208,7 +5511,7 @@ const DocumentRAGPanel: React.FC = () => {
           justify-content: center;
           min-width: 28px;
           height: 28px;
-          background: #3b82f6;
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           color: white;
           border-radius: 8px;
           font-size: 0.8rem;
@@ -5218,7 +5521,7 @@ const DocumentRAGPanel: React.FC = () => {
         .topic-name {
           flex: 1;
           font-size: 0.9rem;
-          color: #1e293b;
+          color: #e2e8f0;
         }
 
         .topic-actions {
@@ -5235,10 +5538,10 @@ const DocumentRAGPanel: React.FC = () => {
           padding: 8px 12px;
           min-width: 70px;
           height: 32px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.18);
           border-radius: 8px;
-          background: white;
-          color: #64748b;
+          background: rgba(22, 33, 55, 0.65);
+          color: #94a3b8;
           font-size: 0.8rem;
           font-weight: 500;
           cursor: pointer;
@@ -5246,15 +5549,15 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-edit-topic:hover {
-          background: #eff6ff;
-          border-color: #3b82f6;
-          color: #3b82f6;
+          background: rgba(56, 189, 248, 0.12);
+          border-color: #38bdf8;
+          color: #38bdf8;
         }
 
         .btn-delete-topic:hover {
-          background: #fee2e2;
-          border-color: #fca5a5;
-          color: #dc2626;
+          background: rgba(248, 113, 113, 0.12);
+          border-color: rgba(248, 113, 113, 0.4);
+          color: #f87171;
         }
 
         .topic-edit-inline {
@@ -5267,10 +5570,12 @@ const DocumentRAGPanel: React.FC = () => {
         .topic-edit-input {
           flex: 1;
           padding: 8px 12px;
-          border: 2px solid #3b82f6;
+          border: 2px solid #38bdf8;
           border-radius: 8px;
           font-size: 0.9rem;
           outline: none;
+          color: #e2e8f0;
+          background: rgba(22, 33, 55, 0.7);
         }
 
         .btn-save-edit,
@@ -5282,7 +5587,7 @@ const DocumentRAGPanel: React.FC = () => {
           padding: 8px 12px;
           min-width: 70px;
           height: 32px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(56, 189, 248, 0.1);
           border-radius: 8px;
           font-size: 0.8rem;
           font-weight: 500;
@@ -5302,14 +5607,14 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-cancel-edit {
-          background: white;
-          color: #64748b;
+          background: rgba(15, 23, 42, 0.6);
+          color: #94a3b8;
         }
 
         .btn-cancel-edit:hover {
-          background: #f1f5f9;
-          border-color: #cbd5e1;
-          color: #374151;
+          background: rgba(56, 189, 248, 0.08);
+          border-color: rgba(56, 189, 248, 0.2);
+          color: #e2e8f0;
         }
 
         .btn-modal-edit-topics {
@@ -5317,10 +5622,10 @@ const DocumentRAGPanel: React.FC = () => {
           align-items: center;
           gap: 6px;
           padding: 6px 12px;
-          border: 1px solid #fcd34d;
+          border: 1px solid rgba(251, 191, 36, 0.2);
           border-radius: 8px;
-          background: #fffbeb;
-          color: #b45309;
+          background: rgba(251, 191, 36, 0.06);
+          color: #fbbf24;
           font-size: 0.8rem;
           font-weight: 500;
           cursor: pointer;
@@ -5328,9 +5633,9 @@ const DocumentRAGPanel: React.FC = () => {
         }
 
         .btn-modal-edit-topics:hover {
-          background: #fef3c7;
-          border-color: #f59e0b;
-          color: #92400e;
+          background: rgba(251, 191, 36, 0.1);
+          border-color: rgba(251, 191, 36, 0.3);
+          color: #f59e0b;
         }
 
         .modal-topics-toolbar {

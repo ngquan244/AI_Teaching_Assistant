@@ -11,6 +11,22 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # =============================================================================
+# Common Weak Passwords (top 50 most common)
+# =============================================================================
+
+_COMMON_PASSWORDS = frozenset({
+    "password", "12345678", "123456789", "1234567890", "qwerty123",
+    "password1", "iloveyou", "sunshine", "princess", "football",
+    "charlie", "access", "shadow", "master", "michael",
+    "qwerty", "abc12345", "abcd1234", "abcdef", "trustno1",
+    "letmein", "dragon", "baseball", "welcome", "monkey",
+    "login", "starwars", "passw0rd", "hello", "admin",
+    "pa$$w0rd", "p@ssw0rd", "p@ssword", "iloveu", "superman",
+    "batman", "test", "changeme", "secret", "opensesame",
+})
+
+
+# =============================================================================
 # Enums (mirror database enums)
 # =============================================================================
 
@@ -48,7 +64,7 @@ class SignupRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password_strength(cls, v: str) -> str:
-        """Basic password strength validation."""
+        """Comprehensive password strength validation."""
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
         if not any(c.isupper() for c in v):
@@ -57,6 +73,17 @@ class SignupRequest(BaseModel):
             raise ValueError("Password must contain at least one lowercase letter")
         if not any(c.isdigit() for c in v):
             raise ValueError("Password must contain at least one digit")
+        special_chars = set("!@#$%^&*()_+-=[]{}|;':,.<>?/`~\"\\")
+        if not any(c in special_chars for c in v):
+            raise ValueError("Password must contain at least one special character (!@#$%^&*...)")
+        # Check against common passwords (case-insensitive, ignoring trailing special chars/digits)
+        v_lower = v.lower()
+        if v_lower in _COMMON_PASSWORDS:
+            raise ValueError("This password is too common. Please choose a stronger password")
+        # Also check the base password (strip trailing special chars and digits)
+        v_base = v_lower.rstrip("!@#$%^&*()_+-=[]{}|;':,.<>?/`~\"\\0123456789")
+        if v_base and v_base in _COMMON_PASSWORDS:
+            raise ValueError("This password is too common. Please choose a stronger password")
         return v
     
     @field_validator("name")
@@ -82,6 +109,18 @@ class LoginRequest(BaseModel):
 class RefreshTokenRequest(BaseModel):
     """Request schema for token refresh."""
     refresh_token: str = Field(..., description="JWT refresh token")
+
+
+class LogoutRequest(BaseModel):
+    """Request schema for logout."""
+    refresh_token: Optional[str] = Field(
+        None,
+        description="Refresh token to revoke (optional, revokes access token from header automatically)"
+    )
+    logout_all_devices: bool = Field(
+        default=False,
+        description="If true, revoke all tokens for this user (logout everywhere)"
+    )
 
 
 class AddCanvasTokenRequest(BaseModel):
@@ -163,6 +202,20 @@ class UserProfileResponse(BaseModel):
     """User profile with Canvas tokens."""
     user: UserResponse
     canvas_tokens: List[CanvasTokenResponse] = []
+
+
+class RefreshTokenResponse(BaseModel):
+    """Response for token refresh (includes new refresh token for rotation)."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = Field(description="Token expiration in seconds")
+
+
+class MessageResponse(BaseModel):
+    """Generic message response."""
+    message: str
+    success: bool = True
 
 
 # =============================================================================

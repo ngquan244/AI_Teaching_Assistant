@@ -2,12 +2,11 @@
  * Signup Page
  * User registration form with Canvas token support
  */
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Loader2, Mail, Lock, User, Key, AlertCircle, GraduationCap, Eye, EyeOff, CheckCircle } from 'lucide-react';
+import { Loader2, Mail, Lock, User, Key, AlertCircle, GraduationCap, Eye, EyeOff, CheckCircle, UserPlus, ArrowRight } from 'lucide-react';
 import type { AxiosError } from 'axios';
-import type { ApiError } from '../api/auth';
 import './Auth.css';
 
 interface FormData {
@@ -30,6 +29,7 @@ interface FormErrors {
 const SignupPage: React.FC = () => {
   const navigate = useNavigate();
   const { signup, isLoading } = useAuth();
+  const emailInputRef = useRef<HTMLInputElement>(null);
   
   const [formData, setFormData] = useState<FormData>({
     email: '',
@@ -42,6 +42,24 @@ const SignupPage: React.FC = () => {
   const [errors, setErrors] = useState<FormErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [shakeError, setShakeError] = useState(false);
+  const [hasEntered, setHasEntered] = useState(false);
+
+  // Memoize star positions so they don't respawn on every re-render
+  const stars = useMemo(
+    () =>
+      Array.from({ length: 20 }, () => ({
+        top: `${Math.random() * 100}%`,
+        left: `${Math.random() * 100}%`,
+        '--duration': `${3 + Math.random() * 4}s`,
+        '--delay': `${Math.random() * 5}s`,
+      } as React.CSSProperties)),
+    [],
+  );
+
+  useEffect(() => {
+    emailInputRef.current?.focus();
+  }, []);
 
   /**
    * Password strength indicators
@@ -51,9 +69,26 @@ const SignupPage: React.FC = () => {
     uppercase: /[A-Z]/.test(formData.password),
     lowercase: /[a-z]/.test(formData.password),
     number: /[0-9]/.test(formData.password),
+    special: /[!@#$%^&*()_+\-=\[\]{}|;':,.<>?/`~"\\]/.test(formData.password),
   };
 
   const passwordStrength = Object.values(passwordChecks).filter(Boolean).length;
+
+  const strengthLabel = passwordStrength <= 1 ? 'weak' : passwordStrength <= 2 ? 'fair' : passwordStrength <= 3 ? 'good' : 'strong';
+
+  /**
+   * Map backend error messages to user-friendly text
+   */
+  const humanizeError = (raw: string): string => {
+    const lower = raw.toLowerCase();
+    if (lower.includes('already exists') || lower.includes('already registered') || lower.includes('duplicate')) {
+      return 'An account with this email already exists. Try signing in instead.';
+    }
+    if (lower.includes('too common')) {
+      return 'This password is too common. Please choose a more unique password.';
+    }
+    return raw;
+  };
 
   /**
    * Validate form fields
@@ -61,29 +96,27 @@ const SignupPage: React.FC = () => {
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
     
-    // Email validation
     if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
+      newErrors.email = 'Please enter your email address';
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
+      newErrors.email = 'This doesn\'t look like a valid email';
     }
     
-    // Name validation
     if (!formData.name.trim()) {
-      newErrors.name = 'Name is required';
+      newErrors.name = 'Please enter your name';
     } else if (formData.name.trim().length < 2) {
       newErrors.name = 'Name must be at least 2 characters';
     }
     
-    // Password validation
     if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (passwordStrength < 4) {
-      newErrors.password = 'Password does not meet requirements';
+      newErrors.password = 'Please create a password';
+    } else if (passwordStrength < 5) {
+      newErrors.password = 'Please meet all password requirements below';
     }
     
-    // Confirm password
-    if (formData.password !== formData.confirmPassword) {
+    if (!formData.confirmPassword) {
+      newErrors.confirmPassword = 'Please confirm your password';
+    } else if (formData.password !== formData.confirmPassword) {
       newErrors.confirmPassword = 'Passwords do not match';
     }
     
@@ -97,10 +130,17 @@ const SignupPage: React.FC = () => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
-    // Clear error when user types
     if (errors[name as keyof FormErrors]) {
       setErrors(prev => ({ ...prev, [name]: undefined }));
     }
+    if (errors.general) {
+      setErrors(prev => ({ ...prev, general: undefined }));
+    }
+  };
+
+  const triggerShake = () => {
+    setShakeError(true);
+    setTimeout(() => setShakeError(false), 600);
   };
 
   /**
@@ -109,7 +149,10 @@ const SignupPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!validate()) return;
+    if (!validate()) {
+      triggerShake();
+      return;
+    }
     
     setIsSubmitting(true);
     setErrors({});
@@ -122,12 +165,27 @@ const SignupPage: React.FC = () => {
         canvas_access_token: formData.canvasAccessToken.trim() || undefined,
       });
       
-      // Redirect to dashboard on success
       navigate('/');
     } catch (error) {
-      const axiosError = error as AxiosError<ApiError>;
-      const errorMessage = axiosError.response?.data?.error || 'Registration failed. Please try again.';
-      setErrors({ general: errorMessage });
+      const axiosError = error as AxiosError;
+      const data = axiosError.response?.data as any;
+
+      let errorMessage = 'Registration failed. Please try again.';
+
+      if (data?.detail && Array.isArray(data.detail)) {
+        const messages = data.detail.map((err: any) => {
+          const msg = (err.msg || '').replace(/^Value error, /i, '');
+          return msg;
+        });
+        errorMessage = messages.join('. ');
+      } else if (data?.detail && typeof data.detail === 'string') {
+        errorMessage = data.detail;
+      } else if (data?.error) {
+        errorMessage = data.error;
+      }
+
+      setErrors({ general: humanizeError(errorMessage) });
+      triggerShake();
     } finally {
       setIsSubmitting(false);
     }
@@ -137,32 +195,58 @@ const SignupPage: React.FC = () => {
 
   return (
     <div className="auth-container">
-      <div className="auth-card auth-card-wide">
+      {/* Decorative background */}
+      <div className="auth-bg-decoration">
+        <div className="auth-bg-circle auth-bg-circle-1" />
+        <div className="auth-bg-circle auth-bg-circle-2" />
+        <div className="auth-bg-circle auth-bg-circle-3" />
+      </div>
+
+      {/* Twinkling stars */}
+      <div className="auth-stars">
+        {stars.map((star, i) => (
+          <div
+            key={i}
+            className="auth-star"
+            style={star}
+          />
+        ))}
+      </div>
+
+      {/* Glowing accent lines */}
+      <div className="auth-glow-line auth-glow-line-1" />
+      <div className="auth-glow-line auth-glow-line-2" />
+
+      <div
+        className={`auth-card auth-card-wide ${!hasEntered ? 'auth-card-animate' : ''} ${shakeError ? 'shake' : ''}`}
+        onAnimationEnd={(e) => { if (e.animationName === 'card-enter') setHasEntered(true); }}
+      >
         {/* Header */}
         <div className="auth-header">
           <div className="auth-logo">
-            <GraduationCap size={40} />
+            <GraduationCap size={36} strokeWidth={1.5} />
           </div>
-          <h1>Create Account</h1>
-          <p>Join AI Teaching Assistant</p>
+          <h1>Create your account</h1>
+          <p>Get started with AI Teaching Assistant</p>
         </div>
 
         {/* General error */}
         {errors.general && (
-          <div className="auth-error">
+          <div className="auth-error auth-error-animate" role="alert">
             <AlertCircle size={18} />
             <span>{errors.general}</span>
           </div>
         )}
 
         {/* Signup form */}
-        <form onSubmit={handleSubmit} className="auth-form">
+        <form onSubmit={handleSubmit} className="auth-form" noValidate>
           {/* Email field */}
           <div className="form-group">
-            <label htmlFor="email">Email</label>
-            <div className={`input-wrapper ${errors.email ? 'error' : ''}`}>
+            <label htmlFor="email">Email address</label>
+            <div className={`input-wrapper ${errors.email ? 'error' : ''} ${formData.email ? 'has-value' : ''}`}>
               <Mail size={18} className="input-icon" />
               <input
+                ref={emailInputRef}
                 id="email"
                 name="email"
                 type="email"
@@ -171,16 +255,17 @@ const SignupPage: React.FC = () => {
                 onChange={handleChange}
                 disabled={disabled}
                 autoComplete="email"
-                autoFocus
+                aria-invalid={!!errors.email}
+                aria-describedby={errors.email ? 'signup-email-error' : undefined}
               />
             </div>
-            {errors.email && <span className="field-error">{errors.email}</span>}
+            {errors.email && <span id="signup-email-error" className="field-error" role="alert">{errors.email}</span>}
           </div>
 
           {/* Name field */}
           <div className="form-group">
-            <label htmlFor="name">Full Name</label>
-            <div className={`input-wrapper ${errors.name ? 'error' : ''}`}>
+            <label htmlFor="name">Full name</label>
+            <div className={`input-wrapper ${errors.name ? 'error' : ''} ${formData.name ? 'has-value' : ''}`}>
               <User size={18} className="input-icon" />
               <input
                 id="name"
@@ -191,43 +276,66 @@ const SignupPage: React.FC = () => {
                 onChange={handleChange}
                 disabled={disabled}
                 autoComplete="name"
+                aria-invalid={!!errors.name}
               />
             </div>
-            {errors.name && <span className="field-error">{errors.name}</span>}
+            {errors.name && <span className="field-error" role="alert">{errors.name}</span>}
           </div>
 
           {/* Password field */}
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <div className={`input-wrapper ${errors.password ? 'error' : ''}`}>
+            <div className={`input-wrapper ${errors.password ? 'error' : ''} ${formData.password ? 'has-value' : ''}`}>
               <Lock size={18} className="input-icon" />
               <input
                 id="password"
                 name="password"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="••••••••"
+                placeholder="Create a strong password"
                 value={formData.password}
                 onChange={handleChange}
                 disabled={disabled}
                 autoComplete="new-password"
+                aria-invalid={!!errors.password}
               />
               <button
                 type="button"
                 className="input-action"
                 onClick={() => setShowPassword(!showPassword)}
                 tabIndex={-1}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                title={showPassword ? 'Hide password' : 'Show password'}
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
-            {errors.password && <span className="field-error">{errors.password}</span>}
+            {errors.password && <span className="field-error" role="alert">{errors.password}</span>}
             
-            {/* Password strength indicator */}
+            {/* Password strength bar */}
+            {formData.password && (
+              <>
+                <div className="password-strength-bar">
+                  {[1, 2, 3, 4, 5].map(i => (
+                    <div
+                      key={i}
+                      className={`strength-segment ${i <= passwordStrength ? `active strength-${strengthLabel}` : ''}`}
+                    />
+                  ))}
+                </div>
+                <div className="password-strength-label">
+                  <span className={`strength-${strengthLabel}`}>
+                    {strengthLabel === 'weak' ? 'Weak' : strengthLabel === 'fair' ? 'Fair' : strengthLabel === 'good' ? 'Good' : 'Strong'}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {/* Password requirements checklist */}
             {formData.password && (
               <div className="password-requirements">
                 <div className={`requirement ${passwordChecks.length ? 'met' : ''}`}>
                   <CheckCircle size={14} />
-                  <span>At least 8 characters</span>
+                  <span>8+ characters</span>
                 </div>
                 <div className={`requirement ${passwordChecks.uppercase ? 'met' : ''}`}>
                   <CheckCircle size={14} />
@@ -241,27 +349,32 @@ const SignupPage: React.FC = () => {
                   <CheckCircle size={14} />
                   <span>Number</span>
                 </div>
+                <div className={`requirement ${passwordChecks.special ? 'met' : ''}`}>
+                  <CheckCircle size={14} />
+                  <span>Special character (!@#$...)</span>
+                </div>
               </div>
             )}
           </div>
 
           {/* Confirm Password field */}
           <div className="form-group">
-            <label htmlFor="confirmPassword">Confirm Password</label>
-            <div className={`input-wrapper ${errors.confirmPassword ? 'error' : ''}`}>
+            <label htmlFor="confirmPassword">Confirm password</label>
+            <div className={`input-wrapper ${errors.confirmPassword ? 'error' : ''} ${formData.confirmPassword ? 'has-value' : ''}`}>
               <Lock size={18} className="input-icon" />
               <input
                 id="confirmPassword"
                 name="confirmPassword"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="••••••••"
+                placeholder="Re-enter your password"
                 value={formData.confirmPassword}
                 onChange={handleChange}
                 disabled={disabled}
                 autoComplete="new-password"
+                aria-invalid={!!errors.confirmPassword}
               />
             </div>
-            {errors.confirmPassword && <span className="field-error">{errors.confirmPassword}</span>}
+            {errors.confirmPassword && <span className="field-error" role="alert">{errors.confirmPassword}</span>}
           </div>
 
           {/* Canvas Access Token field (optional) */}
@@ -270,13 +383,13 @@ const SignupPage: React.FC = () => {
               Canvas Access Token
               <span className="optional-badge">Optional</span>
             </label>
-            <div className={`input-wrapper ${errors.canvasAccessToken ? 'error' : ''}`}>
+            <div className={`input-wrapper ${errors.canvasAccessToken ? 'error' : ''} ${formData.canvasAccessToken ? 'has-value' : ''}`}>
               <Key size={18} className="input-icon" />
               <input
                 id="canvasAccessToken"
                 name="canvasAccessToken"
                 type="password"
-                placeholder="Canvas LMS access token"
+                placeholder="Paste your Canvas LMS token"
                 value={formData.canvasAccessToken}
                 onChange={handleChange}
                 disabled={disabled}
@@ -299,19 +412,25 @@ const SignupPage: React.FC = () => {
                 Creating account...
               </>
             ) : (
-              'Create Account'
+              <>
+                <UserPlus size={18} />
+                Create Account
+              </>
             )}
           </button>
         </form>
 
+        {/* Divider */}
+        <div className="auth-divider">
+          <span>Already have an account?</span>
+        </div>
+
         {/* Footer */}
-        <div className="auth-footer">
-          <p>
-            Already have an account?{' '}
-            <Link to="/login" className="auth-link">
-              Sign in
-            </Link>
-          </p>
+        <div className="auth-footer-action">
+          <Link to="/login" className="auth-secondary-button">
+            Sign in instead
+            <ArrowRight size={16} />
+          </Link>
         </div>
       </div>
     </div>

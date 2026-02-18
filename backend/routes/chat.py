@@ -52,7 +52,8 @@ async def get_available_models():
     """Get list of available AI models"""
     return {
         "models": settings.AVAILABLE_MODELS,
-        "default": settings.DEFAULT_MODEL
+        "default": settings.DEFAULT_MODEL,
+        "provider": settings.LLM_PROVIDER,
     }
 
 

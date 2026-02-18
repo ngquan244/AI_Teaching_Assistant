@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   FileText,
   Download,
@@ -22,6 +22,17 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
+
+/* ---------- tiny helper: random stars for background ---------- */
+const generateCanvasStars = (count: number) =>
+  Array.from({ length: count }, (_, i) => ({
+    id: i,
+    top: `${Math.random() * 100}%`,
+    left: `${Math.random() * 100}%`,
+    duration: `${3 + Math.random() * 4}s`,
+    delay: `${Math.random() * 5}s`,
+    size: `${1.5 + Math.random() * 1.5}px`,
+  }));
 import { useAuth } from '../context/AuthContext';
 import { canvasApi } from '../api/canvas';
 import {
@@ -117,6 +128,7 @@ type PanelTab = 'remote' | 'local';
 const CanvasFilesPanel: React.FC = () => {
   const { isAuthenticated, canvasTokens } = useAuth();
   const [activeTab, setActiveTab] = useState<PanelTab>('remote');
+  const canvasStars = useMemo(() => generateCanvasStars(30), []);
   
   // Remote files state (from Canvas API)
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -400,7 +412,7 @@ const CanvasFilesPanel: React.FC = () => {
     updateFileStatus(file.id, { status: 'indexing' });
     
     try {
-      const indexResult = await indexCanvasFile(filenameToIndex);
+      const indexResult = await indexCanvasFile(filenameToIndex, selectedCourse?.id);
       
       if (indexResult.success) {
         updateFileStatus(file.id, { status: 'indexed' });
@@ -476,7 +488,7 @@ const CanvasFilesPanel: React.FC = () => {
     setLocalFileStates(prev => new Map(prev).set(filename, 'indexing'));
     
     try {
-      const result = await indexCanvasFile(filename);
+      const result = await indexCanvasFile(filename, selectedCourse?.id);
       
       if (result.success) {
         setLocalFileStates(prev => new Map(prev).set(filename, 'indexed'));
@@ -674,10 +686,33 @@ const CanvasFilesPanel: React.FC = () => {
   if (!isConfigured) {
     return (
       <div className="canvas-panel">
-        <h2>
-          <FolderOpen size={24} />
-          Canvas Files
-        </h2>
+        {/* Decorative background */}
+        <div className="canvas-bg-decoration">
+          <div className="canvas-bg-orb canvas-bg-orb-1" />
+          <div className="canvas-bg-orb canvas-bg-orb-2" />
+          <div className="canvas-bg-orb canvas-bg-orb-3" />
+        </div>
+        <div className="canvas-stars">
+          {canvasStars.map((s) => (
+            <span
+              key={s.id}
+              className="canvas-star"
+              style={{ top: s.top, left: s.left, '--duration': s.duration, '--delay': s.delay, width: s.size, height: s.size } as React.CSSProperties}
+            />
+          ))}
+        </div>
+        <div className="canvas-glow-line canvas-glow-line-1" />
+        <div className="canvas-glow-line canvas-glow-line-2" />
+
+        <div className="canvas-hero-header">
+          <div className="canvas-hero-icon">
+            <FolderOpen size={28} />
+          </div>
+          <div className="canvas-hero-text">
+            <h2>Canvas LMS</h2>
+            <p>Tải file từ Canvas, index và quản lý tài liệu</p>
+          </div>
+        </div>
         <div className="canvas-not-configured">
           <AlertCircle size={48} />
           <h3>Canvas Not Configured</h3>
@@ -693,11 +728,35 @@ const CanvasFilesPanel: React.FC = () => {
 
   return (
     <div className="canvas-panel">
-      <h2>
-        <FolderOpen size={24} />
-        Canvas Files
-      </h2>
+      {/* ---- Decorative background (matching RAG panel) ---- */}
+      <div className="canvas-bg-decoration">
+        <div className="canvas-bg-orb canvas-bg-orb-1" />
+        <div className="canvas-bg-orb canvas-bg-orb-2" />
+        <div className="canvas-bg-orb canvas-bg-orb-3" />
+      </div>
+      <div className="canvas-stars">
+        {canvasStars.map((s) => (
+          <span
+            key={s.id}
+            className="canvas-star"
+            style={{ top: s.top, left: s.left, '--duration': s.duration, '--delay': s.delay, width: s.size, height: s.size } as React.CSSProperties}
+          />
+        ))}
+      </div>
+      <div className="canvas-glow-line canvas-glow-line-1" />
+      <div className="canvas-glow-line canvas-glow-line-2" />
 
+      <div className="canvas-hero-header">
+        <div className="canvas-hero-icon">
+          <FolderOpen size={28} />
+        </div>
+        <div className="canvas-hero-text">
+          <h2>Canvas LMS</h2>
+          <p>Tải file từ Canvas, index và quản lý tài liệu</p>
+        </div>
+      </div>
+
+      <div className="canvas-content">
       {/* Tab Switcher */}
       <div className="canvas-tabs">
         <button
@@ -1288,6 +1347,7 @@ const CanvasFilesPanel: React.FC = () => {
           </div>
         </div>
       )}
+      </div>{/* end canvas-content */}
     </div>
   );
 };

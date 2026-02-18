@@ -253,3 +253,189 @@ async def import_qti_bank(
         }
     
     return result
+
+
+# ============================================================================
+# ASYNC JOB ENDPOINTS
+# ============================================================================
+# These endpoints return immediately with a job_id.
+# The actual work is done in background via Celery.
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+from pydantic import BaseModel as PydanticBaseModel
+from backend.database import get_async_session
+from backend.services.job_service import JobService
+from backend.database.models.job import JobType
+from backend import tasks
+
+
+class AsyncJobResponse(PydanticBaseModel):
+    """Response for async job endpoints."""
+    success: bool
+    job_id: str
+    message: str
+    status_url: str
+    stream_url: str
+
+
+@router.post("/async/download")
+async def async_download_single_file(
+    request: FileDownloadRequest,
+    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
+    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Download a file asynchronously with MD5 deduplication.
+    
+    Returns immediately with job_id. Poll /api/jobs/{job_id} for status.
+    """
+    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    
+    try:
+        job_service = JobService(db)
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.CANVAS_FILE_DOWNLOAD,
+            payload={
+                "file_id": request.file_id,
+                "filename": request.filename,
+                "url": request.url,
+                "course_id": request.course_id,
+            },
+        )
+        
+        result = tasks.download_file.apply_async(
+            args=[str(job.id)],
+            kwargs={
+                "file_id": request.file_id,
+                "filename": request.filename,
+                "download_url": request.url,
+                "course_id": request.course_id,
+            },
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Download queued for {request.filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/download/batch")
+async def async_download_batch(
+    request: BatchDownloadRequest,
+    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
+    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Download multiple files asynchronously.
+    
+    Returns immediately with job_id. Each file is processed sequentially
+    with progress updates.
+    """
+    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    
+    try:
+        job_service = JobService(db)
+        
+        files_data = [
+            {"file_id": f.file_id, "filename": f.filename, "url": f.url}
+            for f in request.files
+        ]
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.CANVAS_FILE_DOWNLOAD,
+            payload={"course_id": request.course_id, "files": files_data},
+        )
+        
+        result = tasks.download_files_batch.apply_async(
+            args=[str(job.id), request.course_id, files_data],
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Batch download queued for {len(files_data)} files",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/import-qti-bank")
+async def async_import_qti_bank(
+    request: QTIImportRequest,
+    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
+    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Import QTI to Canvas asynchronously.
+    
+    Multi-step process: create migration -> upload zip -> poll completion.
+    Returns immediately with job_id.
+    """
+    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    
+    # Validate base64 up front
+    try:
+        import base64 as b64
+        qti_zip_content = b64.b64decode(request.qti_zip_base64)
+        if len(qti_zip_content) == 0:
+            raise ValueError("Empty content")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 zip: {e}")
+    
+    try:
+        job_service = JobService(db)
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.CANVAS_QTI_IMPORT,
+            payload={
+                "course_id": request.course_id,
+                "question_bank_name": request.question_bank_name,
+                "filename": request.filename or "qti_import.zip",
+            },
+        )
+        
+        result = tasks.import_qti.apply_async(
+            args=[str(job.id)],
+            kwargs={
+                "token": token,
+                "base_url": base_url,
+                "course_id": request.course_id,
+                "question_bank_name": request.question_bank_name,
+                "qti_zip_base64": request.qti_zip_base64,
+                "filename": request.filename or "qti_import.zip",
+            },
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"QTI import queued for course {request.course_id}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

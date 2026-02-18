@@ -32,6 +32,7 @@ class CanvasDownloadRequest(BaseModel):
 class CanvasIndexRequest(BaseModel):
     """Request to index a downloaded Canvas file"""
     filename: str
+    course_id: Optional[int] = None  # Canvas course ID for collection naming
 
 
 class CanvasExtractTopicsRequest(BaseModel):
@@ -102,8 +103,9 @@ async def index_canvas_file(request: CanvasIndexRequest):
     """
     Index a downloaded Canvas file.
     Stores in separate ChromaDB collection from uploaded files.
+    Uses per-file collections with course_id for proper isolation.
     """
-    logger.info(f"Indexing Canvas file: {request.filename}")
+    logger.info(f"Indexing Canvas file: {request.filename}, course_id: {request.course_id}")
     
     service = get_canvas_rag_service()
     
@@ -113,7 +115,10 @@ async def index_canvas_file(request: CanvasIndexRequest):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.filename}")
     
-    result = service.ingest_document(str(file_path))
+    result = service.ingest_document(
+        file_path=str(file_path),
+        course_id=request.course_id
+    )
     
     return result
 

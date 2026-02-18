@@ -20,7 +20,12 @@ from .config import rag_config
 from .ingest import load_pdf_documents, get_file_metadata, compute_file_hash
 from .chunking import chunk_documents
 from .vectorstore import ChromaVectorStore
-from .retriever import DocumentRetriever
+from .collection_manager import (
+    PerFileCollectionManager,
+    get_uploads_collection_manager,
+    CollectionNameGenerator
+)
+from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
 from .topic_storage import topic_storage
@@ -67,7 +72,7 @@ class RAGService:
         
         Args:
             persist_directory: Directory for vector store persistence
-            collection_name: Name of the vector collection
+            collection_name: Name of the vector collection (deprecated, now per-file)
             ollama_model: Model to use for generation (legacy, for backwards compatibility)
             llm_provider: LLM provider to use ("ollama" or "groq")
         """
@@ -76,17 +81,26 @@ class RAGService:
         self.ollama_model = ollama_model or rag_config.OLLAMA_MODEL
         self._llm_provider_name = llm_provider or rag_config.LLM_PROVIDER
         
-        logger.info("Initializing RAG Service...")
+        logger.info("Initializing RAG Service with per-file collections...")
         logger.info(f"Persist directory: {self.persist_directory}")
-        logger.info(f"Collection name: {self.collection_name}")
         logger.info(f"LLM provider: {self._llm_provider_name}")
         
-        # Initialize components
+        # Per-file collection manager (replaces global vectorstore)
+        self._collection_manager: Optional[PerFileCollectionManager] = None
+        
+        # Legacy support - will be deprecated
         self._vector_store: Optional[ChromaVectorStore] = None
-        self._retriever: Optional[DocumentRetriever] = None
+        
+        # Dynamically created per-file retrievers
+        self._retrievers: Dict[str, DocumentRetriever] = {}
+        self._multi_retriever: Optional[MultiCollectionRetriever] = None
+        
         self._rag_chain: Optional[RAGChain] = None
         self._quiz_generator: Optional[QuizGenerator] = None
         self._llm_provider: Optional[BaseLLM] = None
+        
+        # Track currently selected files for querying
+        self._selected_file_hashes: List[str] = []
         
         # Lazy initialization flag
         self._initialized = False
@@ -96,29 +110,40 @@ class RAGService:
         if self._initialized:
             return
         
-        logger.info("Initializing RAG components...")
+        logger.info("Initializing RAG components with per-file collection manager...")
         
-        # Initialize vector store
-        self._vector_store = ChromaVectorStore(
-            persist_directory=self.persist_directory,
-            collection_name=self.collection_name
-        )
+        # Initialize per-file collection manager (replaces global vectorstore)
+        self._collection_manager = get_uploads_collection_manager()
         
-        # Initialize retriever
-        self._retriever = DocumentRetriever(self._vector_store)
+        # Legacy vector store for backwards compatibility (will be deprecated)
+        # Only used for reading from old global collection if it exists
+        try:
+            self._vector_store = ChromaVectorStore(
+                persist_directory=self.persist_directory,
+                collection_name=self.collection_name
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize legacy vectorstore: {e}")
+            self._vector_store = None
         
         # Initialize LLM provider using factory
         self._llm_provider = LLMFactory.create()
         
-        # Initialize RAG chain with shared LLM provider
-        self._rag_chain = RAGChain(
-            retriever=self._retriever,
+        # Initialize multi-collection retriever (queries across selected files)
+        self._multi_retriever = MultiCollectionRetriever(
+            collection_manager=self._collection_manager,
             llm_provider=self._llm_provider
         )
         
-        # Initialize Quiz Generator with shared LLM provider
+        # Initialize RAG chain with multi-collection retriever
+        self._rag_chain = RAGChain(
+            retriever=self._multi_retriever,
+            llm_provider=self._llm_provider
+        )
+        
+        # Initialize Quiz Generator with multi-collection retriever
         self._quiz_generator = QuizGenerator(
-            retriever=self._retriever,
+            retriever=self._multi_retriever,
             llm_provider=self._llm_provider
         )
         
@@ -151,7 +176,7 @@ class RAGService:
         """
         self._ensure_initialized()
         
-        logger.info(f"Ingesting document: {file_path}")
+        logger.info(f"Ingesting document into per-file collection: {file_path}")
         
         try:
             # Check if file exists
@@ -164,18 +189,22 @@ class RAGService:
             
             # Get file metadata
             file_meta = get_file_metadata(file_path)
+            file_hash = file_meta["file_hash"]
+            filename = file_meta["filename"]
             
-            # Check for duplicates
-            if skip_if_exists and self._vector_store.is_document_indexed(file_meta["file_hash"]):
-                logger.info(f"Document already indexed: {file_path}")
+            # Check for duplicates using per-file collection manager
+            if skip_if_exists and self._collection_manager.is_indexed(file_hash):
+                logger.info(f"Document already indexed in per-file collection: {file_path}")
+                collection_name = self._collection_manager.get_collection_name(file_hash)
                 return {
                     "success": True,
                     "message": "Document already indexed",
-                    "file_hash": file_meta["file_hash"],
-                    "filename": file_meta["filename"],
+                    "file_hash": file_hash,
+                    "filename": filename,
+                    "collection_name": collection_name,
                     "chunks_added": 0,
                     "already_indexed": True,
-                    "has_topics": topic_storage.has_topics(file_meta["file_hash"])
+                    "has_topics": topic_storage.has_topics(file_hash)
                 }
             
             # Load PDF
@@ -191,33 +220,42 @@ class RAGService:
             # Chunk documents
             chunks = chunk_documents(documents)
             
-            # Add to vector store
-            added_count = self._vector_store.add_documents(chunks)
+            # Add to per-file collection (NOT global collection)
+            # This is the key change that enables concurrent indexing
+            added_count = self._collection_manager.add_documents(
+                file_hash=file_hash,
+                filename=filename,
+                documents=chunks,
+                course_id=None,  # Regular upload, not Canvas
+                replace_existing=True  # Idempotent: re-indexing replaces old data
+            )
             
-            logger.info(f"Successfully ingested {added_count} chunks from {file_path}")
+            collection_name = self._collection_manager.get_collection_name(file_hash)
+            logger.info(f"Successfully ingested {added_count} chunks from {file_path} into collection: {collection_name}")
             
             # Extract and save topics for this document
             topics_extracted = []
             if extract_topics:
                 try:
-                    logger.info(f"Extracting topics for {file_meta['filename']}...")
+                    logger.info(f"Extracting topics for {filename}...")
                     topics_result = self._extract_topics_from_chunks(chunks, file_meta)
                     if topics_result.get("success") and topics_result.get("topics"):
                         topics_extracted = topics_result["topics"]
                         topic_storage.save_topics(
-                            file_hash=file_meta["file_hash"],
-                            filename=file_meta["filename"],
+                            file_hash=file_hash,
+                            filename=filename,
                             topics=topics_extracted
                         )
-                        logger.info(f"Saved {len(topics_extracted)} topics for {file_meta['filename']}")
+                        logger.info(f"Saved {len(topics_extracted)} topics for {filename}")
                 except Exception as e:
                     logger.warning(f"Could not extract topics: {e}")
             
             return {
                 "success": True,
-                "message": "Document indexed successfully",
-                "file_hash": file_meta["file_hash"],
-                "filename": file_meta["filename"],
+                "message": "Document indexed successfully into per-file collection",
+                "file_hash": file_hash,
+                "filename": filename,
+                "collection_name": collection_name,
                 "pages_loaded": len(documents),
                 "chunks_added": added_count,
                 "already_indexed": False,
@@ -260,7 +298,9 @@ class RAGService:
         self,
         question: str,
         k: Optional[int] = None,
-        return_context: bool = False
+        return_context: bool = False,
+        file_hashes: Optional[List[str]] = None,
+        selected_documents: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Query the document knowledge base.
@@ -269,6 +309,8 @@ class RAGService:
             question: User's question
             k: Number of documents to retrieve
             return_context: Include retrieved context in response
+            file_hashes: Optional list of file hashes to query (per-file collections)
+            selected_documents: Optional list of filenames to query
             
         Returns:
             Dictionary with:
@@ -280,9 +322,21 @@ class RAGService:
         
         logger.info(f"Processing query: {question}")
         
-        # Check if index has documents
-        stats = self.get_index_stats()
-        if stats["total_documents"] == 0:
+        # Determine which collections to query
+        target_hashes = file_hashes or []
+        
+        # If filenames provided, resolve to file hashes
+        if selected_documents and not target_hashes:
+            for meta in self._collection_manager.registry.get_all():
+                if meta.filename in selected_documents:
+                    target_hashes.append(meta.file_hash)
+        
+        # If no specific files selected, query all indexed files
+        if not target_hashes:
+            target_hashes = [meta.file_hash for meta in self._collection_manager.registry.get_all()]
+        
+        # Check if there are indexed documents
+        if not target_hashes:
             return {
                 "success": False,
                 "answer": "Chưa có tài liệu nào được index. Vui lòng upload và build index trước.",
@@ -290,7 +344,12 @@ class RAGService:
                 "error": "No documents indexed"
             }
         
+        logger.info(f"Querying {len(target_hashes)} collections")
+        
         try:
+            # Set the target file hashes for the multi-retriever
+            self._multi_retriever.set_target_files(target_hashes)
+            
             result = self._rag_chain.query(
                 question=question,
                 k=k,
@@ -298,6 +357,7 @@ class RAGService:
             )
             
             result["success"] = True
+            result["collections_queried"] = len(target_hashes)
             return result
             
         except Exception as e:
@@ -314,25 +374,37 @@ class RAGService:
         Get statistics about the document index.
         
         Returns:
-            Dictionary with index statistics
+            Dictionary with index statistics (aggregated across all per-file collections)
         """
         self._ensure_initialized()
         
-        return self._vector_store.get_collection_stats()
+        # Get stats from per-file collection manager
+        indexed_files = self._collection_manager.get_indexed_files()
+        total_chunks = sum(f.get("chunk_count", 0) for f in indexed_files)
+        
+        return {
+            "persist_directory": self.persist_directory,
+            "collection_type": "per-file",
+            "indexed_files_count": len(indexed_files),
+            "total_documents": total_chunks,
+            "indexed_files": indexed_files,
+            "embedding_model": rag_config.EMBEDDING_MODEL
+        }
     
     def reset_index(self) -> Dict[str, Any]:
         """
-        Reset the document index (delete all documents).
+        Reset the document index (delete all per-file collections).
         
         Returns:
             Dictionary with reset status
         """
         self._ensure_initialized()
         
-        logger.warning("Resetting document index")
+        logger.warning("Resetting all per-file document collections")
         
         try:
-            success = self._vector_store.reset_collection()
+            # Reset all per-file collections
+            success = self._collection_manager.reset_all()
             
             # Also clear stored topics
             topic_storage.clear()
@@ -654,8 +726,27 @@ class RAGService:
         logger.info(f"Extracting topics for document: {filename}")
         
         try:
-            # Get all document content from vector store
-            all_docs = self._vector_store.get_all_document_content(max_docs=50)
+            # Find the file_hash for this filename from collection registry
+            indexed_files = self._collection_manager.get_indexed_files()
+            file_hash = None
+            for file_info in indexed_files:
+                if file_info.get("filename") == filename:
+                    file_hash = file_info.get("file_hash")
+                    break
+            
+            if not file_hash:
+                return {
+                    "success": False,
+                    "topics": [],
+                    "filename": filename,
+                    "message": "Tài liệu chưa được index"
+                }
+            
+            # Get document content from per-file collection manager (specific file)
+            all_docs = self._collection_manager.get_all_document_content(
+                file_hash=file_hash,
+                max_docs=50
+            )
             
             if not all_docs:
                 return {
@@ -677,9 +768,7 @@ class RAGService:
             if result.get("success") and result.get("topics"):
                 topics = result["topics"]
                 
-                # Save to storage (use filename as hash for simplicity)
-                import hashlib
-                file_hash = hashlib.md5(filename.encode()).hexdigest()
+                # Save to storage using the actual file_hash from the collection registry
                 topic_storage.save_topics(
                     file_hash=file_hash,
                     filename=filename,
@@ -724,8 +813,8 @@ class RAGService:
         docs_with_topics = topic_storage.get_all_documents()
         docs_dict = {d["filename"]: d for d in docs_with_topics}
         
-        # Also get indexed files from vector store
-        indexed_files = self._vector_store.get_indexed_files()
+        # Get indexed files from per-file collection manager (not legacy vectorstore)
+        indexed_files = self._collection_manager.get_indexed_files()
         
         # Merge: add files that don't have topics yet
         for file_info in indexed_files:

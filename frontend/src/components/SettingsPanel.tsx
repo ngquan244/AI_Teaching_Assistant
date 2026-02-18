@@ -398,6 +398,17 @@ const SettingsPanel: React.FC = () => {
           <Cpu size={20} />
           Model AI
         </h3>
+
+        {/* Provider Badge */}
+        <div className="provider-badge-wrapper">
+          <span className={`provider-badge provider-${config?.llm_provider || 'ollama'}`}>
+            {config?.llm_provider === 'groq' ? '⚡ Groq Cloud' : '🖥️ Ollama Local'}
+          </span>
+          {config?.llm_provider === 'groq' && (
+            <span className="provider-hint">Inference nhanh qua Groq LPU</span>
+          )}
+        </div>
+
         <div className="form-group">
           <label>Chọn model:</label>
           <select value={model} onChange={(e) => setModel(e.target.value)}>
@@ -431,8 +442,18 @@ const SettingsPanel: React.FC = () => {
             <code>http://localhost:8080</code>
           </div>
           <div className="info-item">
+            <span>LLM Provider:</span>
+            <code className={`provider-code provider-code-${config?.llm_provider || 'ollama'}`}>
+              {config?.llm_provider === 'groq' ? 'Groq Cloud' : 'Ollama Local'}
+            </code>
+          </div>
+          <div className="info-item">
             <span>Model mặc định:</span>
             <code>{config?.default_model}</code>
+          </div>
+          <div className="info-item">
+            <span>Groq API:</span>
+            <code>{config?.groq_available ? '✅ Configured' : '❌ Not configured'}</code>
           </div>
           <div className="info-item">
             <span>Phiên bản:</span>

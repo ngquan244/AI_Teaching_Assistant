@@ -82,8 +82,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
    * Login with email and password
    */
   const login = async (data: LoginRequest): Promise<void> => {
-    setState(prev => ({ ...prev, isLoading: true }));
-    
     try {
       const response = await authApi.login(data);
       
@@ -93,7 +91,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Fetch full profile (includes canvas tokens)
       await fetchProfile();
     } catch (error) {
-      setState(prev => ({ ...prev, isLoading: false }));
       throw error;
     }
   };
@@ -102,8 +99,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
    * Register new user and auto-login
    */
   const signup = async (data: SignupRequest): Promise<void> => {
-    setState(prev => ({ ...prev, isLoading: true }));
-    
     try {
       const response = await authApi.signup(data);
       
@@ -113,7 +108,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Fetch full profile
       await fetchProfile();
     } catch (error) {
-      setState(prev => ({ ...prev, isLoading: false }));
       throw error;
     }
   };

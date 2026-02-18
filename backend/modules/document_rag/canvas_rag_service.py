@@ -2,7 +2,10 @@
 Canvas RAG Service Module
 =========================
 Service for Canvas-sourced documents with separate storage, deduplication,
-and ChromaDB collection from manually uploaded files.
+and per-file ChromaDB collections for concurrent multi-user indexing.
+
+Key architecture change: Uses per-file collections instead of a single global
+collection to eliminate write lock contention between users.
 """
 
 import os
@@ -20,7 +23,12 @@ from .config import rag_config
 from .ingest import load_pdf_documents, get_file_metadata
 from .chunking import chunk_documents
 from .vectorstore import ChromaVectorStore
-from .retriever import DocumentRetriever
+from .collection_manager import (
+    PerFileCollectionManager,
+    get_canvas_collection_manager,
+    CollectionNameGenerator
+)
+from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
 from .llm_providers import BaseLLM, LLMFactory
@@ -121,7 +129,9 @@ class CanvasTopicStorage:
 class CanvasRAGService:
     """
     RAG Service specifically for Canvas-sourced documents.
-    Uses separate storage, MD5 registry, and ChromaDB collection.
+    
+    Uses per-file ChromaDB collections to enable concurrent multi-user indexing.
+    Each file gets its own collection named like 'canvas_{course_id}_{file_hash}'.
     """
     
     _instance: Optional["CanvasRAGService"] = None
@@ -129,7 +139,7 @@ class CanvasRAGService:
     # Canvas-specific paths
     CANVAS_RAG_DIR = Path("./data/canvas_rag_uploads")
     CANVAS_CHROMA_DIR = Path("./data/chroma/canvas_document_rag")
-    CANVAS_COLLECTION_NAME = "canvas_document_rag_collection"
+    CANVAS_COLLECTION_NAME = "canvas_document_rag_collection"  # Legacy, deprecated
     
     def __init__(self):
         # Ensure directories exist
@@ -139,13 +149,18 @@ class CanvasRAGService:
         self.md5_registry_file = self.CANVAS_RAG_DIR / ".md5_registry.json"
         self.indexed_files_registry = self.CANVAS_RAG_DIR / ".indexed_files.json"
         
-        logger.info("Initializing Canvas RAG Service...")
+        logger.info("Initializing Canvas RAG Service with per-file collections...")
         logger.info(f"Canvas RAG directory: {self.CANVAS_RAG_DIR}")
         logger.info(f"Canvas Chroma directory: {self.CANVAS_CHROMA_DIR}")
         
-        # Initialize components
+        # Per-file collection manager (replaces global vectorstore)
+        self._collection_manager: Optional[PerFileCollectionManager] = None
+        
+        # Legacy support - will be deprecated
         self._vector_store: Optional[ChromaVectorStore] = None
-        self._retriever: Optional[DocumentRetriever] = None
+        
+        # Multi-collection retriever for querying across files
+        self._multi_retriever: Optional[MultiCollectionRetriever] = None
         self._rag_chain: Optional[RAGChain] = None
         self._quiz_generator: Optional[QuizGenerator] = None
         self._llm_provider: Optional[BaseLLM] = None
@@ -157,31 +172,44 @@ class CanvasRAGService:
         if self._initialized:
             return
         
-        logger.info("Initializing Canvas RAG components...")
+        logger.info("Initializing Canvas RAG components with per-file collection manager...")
         
-        # Initialize vector store with Canvas-specific collection
-        self._vector_store = ChromaVectorStore(
-            persist_directory=str(self.CANVAS_CHROMA_DIR),
-            collection_name=self.CANVAS_COLLECTION_NAME
-        )
+        # Initialize per-file collection manager for Canvas files
+        self._collection_manager = get_canvas_collection_manager()
         
-        self._retriever = DocumentRetriever(self._vector_store)
+        # Legacy vector store for backwards compatibility
+        try:
+            self._vector_store = ChromaVectorStore(
+                persist_directory=str(self.CANVAS_CHROMA_DIR),
+                collection_name=self.CANVAS_COLLECTION_NAME
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize legacy Canvas vectorstore: {e}")
+            self._vector_store = None
+        
+        # Initialize LLM provider
         self._llm_provider = LLMFactory.create()
         
+        # Initialize multi-collection retriever
+        self._multi_retriever = MultiCollectionRetriever(
+            collection_manager=self._collection_manager,
+            llm_provider=self._llm_provider
+        )
+        
         self._rag_chain = RAGChain(
-            retriever=self._retriever,
+            retriever=self._multi_retriever,
             llm_provider=self._llm_provider
         )
         
         self._quiz_generator = QuizGenerator(
-            retriever=self._retriever,
+            retriever=self._multi_retriever,
             llm_provider=self._llm_provider
         )
         
         self._topic_storage = CanvasTopicStorage(str(self.CANVAS_RAG_DIR))
         
         self._initialized = True
-        logger.info("Canvas RAG Service initialized")
+        logger.info("Canvas RAG Service initialized with per-file collections")
     
     @classmethod
     def get_instance(cls) -> "CanvasRAGService":
@@ -324,14 +352,25 @@ class CanvasRAGService:
     def ingest_document(
         self,
         file_path: str,
-        extract_topics: bool = True
+        extract_topics: bool = True,
+        course_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Ingest a Canvas PDF document into the Canvas vector store.
+        Ingest a Canvas PDF document into a per-file collection.
+        
+        This uses per-file collections to enable concurrent indexing:
+        - Collection name: 'canvas_{course_id}_{file_hash[:16]}'
+        - Each file gets its own collection - no global write locks
+        - Indexing file A does NOT block indexing file B
+        
+        Args:
+            file_path: Path to the PDF file
+            extract_topics: Whether to extract topics after indexing
+            course_id: Canvas course ID for collection naming
         """
         self._ensure_initialized()
         
-        logger.info(f"Ingesting Canvas document: {file_path}")
+        logger.info(f"Ingesting Canvas document into per-file collection: {file_path}")
         
         try:
             if not os.path.exists(file_path):
@@ -343,12 +382,15 @@ class CanvasRAGService:
             
             # Get file metadata
             file_meta = get_file_metadata(file_path)
+            file_hash = file_meta["file_hash"]
+            filename = file_meta["filename"]
             
-            # Check if already indexed in Canvas collection
-            if self._vector_store.is_document_indexed(file_meta["file_hash"]):
-                logger.info(f"Canvas document already indexed: {file_path}")
+            # Check if already indexed using per-file collection manager
+            if self._collection_manager.is_indexed(file_hash):
+                logger.info(f"Canvas document already indexed in per-file collection: {file_path}")
                 
-                has_topics = self._topic_storage.has_topics(file_meta["file_hash"])
+                collection_name = self._collection_manager.get_collection_name(file_hash, course_id)
+                has_topics = self._topic_storage.has_topics(file_hash)
                 topics_extracted = []
                 
                 # If already indexed but no topics, extract them now
@@ -356,8 +398,8 @@ class CanvasRAGService:
                     logger.info(f"Extracting topics for already indexed document: {file_path}")
                     try:
                         topics_extracted = self._extract_and_save_topics(
-                            file_hash=file_meta["file_hash"],
-                            filename=file_meta["filename"]
+                            file_hash=file_hash,
+                            filename=filename
                         )
                         has_topics = len(topics_extracted) > 0
                     except Exception as e:
@@ -366,8 +408,9 @@ class CanvasRAGService:
                 return {
                     "success": True,
                     "message": "Document already indexed",
-                    "file_hash": file_meta["file_hash"],
-                    "filename": file_meta["filename"],
+                    "file_hash": file_hash,
+                    "filename": filename,
+                    "collection_name": collection_name,
                     "chunks_added": 0,
                     "already_indexed": True,
                     "has_topics": has_topics,
@@ -388,18 +431,26 @@ class CanvasRAGService:
             # Chunk documents
             chunks = chunk_documents(documents)
             
-            # Add to Canvas vector store
-            added_count = self._vector_store.add_documents(chunks)
+            # Add to per-file Canvas collection (NOT global collection)
+            # This is the key change that enables concurrent indexing
+            added_count = self._collection_manager.add_documents(
+                file_hash=file_hash,
+                filename=filename,
+                documents=chunks,
+                course_id=course_id,
+                replace_existing=True  # Idempotent: re-indexing replaces old data
+            )
             
-            logger.info(f"Successfully ingested {added_count} chunks from Canvas file: {file_path}")
+            collection_name = self._collection_manager.get_collection_name(file_hash, course_id)
+            logger.info(f"Successfully ingested {added_count} chunks from Canvas file into collection: {collection_name}")
             
             # Extract and save topics (pass chunks directly for efficiency)
             topics_extracted = []
             if extract_topics and added_count > 0:
                 try:
                     topics_extracted = self._extract_and_save_topics(
-                        file_hash=file_meta["file_hash"],
-                        filename=file_meta["filename"],
+                        file_hash=file_hash,
+                        filename=filename,
                         chunks=chunks
                     )
                 except Exception as e:
@@ -407,9 +458,11 @@ class CanvasRAGService:
             
             # Update indexed files registry
             indexed_registry = self._load_indexed_registry()
-            indexed_registry[file_meta["file_hash"]] = {
-                "filename": file_meta["filename"],
+            indexed_registry[file_hash] = {
+                "filename": filename,
                 "file_path": file_path,
+                "collection_name": collection_name,
+                "course_id": course_id,
                 "indexed_at": datetime.now().isoformat(),
                 "chunks_added": added_count,
                 "topic_count": len(topics_extracted)
@@ -418,8 +471,8 @@ class CanvasRAGService:
             
             return {
                 "success": True,
-                "message": f"Successfully indexed {added_count} chunks",
-                "file_hash": file_meta["file_hash"],
+                "message": f"Successfully indexed {added_count} chunks into per-file collection",
+                "file_hash": file_hash,
                 "filename": file_meta["filename"],
                 "pages_loaded": len(documents),
                 "chunks_added": added_count,
@@ -441,7 +494,8 @@ class CanvasRAGService:
         file_hash: str,
         filename: str,
         num_topics: int = 10,
-        chunks: Optional[List[Document]] = None
+        chunks: Optional[List[Document]] = None,
+        course_id: Optional[int] = None
     ) -> List[Dict[str, str]]:
         """Extract topics from document and save to Canvas topic storage.
         
@@ -450,25 +504,22 @@ class CanvasRAGService:
             filename: Name of the file
             num_topics: Number of topics to extract
             chunks: Pre-loaded chunks (optional, used during indexing)
+            course_id: Canvas course ID for collection lookup
         """
         try:
-            # If chunks not provided, get from vector store by file_hash filter
+            # If chunks not provided, get from per-file collection
             if chunks is None:
                 try:
-                    collection = self._vector_store._vector_store._collection
-                    logger.info(f"Fetching chunks for file_hash: {file_hash}")
-                    result = collection.get(
-                        where={"file_hash": file_hash},
-                        include=["documents"],
-                        limit=15
+                    # Query the per-file collection for this document
+                    docs = self._collection_manager.query_collection(
+                        file_hash=file_hash,
+                        query="main topics content overview",  # Generic query to get content
+                        k=15,
+                        course_id=course_id
                     )
-                    logger.info(f"Got {len(result.get('documents', []))} documents from collection")
-                    if result and result.get("documents"):
-                        docs = [Document(page_content=doc) for doc in result["documents"]]
-                    else:
-                        docs = []
+                    logger.info(f"Got {len(docs)} documents from per-file collection")
                 except Exception as e:
-                    logger.warning(f"Could not get chunks from collection: {e}")
+                    logger.warning(f"Could not get chunks from per-file collection: {e}")
                     docs = []
             else:
                 docs = chunks[:15]
@@ -592,12 +643,14 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     # ===== List and Stats =====
     
     def list_indexed_documents(self) -> Dict[str, Any]:
-        """List all indexed Canvas documents."""
+        """List all indexed Canvas documents from both collection_manager and registry."""
         self._ensure_initialized()
         
-        indexed_registry = self._load_indexed_registry()
         documents = []
+        seen_hashes = set()
         
+        # Source 1: Get from indexed_files_registry (legacy)
+        indexed_registry = self._load_indexed_registry()
         for file_hash, data in indexed_registry.items():
             filename = data.get("filename", "unknown")
             topics = self._topic_storage.get_topics(file_hash) or []
@@ -607,8 +660,31 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 "file_hash": file_hash,
                 "indexed_at": data.get("indexed_at"),
                 "chunks_added": data.get("chunks_added", 0),
-                "topic_count": len(topics)
+                "topic_count": len(topics),
+                "course_id": data.get("course_id")
             })
+            seen_hashes.add(file_hash)
+        
+        # Source 2: Get from collection_manager (per-file collections)
+        # This catches files indexed via collection_manager but not in indexed_registry
+        try:
+            indexed_files = self._collection_manager.get_indexed_files()
+            for file_info in indexed_files:
+                file_hash = file_info.get("file_hash")
+                if file_hash and file_hash not in seen_hashes:
+                    filename = file_info.get("filename", "unknown")
+                    topics = self._topic_storage.get_topics(file_hash) or []
+                    documents.append({
+                        "filename": filename,
+                        "original_filename": filename,
+                        "file_hash": file_hash,
+                        "indexed_at": file_info.get("indexed_at"),
+                        "chunks_added": file_info.get("chunk_count", 0),
+                        "topic_count": len(topics),
+                        "course_id": file_info.get("course_id")
+                    })
+        except Exception as e:
+            logger.warning(f"Could not get files from collection_manager: {e}")
         
         return {
             "success": True,
@@ -618,17 +694,30 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     
     def list_downloaded_files(self) -> Dict[str, Any]:
         """List all downloaded Canvas files."""
+        self._ensure_initialized()
+        
         try:
             files = []
+            indexed_registry = self._load_indexed_registry()
+            
+            # Also get indexed files from collection_manager
+            collection_indexed_files = set()
+            try:
+                for file_info in self._collection_manager.get_indexed_files():
+                    collection_indexed_files.add(file_info.get("filename", ""))
+            except Exception as e:
+                logger.warning(f"Could not get collection manager files: {e}")
+            
             for file_path in self.CANVAS_RAG_DIR.glob("*.pdf"):
                 stat = file_path.stat()
                 
-                # Check if indexed
-                indexed_registry = self._load_indexed_registry()
-                is_indexed = any(
+                # Check if indexed from both sources
+                is_indexed_registry = any(
                     d.get("filename") == file_path.name 
                     for d in indexed_registry.values()
                 )
+                is_indexed_collection = file_path.name in collection_indexed_files
+                is_indexed = is_indexed_registry or is_indexed_collection
                 
                 files.append({
                     "filename": file_path.name,
@@ -770,14 +859,28 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     
     def remove_index(self, filename: str) -> Dict[str, Any]:
         """Remove index for a Canvas file (keep the file itself)."""
+        self._ensure_initialized()
+        
         try:
-            # Find file hash
-            indexed_registry = self._load_indexed_registry()
             hash_to_remove = None
+            
+            # Source 1: Find file hash in indexed_files_registry
+            indexed_registry = self._load_indexed_registry()
             for hash_val, data in indexed_registry.items():
                 if data.get("filename") == filename:
                     hash_to_remove = hash_val
                     break
+            
+            # Source 2: Find file hash in collection_manager registry
+            if not hash_to_remove:
+                try:
+                    indexed_files = self._collection_manager.get_indexed_files()
+                    for file_info in indexed_files:
+                        if file_info.get("filename") == filename:
+                            hash_to_remove = file_info.get("file_hash")
+                            break
+                except Exception as e:
+                    logger.warning(f"Could not search collection_manager: {e}")
             
             if not hash_to_remove:
                 return {
@@ -785,15 +888,27 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     "error": f"File not indexed: {filename}"
                 }
             
-            # Remove from vector store
+            # Remove from per-file collection manager
             try:
-                self._vector_store.delete_by_filter({"file_hash": hash_to_remove})
+                deleted = self._collection_manager.delete_collection(hash_to_remove)
+                if deleted:
+                    logger.info(f"Deleted collection for file hash: {hash_to_remove}")
+                else:
+                    logger.warning(f"Collection not found in manager for hash: {hash_to_remove}")
+            except Exception as e:
+                logger.warning(f"Could not delete from collection_manager: {e}")
+            
+            # Remove from legacy vector store (backwards compatibility)
+            try:
+                if self._vector_store:
+                    self._vector_store.delete_by_filter({"file_hash": hash_to_remove})
             except Exception as e:
                 logger.warning(f"Could not delete from vector store: {e}")
             
             # Remove from indexed registry
-            del indexed_registry[hash_to_remove]
-            self._save_indexed_registry(indexed_registry)
+            if hash_to_remove in indexed_registry:
+                del indexed_registry[hash_to_remove]
+                self._save_indexed_registry(indexed_registry)
             
             # Remove topics
             self._topic_storage.remove_document(hash_to_remove)

@@ -19,7 +19,7 @@ const SIDEBAR_TABS: TabItem[] = [
   { id: TABS.UPLOAD, label: 'Upload', icon: FileUp },
   { id: TABS.QUIZ, label: 'Tạo Quiz', icon: BookOpen },
   { id: TABS.GRADING, label: 'Chấm điểm', icon: BarChart3 },
-  { id: TABS.DOCUMENT_RAG, label: 'RAG Tài liệu', icon: FileText },
+  { id: TABS.DOCUMENT_RAG, label: 'RAG Tài Liệu', icon: FileText },
   { id: TABS.CANVAS, label: 'Canvas LMS', icon: FolderOpen },
   { id: TABS.SETTINGS, label: 'Cài đặt', icon: Settings },
 ];

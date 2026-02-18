@@ -27,13 +27,13 @@ const AppContent: React.FC = () => {
         <div style={{ display: activeTab === TABS.CHAT ? 'block' : 'none', height: '100%' }}>
           <ChatPanel />
         </div>
-        <div style={{ display: activeTab === TABS.UPLOAD ? 'block' : 'none', height: '100%' }}>
+        <div className="panel-padded" style={{ display: activeTab === TABS.UPLOAD ? 'block' : 'none', height: '100%' }}>
           <UploadPanel />
         </div>
-        <div style={{ display: activeTab === TABS.QUIZ ? 'block' : 'none', height: '100%' }}>
+        <div className="panel-padded" style={{ display: activeTab === TABS.QUIZ ? 'block' : 'none', height: '100%' }}>
           <QuizPanel />
         </div>
-        <div style={{ display: activeTab === TABS.GRADING ? 'block' : 'none', height: '100%' }}>
+        <div className="panel-padded" style={{ display: activeTab === TABS.GRADING ? 'block' : 'none', height: '100%' }}>
           <GradingPanel />
         </div>
         <div style={{ display: activeTab === TABS.DOCUMENT_RAG ? 'block' : 'none', height: '100%' }}>
@@ -42,7 +42,7 @@ const AppContent: React.FC = () => {
         <div style={{ display: activeTab === TABS.CANVAS ? 'block' : 'none', height: '100%' }}>
           <CanvasFilesPanel />
         </div>
-        <div style={{ display: activeTab === TABS.SETTINGS ? 'block' : 'none', height: '100%' }}>
+        <div className="panel-padded" style={{ display: activeTab === TABS.SETTINGS ? 'block' : 'none', height: '100%' }}>
           <SettingsPanel />
         </div>
       </main>

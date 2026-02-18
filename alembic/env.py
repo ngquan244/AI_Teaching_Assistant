@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Import models and configuration
 from backend.database.base import Base
-from backend.database.models import User, CanvasToken  # noqa: F401 - Import for metadata
+from backend.database.models import User, CanvasToken, Job, JobEvent  # noqa: F401 - Import for metadata
 from backend.core.config import settings
 
 # Alembic Config object

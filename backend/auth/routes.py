@@ -1,21 +1,31 @@
 """
 Authentication API routes.
-Handles signup, login, and user profile endpoints.
+Handles signup, login, logout, token refresh, and user profile endpoints.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.services.auth_service import AuthService
 from backend.core.config import settings
+from backend.core.security import (
+    create_access_token,
+    create_refresh_token,
+    verify_access_token,
+)
 from backend.auth.schemas import (
     SignupRequest,
     SignupResponse,
     LoginRequest,
     LoginResponse,
+    LogoutRequest,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    MessageResponse,
     UserResponse,
     UserProfileResponse,
     AuthTokenResponse,
@@ -23,7 +33,13 @@ from backend.auth.schemas import (
     AddCanvasTokenRequest,
     DecryptedCanvasTokenResponse,
 )
-from backend.auth.dependencies import CurrentUser
+from backend.auth.dependencies import CurrentUser, get_current_user_token_data
+from backend.auth.rate_limiter import (
+    is_login_locked_out,
+    record_failed_login,
+    reset_login_attempts,
+)
+from backend.core.exceptions import UnauthorizedException
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +63,7 @@ async def signup(
     
     - **email**: User email (must be unique)
     - **name**: User display name
-    - **password**: Password (min 8 chars, must include uppercase, lowercase, digit)
+    - **password**: Password (min 8 chars, must include uppercase, lowercase, digit, special char)
     - **canvas_access_token**: Optional Canvas LMS access token
     - **canvas_domain**: Canvas LMS domain (default: canvas.instructure.com)
     """
@@ -61,11 +77,13 @@ async def signup(
         canvas_domain=request.canvas_domain,
     )
     
-    # Generate tokens
-    _, access_token, refresh_token = await auth_service.login(
-        email=request.email,
-        password=request.password,
+    # Generate tokens directly (no need to call login again)
+    access_token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        role=user.role.value,
     )
+    refresh_token = create_refresh_token(str(user.id))
     
     return SignupResponse(
         user=UserResponse.model_validate(user),
@@ -82,10 +100,12 @@ async def signup(
     "/login",
     response_model=LoginResponse,
     summary="Authenticate user",
-    description="Authenticate with email and password. Returns JWT tokens.",
+    description="Authenticate with email and password. Returns JWT tokens. "
+                "Rate-limited to prevent brute-force attacks.",
 )
 async def login(
     request: LoginRequest,
+    http_request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LoginResponse:
     """
@@ -93,13 +113,42 @@ async def login(
     
     - **email**: User email address
     - **password**: User password
+    
+    Rate limiting: Max 5 attempts per 5-minute window per IP/email.
+    Lockout: 15 minutes after exceeding the limit.
     """
+    # Extract client IP for rate limiting
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    
+    # Check if locked out
+    locked_out, remaining_seconds = await is_login_locked_out(client_ip, request.email)
+    if locked_out:
+        logger.warning(f"Login locked out for IP={client_ip}, remaining={remaining_seconds}s")
+        raise UnauthorizedException(
+            detail=f"Too many login attempts. Please try again in {remaining_seconds // 60 + 1} minutes.",
+            error_code="LOGIN_RATE_LIMITED"
+        )
+    
     auth_service = AuthService(db)
     
-    user, access_token, refresh_token = await auth_service.login(
-        email=request.email,
-        password=request.password,
-    )
+    try:
+        user, access_token, refresh_token = await auth_service.login(
+            email=request.email,
+            password=request.password,
+        )
+    except UnauthorizedException:
+        # Record failed attempt for rate limiting
+        is_locked, attempts_remaining = await record_failed_login(client_ip, request.email)
+        if is_locked:
+            raise UnauthorizedException(
+                detail=f"Too many login attempts. Account temporarily locked for "
+                       f"{settings.LOGIN_LOCKOUT_DURATION_SECONDS // 60} minutes.",
+                error_code="LOGIN_RATE_LIMITED"
+            )
+        raise  # Re-raise original exception
+    
+    # Success: reset rate limit counters
+    await reset_login_attempts(client_ip, request.email)
     
     return LoginResponse(
         user=UserResponse.model_validate(user),
@@ -109,6 +158,75 @@ async def login(
             expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         ),
     )
+
+
+@router.post(
+    "/refresh",
+    response_model=RefreshTokenResponse,
+    summary="Refresh access token",
+    description="Exchange a valid refresh token for a new access token. "
+                "The old refresh token is revoked (token rotation).",
+)
+async def refresh_token(
+    request: RefreshTokenRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RefreshTokenResponse:
+    """
+    Refresh the access token using a valid refresh token.
+    
+    Implements token rotation: each refresh issues a new refresh token
+    and invalidates the old one, limiting the impact of token theft.
+    
+    - **refresh_token**: Current valid refresh token
+    """
+    auth_service = AuthService(db)
+    
+    user, new_access_token, new_refresh_token = await auth_service.refresh_tokens(
+        refresh_token_str=request.refresh_token,
+    )
+    
+    return RefreshTokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+@router.post(
+    "/logout",
+    response_model=MessageResponse,
+    summary="Logout user",
+    description="Revoke the current access token and optionally the refresh token. "
+                "Supports logout from all devices.",
+)
+async def logout(
+    request: LogoutRequest,
+    current_user: CurrentUser,
+    token_data: Annotated[dict, Depends(get_current_user_token_data)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> MessageResponse:
+    """
+    Logout the current user.
+    
+    - **refresh_token**: Optional refresh token to also revoke
+    - **logout_all_devices**: If true, invalidate ALL tokens for this user
+    """
+    auth_service = AuthService(db)
+    
+    await auth_service.logout(
+        access_token_jti=token_data["jti"],
+        access_token_exp=token_data["exp"],
+        refresh_token_str=request.refresh_token,
+        logout_all_devices=request.logout_all_devices,
+        user_id=str(current_user.id),
+    )
+    
+    message = (
+        "Logged out from all devices successfully"
+        if request.logout_all_devices
+        else "Logged out successfully"
+    )
+    return MessageResponse(message=message)
 
 
 @router.get(

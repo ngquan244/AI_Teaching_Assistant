@@ -1,16 +1,21 @@
 """
 ReAct Agent implementation using LangGraph
 With Router/Gating to prevent unnecessary tool calls
+Supports Ollama (local) and Groq (cloud) LLM providers
 """
 import json
+import logging
 import re
 from typing import TypedDict, Annotated, Sequence, Literal, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 from .tools import get_all_tools
+
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
@@ -87,24 +92,42 @@ class ReActAgent:
         model_name: str = "llama3.1:latest",
         max_iterations: int = 10,
         temperature: float = 0.3,  
-        max_history: int = 5 
+        max_history: int = 5,
+        provider: str = "ollama",
+        groq_api_key: Optional[str] = None,
+        groq_base_url: str = "https://api.groq.com/openai/v1",
+        ollama_base_url: str = "http://localhost:11434",
+        groq_fallback_to_ollama: bool = True,
+        ollama_fallback_model: str = "llama3.1:latest",
     ):
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.MAX_HISTORY = max_history
+        self.provider = provider.lower()
+        self.groq_fallback_to_ollama = groq_fallback_to_ollama
         
-        # Initialize LLM - TWO SEPARATE PATHS
-        # Path 1: Plain LLM without tools (for greetings, general knowledge, fallback)
-        self.llm_plain = ChatOllama(
-            model=model_name,
+        # Create LLM instances based on provider
+        self.llm_plain = self._create_llm(
+            provider=self.provider,
+            model_name=model_name,
             temperature=temperature,
+            groq_api_key=groq_api_key,
+            groq_base_url=groq_base_url,
+            ollama_base_url=ollama_base_url,
+            groq_fallback_to_ollama=groq_fallback_to_ollama,
+            ollama_fallback_model=ollama_fallback_model,
         )
         
-        # Path 2: LLM with tools bound (only for explicit tool requests)
-        self.llm = ChatOllama(
-            model=model_name,
+        self.llm = self._create_llm(
+            provider=self.provider,
+            model_name=model_name,
             temperature=temperature,
+            groq_api_key=groq_api_key,
+            groq_base_url=groq_base_url,
+            ollama_base_url=ollama_base_url,
+            groq_fallback_to_ollama=groq_fallback_to_ollama,
+            ollama_fallback_model=ollama_fallback_model,
         )
         
         # Get tools
@@ -115,6 +138,52 @@ class ReActAgent:
         
         # Build graph
         self.graph = self._build_graph()
+    
+    @staticmethod
+    def _create_llm(
+        provider: str,
+        model_name: str,
+        temperature: float,
+        groq_api_key: Optional[str] = None,
+        groq_base_url: str = "https://api.groq.com/openai/v1",
+        ollama_base_url: str = "http://localhost:11434",
+        groq_fallback_to_ollama: bool = True,
+        ollama_fallback_model: str = "llama3.1:latest",
+    ) -> BaseChatModel:
+        """
+        Create LLM instance based on provider.
+        Supports 'ollama' (local) and 'groq' (cloud via OpenAI-compatible API).
+        """
+        if provider == "groq":
+            if not groq_api_key:
+                raise ValueError(
+                    "GROQ_API_KEY is required when using Groq provider. "
+                    "Set it in your .env file."
+                )
+            try:
+                from langchain_openai import ChatOpenAI
+            except ImportError:
+                raise ImportError(
+                    "langchain-openai is required for Groq provider. "
+                    "Install it with: pip install langchain-openai"
+                )
+            
+            logger.info(f"Creating Groq LLM: model={model_name}, base_url={groq_base_url}")
+            return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                api_key=groq_api_key,
+                base_url=groq_base_url,
+                max_tokens=4096,
+            )
+        else:
+            # Default: Ollama (local)
+            logger.info(f"Creating Ollama LLM: model={model_name}, base_url={ollama_base_url}")
+            return ChatOllama(
+                model=model_name,
+                temperature=temperature,
+                base_url=ollama_base_url,
+            )
     
     def _classify_input(self, user_input: str) -> str:
         """
@@ -438,7 +507,17 @@ Answer the user's question directly from your knowledge. Do NOT mention or try t
         Deterministic response for meta questions about the model.
         Returns model info without calling LLM.
         """
-        meta_response = f"Tôi đang sử dụng mô hình {self.model_name} chạy local thông qua Ollama. Đây là một LLM (Large Language Model) được triển khai trên máy của bạn."
+        if self.provider == "groq":
+            meta_response = (
+                f"Tôi đang sử dụng mô hình {self.model_name} chạy trên Groq Cloud. "
+                f"Groq sử dụng LPU (Language Processing Unit) để inference cực nhanh. "
+                f"API endpoint: Groq OpenAI-compatible API."
+            )
+        else:
+            meta_response = (
+                f"Tôi đang sử dụng mô hình {self.model_name} chạy local thông qua Ollama. "
+                f"Đây là một LLM (Large Language Model) được triển khai trên máy của bạn."
+            )
         
         return {
             "messages": [AIMessage(content=meta_response)],
@@ -782,6 +861,24 @@ Context: {error_context[:200]}""")
             yield output
 
 
-def create_agent(model: str = "llama3.1:latest", max_iterations: int = 10) -> ReActAgent:
-    """Factory function để tạo agent"""
-    return ReActAgent(model_name=model, max_iterations=max_iterations)
+def create_agent(
+    model: str = "llama3.1:latest",
+    max_iterations: int = 10,
+    provider: str = "ollama",
+    groq_api_key: Optional[str] = None,
+    groq_base_url: str = "https://api.groq.com/openai/v1",
+    ollama_base_url: str = "http://localhost:11434",
+    groq_fallback_to_ollama: bool = True,
+    ollama_fallback_model: str = "llama3.1:latest",
+) -> ReActAgent:
+    """Factory function to create agent with provider-aware LLM"""
+    return ReActAgent(
+        model_name=model,
+        max_iterations=max_iterations,
+        provider=provider,
+        groq_api_key=groq_api_key,
+        groq_base_url=groq_base_url,
+        ollama_base_url=ollama_base_url,
+        groq_fallback_to_ollama=groq_fallback_to_ollama,
+        ollama_fallback_model=ollama_fallback_model,
+    )

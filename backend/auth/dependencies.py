@@ -1,8 +1,9 @@
 """
 FastAPI dependencies for authentication and authorization.
-Implements role-based access control (RBAC).
+Implements role-based access control (RBAC) with token blacklist support.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db, User, UserRole
-from backend.core.security import verify_access_token
+from backend.core.security import verify_access_token, decode_token
 from backend.services.auth_service import AuthService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ async def get_current_user(
     """
     Dependency to get the current authenticated user.
     
+    Includes token blacklist checking for proper logout support.
+    
     Args:
         credentials: Bearer token from Authorization header
         db: Database session
@@ -39,8 +42,13 @@ async def get_current_user(
         Authenticated User object
         
     Raises:
-        HTTPException: 401 if token is invalid or user not found
+        HTTPException: 401 if token is invalid, blacklisted, or user not found
     """
+    from backend.auth.token_blacklist import (
+        is_token_blacklisted,
+        is_token_issued_before_revocation,
+    )
+    
     token = credentials.credentials
     
     # Verify token
@@ -50,6 +58,26 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if token has been blacklisted (logout)
+    if token_data.jti and await is_token_blacklisted(token_data.jti):
+        logger.warning(f"Blacklisted token used: jti={token_data.jti}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if user-level revocation invalidates this token
+    if token_data.iat and await is_token_issued_before_revocation(
+        token_data.user_id, token_data.iat
+    ):
+        logger.warning(f"Token issued before user-level revocation: user={token_data.user_id}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked (logged out from all devices)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -73,6 +101,31 @@ async def get_current_user(
         )
     
     return user
+
+
+async def get_current_user_token_data(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+) -> dict:
+    """
+    Dependency to extract token metadata (jti, exp) for logout.
+    
+    Returns:
+        Dict with jti and exp from the current access token
+    """
+    token = credentials.credentials
+    payload = decode_token(token, token_type="access")
+    
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return {
+        "jti": payload.get("jti", ""),
+        "exp": datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+    }
 
 
 async def get_current_active_user(

@@ -99,6 +99,8 @@ export interface ConfigResponse {
   available_models: string[];
   default_model: string;
   max_iterations: number;
+  llm_provider: string;
+  groq_available: boolean;
 }
 
 // ===== API Response Types =====

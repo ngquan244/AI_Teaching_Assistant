@@ -14,9 +14,11 @@ from backend.database.models import User, CanvasToken, UserRole, UserStatus, Tok
 from backend.core.security import (
     hash_password,
     verify_password,
+    dummy_verify_password,
     needs_rehash,
     create_access_token,
     create_refresh_token,
+    verify_refresh_token,
     encrypt_token,
     decrypt_token,
 )
@@ -25,8 +27,28 @@ from backend.core.exceptions import (
     UnauthorizedException,
     NotFoundException,
 )
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_email(email: str) -> str:
+    """
+    Mask an email address for safe logging.
+    
+    Examples:
+        user@example.com -> u***@e***.com
+        ab@cd.com -> a***@c***.com
+    """
+    try:
+        local, domain = email.rsplit("@", 1)
+        domain_parts = domain.rsplit(".", 1)
+        masked_local = local[0] + "***" if local else "***"
+        masked_domain = domain_parts[0][0] + "***" if domain_parts[0] else "***"
+        tld = domain_parts[1] if len(domain_parts) > 1 else ""
+        return f"{masked_local}@{masked_domain}.{tld}"
+    except (ValueError, IndexError):
+        return "***@***.***"
 
 
 class AuthService:
@@ -66,7 +88,7 @@ class AuthService:
         # Check for existing user
         existing = await self.get_user_by_email(email)
         if existing:
-            logger.warning(f"Signup attempt with existing email: {email}")
+            logger.warning(f"Signup attempt with existing email: {_mask_email(email)}")
             raise BadRequestException(
                 detail="Email already registered",
                 error_code="EMAIL_EXISTS"
@@ -126,28 +148,33 @@ class AuthService:
         user = await self.get_user_by_email(email)
         
         if not user:
-            logger.warning(f"Login attempt for non-existent email: {email}")
+            # Timing attack prevention: perform a dummy password hash
+            # so the response time is the same as a real password check
+            dummy_verify_password(password)
+            logger.warning(f"Login attempt for non-existent email: {_mask_email(email)}")
             raise UnauthorizedException(
                 detail="Invalid email or password",
                 error_code="INVALID_CREDENTIALS"
             )
         
         if not user.password_hash:
-            logger.warning(f"Login attempt for OAuth-only user: {email}")
+            # Still do dummy verify to prevent timing leak
+            dummy_verify_password(password)
+            logger.warning(f"Login attempt for OAuth-only user: {_mask_email(email)}")
             raise UnauthorizedException(
                 detail="This account uses OAuth login",
                 error_code="OAUTH_ONLY"
             )
         
         if not verify_password(password, user.password_hash):
-            logger.warning(f"Invalid password for user: {email}")
+            logger.warning(f"Invalid password for user: {_mask_email(email)}")
             raise UnauthorizedException(
                 detail="Invalid email or password",
                 error_code="INVALID_CREDENTIALS"
             )
         
         if not user.is_active:
-            logger.warning(f"Login attempt for inactive user: {email}")
+            logger.warning(f"Login attempt for inactive user: {_mask_email(email)}")
             raise UnauthorizedException(
                 detail="Account is disabled",
                 error_code="ACCOUNT_DISABLED"
@@ -279,4 +306,112 @@ class AuthService:
         await self.db.commit()
         
         logger.info(f"Canvas token revoked: {token_id}")
+        return True
+    
+    async def refresh_tokens(
+        self,
+        refresh_token_str: str,
+    ) -> tuple[User, str, str]:
+        """
+        Refresh access token using a valid refresh token.
+        
+        Issues a new access token and a new refresh token (token rotation).
+        The old refresh token is blacklisted to prevent reuse.
+        
+        Args:
+            refresh_token_str: The current refresh token JWT
+            
+        Returns:
+            Tuple of (User, new_access_token, new_refresh_token)
+            
+        Raises:
+            UnauthorizedException: If refresh token is invalid or user not found
+        """
+        from backend.auth.token_blacklist import blacklist_token, is_token_blacklisted
+        
+        # Verify the refresh token
+        token_data = verify_refresh_token(refresh_token_str)
+        if token_data is None:
+            raise UnauthorizedException(
+                detail="Invalid or expired refresh token",
+                error_code="INVALID_REFRESH_TOKEN"
+            )
+        
+        # Check if token is blacklisted
+        if token_data.jti and await is_token_blacklisted(token_data.jti):
+            logger.warning(f"Attempted use of blacklisted refresh token: user={token_data.user_id}")
+            raise UnauthorizedException(
+                detail="Refresh token has been revoked",
+                error_code="TOKEN_REVOKED"
+            )
+        
+        # Get user
+        user = await self.get_user_by_id(UUID(token_data.user_id))
+        if user is None:
+            raise UnauthorizedException(
+                detail="User not found",
+                error_code="USER_NOT_FOUND"
+            )
+        
+        if not user.is_active:
+            raise UnauthorizedException(
+                detail="Account is disabled",
+                error_code="ACCOUNT_DISABLED"
+            )
+        
+        # Blacklist the old refresh token (token rotation)
+        if token_data.jti:
+            await blacklist_token(token_data.jti, token_data.exp)
+        
+        # Issue new tokens
+        new_access_token = create_access_token(
+            user_id=str(user.id),
+            email=user.email,
+            role=user.role.value,
+        )
+        new_refresh_token = create_refresh_token(str(user.id))
+        
+        logger.info(f"Tokens refreshed for user: {user.id}")
+        return user, new_access_token, new_refresh_token
+    
+    async def logout(
+        self,
+        access_token_jti: str,
+        access_token_exp: "datetime",
+        refresh_token_str: Optional[str] = None,
+        logout_all_devices: bool = False,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Logout user by blacklisting their tokens.
+        
+        Args:
+            access_token_jti: JTI of the current access token
+            access_token_exp: Expiration of the current access token
+            refresh_token_str: Optional refresh token to also revoke
+            logout_all_devices: If True, revoke ALL tokens for this user
+            user_id: User ID (required for logout_all_devices)
+            
+        Returns:
+            True if successful
+        """
+        from backend.auth.token_blacklist import (
+            blacklist_token,
+            blacklist_all_user_tokens,
+        )
+        
+        # Always blacklist the current access token
+        await blacklist_token(access_token_jti, access_token_exp)
+        
+        # Blacklist refresh token if provided
+        if refresh_token_str:
+            refresh_data = verify_refresh_token(refresh_token_str)
+            if refresh_data and refresh_data.jti:
+                await blacklist_token(refresh_data.jti, refresh_data.exp)
+        
+        # Logout from all devices
+        if logout_all_devices and user_id:
+            await blacklist_all_user_tokens(user_id)
+        
+        logger.info(f"User logged out: {user_id or 'unknown'}")
         return True

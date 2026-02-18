@@ -110,6 +110,8 @@ class ConfigResponse(BaseModel):
     available_models: List[str]
     default_model: str
     max_iterations: int
+    llm_provider: str = "ollama"
+    groq_available: bool = False
 
 
 class ModelConfig(BaseModel):

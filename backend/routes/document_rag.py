@@ -36,6 +36,8 @@ class QueryRequest(BaseModel):
     question: str
     k: Optional[int] = None
     return_context: bool = False
+    file_hashes: Optional[List[str]] = None  # Query specific files by hash
+    selected_documents: Optional[List[str]] = None  # Query specific files by filename
 
 
 class QueryResponse(BaseModel):
@@ -297,8 +299,11 @@ async def query_documents(request: QueryRequest):
     """
     Query the document knowledge base.
     
+    Queries are scoped to specific per-file collections when file_hashes
+    or selected_documents are provided. Otherwise queries all indexed files.
+    
     Args:
-        request: Query request with question and options
+        request: Query request with question and optional file selection
         
     Returns:
         Answer with source citations
@@ -313,7 +318,9 @@ async def query_documents(request: QueryRequest):
         result = rag_service.query(
             question=request.question,
             k=request.k,
-            return_context=request.return_context
+            return_context=request.return_context,
+            file_hashes=request.file_hashes,
+            selected_documents=request.selected_documents
         )
         
         return QueryResponse(
@@ -878,3 +885,266 @@ async def check_llm_status():
             "error": str(e),
             "message": f"Error checking LLM status: {str(e)}"
         }
+
+
+# ============================================================================
+# ASYNC JOB ENDPOINTS
+# ============================================================================
+# These endpoints return immediately with a job_id.
+# The actual work is done in background via Celery.
+# Poll GET /api/jobs/{job_id} or use SSE at /api/jobs/{job_id}/stream
+
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+from backend.database import get_async_session
+from backend.services.job_service import JobService
+from backend.database.models.job import JobType
+from backend import tasks
+
+
+class AsyncJobResponse(BaseModel):
+    """Response for async job endpoints."""
+    success: bool
+    job_id: str
+    message: str
+    status_url: str
+    stream_url: str
+
+
+@router.post("/async/build-index", response_model=AsyncJobResponse)
+async def async_build_index(
+    filename: str = Form(...),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Build index asynchronously (non-blocking).
+    
+    Returns a job_id immediately. Poll /api/jobs/{job_id} for status.
+    """
+    file_path = RAG_UPLOAD_DIR / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+    
+    try:
+        job_service = JobService(db)
+        
+        # Create job with idempotency
+        job = await job_service.get_or_create_job(
+            user_id=None,  # Add user_id from auth if available
+            job_type=JobType.BUILD_INDEX,
+            payload={"filename": filename, "file_path": str(file_path)},
+            idempotency_key=f"build_index:{filename}",
+        )
+        
+        # Queue task
+        result = tasks.build_index.apply_async(
+            args=[str(job.id), str(file_path)],
+        )
+        
+        # Update with Celery task ID
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Indexing job queued for {filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        logger.error(f"Error queueing build-index job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/upload-and-index", response_model=AsyncJobResponse)
+async def async_upload_and_index(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Upload and index a document asynchronously (non-blocking).
+    
+    The file is saved synchronously (fast), then indexing runs in background.
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    try:
+        # Save file synchronously (fast)
+        file_path = RAG_UPLOAD_DIR / file.filename
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        job_service = JobService(db)
+        
+        # Create job
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.INGEST_DOCUMENT,
+            payload={"filename": file.filename, "file_path": str(file_path)},
+        )
+        
+        # Queue task
+        result = tasks.ingest_document.apply_async(
+            args=[str(job.id), str(file_path)],
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Upload complete, indexing queued for {file.filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in async upload-and-index: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/query", response_model=AsyncJobResponse)
+async def async_query_documents(
+    request: QueryRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Query documents asynchronously (non-blocking).
+    
+    Use this for long or complex queries.
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    
+    try:
+        job_service = JobService(db)
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.RAG_QUERY,
+            payload={
+                "question": request.question,
+                "k": request.k,
+                "return_context": request.return_context,
+            },
+        )
+        
+        result = tasks.query_documents.apply_async(
+            args=[str(job.id), request.question],
+            kwargs={"k": request.k, "return_context": request.return_context},
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message="Query job queued",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        logger.error(f"Error queueing query job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/generate-quiz", response_model=AsyncJobResponse)
+async def async_generate_quiz(
+    request: GenerateQuizRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Generate quiz asynchronously (non-blocking).
+    
+    Quiz generation can take 10-60+ seconds with LLM. This returns immediately.
+    """
+    # Validate topics
+    topics_list = []
+    if request.topics and len(request.topics) > 0:
+        topics_list = [t.strip() for t in request.topics if t.strip()]
+    elif request.topic and request.topic.strip():
+        topics_list = [request.topic.strip()]
+    
+    if not topics_list:
+        raise HTTPException(status_code=400, detail="At least one topic is required")
+    
+    if request.num_questions < 1 or request.num_questions > 30:
+        raise HTTPException(status_code=400, detail="Number of questions must be 1-30")
+    
+    try:
+        job_service = JobService(db)
+        
+        payload = {
+            "topics": topics_list,
+            "num_questions": request.num_questions,
+            "difficulty": request.difficulty,
+            "language": request.language,
+            "selected_documents": request.selected_documents,
+        }
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.GENERATE_QUIZ,
+            payload=payload,
+        )
+        
+        result = tasks.generate_quiz.apply_async(
+            args=[str(job.id)],
+            kwargs=payload,
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Quiz generation queued for topics: {', '.join(topics_list)}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        logger.error(f"Error queueing quiz generation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/async/extract-topics", response_model=AsyncJobResponse)
+async def async_extract_topics(
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Extract topics from all indexed documents asynchronously.
+    
+    This uses LLM to analyze documents and extract key topics.
+    """
+    try:
+        job_service = JobService(db)
+        
+        job = await job_service.create_job(
+            user_id=None,
+            job_type=JobType.EXTRACT_TOPICS,
+            payload={},
+        )
+        
+        result = tasks.extract_topics.apply_async(
+            args=[str(job.id)],
+        )
+        
+        await job_service.update_celery_task_id(job.id, result.id)
+        
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message="Topic extraction queued",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+        
+    except Exception as e:
+        logger.error(f"Error queueing topic extraction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
