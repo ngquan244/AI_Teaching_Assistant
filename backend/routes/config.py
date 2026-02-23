@@ -2,12 +2,14 @@
 Configuration API routes - App Settings
 """
 import logging
+from typing import Dict
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from backend.schemas import ConfigResponse, ModelConfig
 from backend.config import settings
 from backend.core import BadRequestException, Messages
+from backend.services.panel_config_service import get_panel_config, PANEL_LABELS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,4 +82,21 @@ async def switch_provider(req: ProviderSwitchRequest):
         "default_model": settings.DEFAULT_MODEL,
         "available_models": settings.AVAILABLE_MODELS,
         "message": f"Đã chuyển sang provider: {provider}",
+    }
+
+
+# =============================================================================
+# Panel Visibility (public – any authenticated user can read)
+# =============================================================================
+
+@router.get("/panels")
+async def get_panels_config() -> Dict[str, object]:
+    """
+    Get panel visibility configuration.
+    Returns which panels are enabled/disabled so the frontend can hide them.
+    """
+    config = get_panel_config()
+    return {
+        "panels": config,
+        "labels": PANEL_LABELS,
     }

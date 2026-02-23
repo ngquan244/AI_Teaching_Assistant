@@ -328,9 +328,20 @@ class PerFileCollectionManager:
             logger.warning(f"Error during orphaned directory cleanup: {e}")
     
     def _init_embeddings(self):
-        """Initialize shared embedding model (singleton)."""
+        """Initialize shared embedding model (singleton, shared with ChromaVectorStore)."""
         with PerFileCollectionManager._embedding_lock:
             if PerFileCollectionManager._embedding_model is None:
+                # Check if ChromaVectorStore already loaded it
+                try:
+                    from .vectorstore import ChromaVectorStore
+                    if ChromaVectorStore._embedding_model is not None:
+                        logger.info("Reusing embedding model from ChromaVectorStore")
+                        PerFileCollectionManager._embedding_model = ChromaVectorStore._embedding_model
+                        self.embeddings = PerFileCollectionManager._embedding_model
+                        return
+                except ImportError:
+                    pass
+
                 logger.info(f"Loading embedding model: {self.embedding_model_name}")
                 logger.info(f"Using device: {self.device}")
                 
@@ -340,6 +351,14 @@ class PerFileCollectionManager:
                     encode_kwargs={'normalize_embeddings': rag_config.NORMALIZE_EMBEDDINGS}
                 )
                 logger.info("Embedding model loaded successfully")
+
+                # Share with ChromaVectorStore so it doesn't reload
+                try:
+                    from .vectorstore import ChromaVectorStore
+                    if ChromaVectorStore._embedding_model is None:
+                        ChromaVectorStore._embedding_model = PerFileCollectionManager._embedding_model
+                except ImportError:
+                    pass
             
             self.embeddings = PerFileCollectionManager._embedding_model
     

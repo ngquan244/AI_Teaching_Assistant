@@ -109,6 +109,19 @@ body {
   color: white;
 }
 
+/* Admin panel link in teacher sidebar */
+.nav-item.admin-panel-link {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.875rem;
+  color: #f59e0b;
+}
+
+.nav-item.admin-panel-link:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+}
+
 .sidebar-footer {
   padding-top: 1rem;
   border-top: 1px solid var(--border);
@@ -2559,6 +2572,12 @@ body {
 .canvas-panel > * {
   position: relative;
   z-index: 1;
+}
+
+/* Modal overlays inside canvas-panel must keep position:fixed and stack above hero header (z-index:3) */
+.canvas-panel > .modal-overlay {
+  position: fixed;
+  z-index: 1000;
 }
 
 .canvas-panel > h2 {

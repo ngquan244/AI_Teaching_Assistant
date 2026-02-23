@@ -1,6 +1,9 @@
 import React from 'react';
-import { MessageSquare, FileUp, BookOpen, BarChart3, Settings, GraduationCap, FileText, FolderOpen } from 'lucide-react';
-import { TABS, type TabType } from '../types';
+import { useNavigate } from 'react-router-dom';
+import { MessageSquare, FileUp, BookOpen, BarChart3, Settings, GraduationCap, FileText, FolderOpen, PenSquare, ShieldCheck } from 'lucide-react';
+import { TABS, TAB_PATHS, type TabType } from '../types';
+import { useAuth } from '../context/AuthContext';
+import { usePanelConfig } from '../context/PanelConfigContext';
 import UserMenu from './UserMenu';
 
 interface SidebarProps {
@@ -21,10 +24,25 @@ const SIDEBAR_TABS: TabItem[] = [
   { id: TABS.GRADING, label: 'Chấm điểm', icon: BarChart3 },
   { id: TABS.DOCUMENT_RAG, label: 'RAG Tài Liệu', icon: FileText },
   { id: TABS.CANVAS, label: 'Canvas LMS', icon: FolderOpen },
+  { id: TABS.CANVAS_QUIZ, label: 'Tạo Canvas Quiz', icon: PenSquare },
   { id: TABS.SETTINGS, label: 'Cài đặt', icon: Settings },
 ];
 
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { isPanelVisible } = usePanelConfig();
+
+  const handleTabClick = (tab: TabType) => {
+    navigate('/' + TAB_PATHS[tab]);
+    onTabChange(tab);
+  };
+
+  // Filter out disabled panels (admins always see all panels)
+  const visibleTabs = user?.role === 'ADMIN'
+    ? SIDEBAR_TABS
+    : SIDEBAR_TABS.filter((tab) => isPanelVisible(tab.id));
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -33,19 +51,30 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
       </div>
 
       <nav className="sidebar-nav">
-        {SIDEBAR_TABS.map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.id}
               className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => onTabChange(tab.id)}
+              onClick={() => handleTabClick(tab.id)}
             >
               <Icon size={20} />
               <span>{tab.label}</span>
             </button>
           );
         })}
+
+        {/* Admin Panel link — only visible to ADMIN users */}
+        {user?.role === 'ADMIN' && (
+          <button
+            className="nav-item admin-panel-link"
+            onClick={() => navigate('/admin')}
+          >
+            <ShieldCheck size={20} />
+            <span>Admin Panel</span>
+          </button>
+        )}
       </nav>
 
       {/* User menu with logout */}

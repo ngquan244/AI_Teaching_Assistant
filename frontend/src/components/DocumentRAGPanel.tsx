@@ -28,6 +28,7 @@ import {
   FileUp,
   XCircle,
   FolderOpen,
+  Rocket,
 } from 'lucide-react';
 
 /* ---------- tiny helper: random stars for background ---------- */
@@ -104,7 +105,12 @@ interface UploadFileItem {
 // Tab type
 type ActiveTab = 'query' | 'quiz';
 
-const DocumentRAGPanel: React.FC = () => {
+interface DocumentRAGPanelProps {
+  /** Callback to deploy generated quiz to QuizBuilder tab */
+  onDeployToCanvas?: (questions: QuizQuestion[]) => void;
+}
+
+const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas }) => {
   // Decorative stars
   const ragStars = useMemo(() => generateRAGStars(24), []);
 
@@ -2035,9 +2041,27 @@ const DocumentRAGPanel: React.FC = () => {
                 {isExporting ? (
                   <><Loader2 size={16} className="spin" /> Đang chuẩn bị...</>
                 ) : (
-                  <><Upload size={16} /> Import to Canvas</>
+                  <><Upload size={16} /> Export to Canvas</>
                 )}
               </button>
+              {onDeployToCanvas && (
+                <button
+                  className="btn btn-primary btn-deploy-canvas"
+                  onClick={() => {
+                    onDeployToCanvas(generatedQuiz);
+                    setShowQuizModal(false);
+                  }}
+                  disabled={generatedQuiz.length === 0}
+                  style={{
+                    background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <Rocket size={16} /> Tạo Canvas Quiz
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2052,6 +2076,9 @@ const DocumentRAGPanel: React.FC = () => {
         }}
         qtiZipBlob={qtiZipBlob}
         defaultBankName={`AI-TA Bank - ${quizTopic || new Date().toLocaleDateString()}`}
+        onNavigateToQuizBuilder={onDeployToCanvas ? () => {
+          onDeployToCanvas(generatedQuiz);
+        } : undefined}
       />
 
       <style>{`

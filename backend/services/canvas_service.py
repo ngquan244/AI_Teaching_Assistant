@@ -708,3 +708,392 @@ async def import_qti_to_canvas(
             "error": poll_result.get("error", "Migration failed"),
             "migration_id": migration_id,
         }
+
+
+# ============================================================================
+# Canvas Quiz API — Quizzes, Questions, Groups
+# ============================================================================
+
+async def list_quiz_questions(
+    token: str, base_url: str, course_id: int, quiz_id: int
+) -> dict:
+    """
+    List all questions in an existing quiz.
+    GET /api/v1/courses/{course_id}/quizzes/{quiz_id}/questions
+    
+    This is the primary way to discover available questions on the UET Canvas
+    instance (the Assessment Question Banks API is not available).
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/quizzes/{quiz_id}/questions"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    all_questions = []
+    page = 1
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            while True:
+                response = await client.get(
+                    url, headers=headers, params={"per_page": 50, "page": page}
+                )
+                response.raise_for_status()
+                questions = response.json()
+                if not questions:
+                    break
+                all_questions.extend(questions)
+                link = response.headers.get("Link", "")
+                if 'rel="next"' not in link:
+                    break
+                page += 1
+            
+            return {
+                "success": True,
+                "questions": all_questions,
+                "quiz_id": quiz_id,
+                "total": len(all_questions),
+            }
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Canvas API error listing quiz questions: {e}")
+            return {
+                "success": False,
+                "error": f"Canvas API error: {e.response.status_code}",
+                "questions": [],
+                "quiz_id": quiz_id,
+            }
+        except httpx.RequestError as e:
+            logger.error(f"Network error listing quiz questions: {e}")
+            return {
+                "success": False,
+                "error": "Network error connecting to Canvas",
+                "questions": [],
+                "quiz_id": quiz_id,
+            }
+
+
+async def list_quizzes(token: str, base_url: str, course_id: int) -> dict:
+    """
+    List quizzes for a course.
+    GET /api/v1/courses/{course_id}/quizzes
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/quizzes"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(
+                url, headers=headers, params={"per_page": 50}
+            )
+            response.raise_for_status()
+            quizzes = response.json()
+            return {"success": True, "quizzes": quizzes, "course_id": course_id}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Canvas API error listing quizzes: {e}")
+            return {
+                "success": False,
+                "error": f"Canvas API error: {e.response.status_code}",
+                "quizzes": [],
+            }
+        except httpx.RequestError as e:
+            logger.error(f"Network error listing quizzes: {e}")
+            return {
+                "success": False,
+                "error": "Network error connecting to Canvas",
+                "quizzes": [],
+            }
+
+
+async def create_quiz(
+    token: str, base_url: str, course_id: int, quiz_params: dict
+) -> dict:
+    """
+    Create a new quiz for a course.
+    POST /api/v1/courses/{course_id}/quizzes
+    
+    quiz_params keys: title, description, quiz_type, time_limit,
+                      shuffle_answers, allowed_attempts, published
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/quizzes"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    
+    # Wrap under quiz[] namespace as Canvas expects
+    payload = {"quiz": quiz_params}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            quiz = response.json()
+            return {
+                "success": True,
+                "quiz": quiz,
+                "quiz_id": quiz.get("id"),
+                "html_url": quiz.get("html_url"),
+            }
+        except httpx.HTTPStatusError as e:
+            body = e.response.text
+            logger.error(f"Canvas API error creating quiz: {e} — {body}")
+            return {
+                "success": False,
+                "error": f"Canvas API error {e.response.status_code}: {body}",
+            }
+        except httpx.RequestError as e:
+            logger.error(f"Network error creating quiz: {e}")
+            return {"success": False, "error": "Network error connecting to Canvas"}
+
+
+async def add_quiz_question(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_id: int,
+    question_data: dict,
+) -> dict:
+    """
+    Add a single question to a quiz.
+    POST /api/v1/courses/{course_id}/quizzes/{quiz_id}/questions
+    
+    question_data should follow Canvas Quiz Question format:
+      question_name, question_text, question_type, points_possible, answers[]
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/quizzes/{quiz_id}/questions"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"question": question_data}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            q = response.json()
+            return {"success": True, "question": q, "question_id": q.get("id")}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text
+            logger.error(f"Error adding quiz question: {e} — {body}")
+            return {"success": False, "error": f"Canvas API error: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error adding quiz question: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def create_question_group(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_id: int,
+    group_name: str,
+    pick_count: int,
+    question_points: float,
+    bank_id: int,
+) -> dict:
+    """
+    Create a question group linked to an assessment question bank.
+    POST /api/v1/courses/{course_id}/quizzes/{quiz_id}/groups
+    
+    This makes Canvas randomly pick `pick_count` questions from the bank.
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/quizzes/{quiz_id}/groups"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "quiz_groups": [
+            {
+                "name": group_name,
+                "pick_count": pick_count,
+                "question_points": question_points,
+                "assessment_question_bank_id": bank_id,
+            }
+        ]
+    }
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            groups = response.json()
+            return {"success": True, "groups": groups}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text
+            logger.error(f"Error creating question group: {e} — {body}")
+            return {"success": False, "error": f"Canvas API error: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error creating group: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def publish_quiz(
+    token: str, base_url: str, course_id: int, quiz_id: int
+) -> dict:
+    """
+    Publish a quiz.
+    PUT /api/v1/courses/{course_id}/quizzes/{quiz_id}
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/quizzes/{quiz_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"quiz": {"published": True}}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+            quiz = response.json()
+            return {"success": True, "quiz": quiz}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text
+            logger.error(f"Error publishing quiz: {e} — {body}")
+            return {"success": False, "error": f"Canvas API error: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error publishing quiz: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def build_full_quiz(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_params: dict,
+    direct_questions: list | None = None,
+    source_questions: list | None = None,
+    default_points: float = 1.0,
+) -> dict:
+    """
+    End-to-end quiz builder:
+    1. Create the quiz shell
+    2. Add *direct* questions (provided inline by the client)
+    3. Copy questions from source quizzes (if any)
+    4. Optionally publish
+
+    direct_questions format (from AI generation):
+      [{"question_text": "...", "options": {"A": "...", ...},
+        "correct_keys": ["A"], "points": 1.0,
+        "question_type": "multiple_choice_question"}, ...]
+
+    source_questions format (copy from Canvas quiz):
+      [{"source_quiz_id": 123, "question_ids": [456, 789]}, ...]
+
+    Returns summary with quiz_id, quiz_url, counts.
+    """
+    direct_questions = direct_questions or []
+    source_questions = source_questions or []
+
+    should_publish = quiz_params.pop("published", False)
+    quiz_params["published"] = False  # create unpublished first
+
+    # --- Step 1: Create quiz ---
+    logger.info(f"Creating quiz '{quiz_params.get('title')}' in course {course_id}")
+    create_result = await create_quiz(token, base_url, course_id, quiz_params)
+    if not create_result["success"]:
+        return create_result
+
+    quiz_id = create_result["quiz_id"]
+    quiz_url = create_result.get("html_url", "")
+    questions_added = 0
+
+    # --- Step 2: Add direct questions ---
+    for idx, dq in enumerate(direct_questions):
+        options = dq.get("options", {})
+        correct_keys = set(dq.get("correct_keys", []))
+        q_type = dq.get("question_type", "multiple_choice_question")
+
+        # If multiple correct keys, switch to multiple_answers_question
+        if len(correct_keys) > 1:
+            q_type = "multiple_answers_question"
+
+        answers = []
+        for letter, text in sorted(options.items()):
+            answers.append({
+                "answer_text": text,
+                "answer_weight": 100 if letter in correct_keys else 0,
+            })
+
+        question_payload = {
+            "question_name": f"Question {idx + 1}",
+            "question_text": dq.get("question_text", ""),
+            "question_type": q_type,
+            "points_possible": dq.get("points", default_points),
+            "answers": answers,
+        }
+
+        add_result = await add_quiz_question(
+            token, base_url, course_id, quiz_id, question_payload
+        )
+        if add_result["success"]:
+            questions_added += 1
+        else:
+            logger.warning(f"Failed to add direct question {idx}: {add_result.get('error')}")
+
+    # --- Step 3: Copy questions from source quizzes ---
+    for selection in source_questions:
+        src_quiz_id = selection["source_quiz_id"]
+        q_ids = set(selection["question_ids"])
+        
+        # Fetch questions from the source quiz
+        src_result = await list_quiz_questions(token, base_url, course_id, src_quiz_id)
+        if not src_result["success"]:
+            logger.warning(
+                f"Failed to list questions from quiz {src_quiz_id}: "
+                f"{src_result.get('error')}"
+            )
+            continue
+        
+        for q_data in src_result["questions"]:
+            if q_data["id"] not in q_ids:
+                continue
+            
+            # Re-create the question in the new quiz
+            question_payload = {
+                "question_name": q_data.get("question_name", f"Question {q_data['id']}"),
+                "question_text": q_data.get("question_text", ""),
+                "question_type": q_data.get("question_type", "multiple_choice_question"),
+                "points_possible": q_data.get("points_possible", default_points),
+                "answers": q_data.get("answers", []),
+            }
+            # Include optional fields if present
+            for field in ("correct_comments", "incorrect_comments", "neutral_comments",
+                          "correct_comments_html", "incorrect_comments_html", "neutral_comments_html",
+                          "matches", "matching_answer_incorrect_matches", "variables",
+                          "formulas", "formula_decimal_places", "answer_tolerance"):
+                if q_data.get(field):
+                    question_payload[field] = q_data[field]
+            
+            add_result = await add_quiz_question(
+                token, base_url, course_id, quiz_id, question_payload
+            )
+            if add_result["success"]:
+                questions_added += 1
+            else:
+                logger.warning(f"Failed to add question {q_data['id']}: {add_result.get('error')}")
+    
+    # --- Step 4: Publish if requested ---
+    if should_publish:
+        pub_result = await publish_quiz(token, base_url, course_id, quiz_id)
+        if not pub_result["success"]:
+            logger.warning(f"Quiz created but publish failed: {pub_result.get('error')}")
+    
+    return {
+        "success": True,
+        "quiz_id": quiz_id,
+        "quiz_url": quiz_url,
+        "title": quiz_params.get("title", ""),
+        "questions_added": questions_added,
+        "published": should_publish,
+        "message": f"Quiz created with {questions_added} questions.",
+    }

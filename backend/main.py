@@ -19,7 +19,9 @@ from backend.routes import chat, upload, quiz, grading, config as config_routes
 from backend.routes import document_rag as document_rag_routes
 from backend.routes import canvas as canvas_routes
 from backend.routes import canvas_rag as canvas_rag_routes
+from backend.routes import canvas_quiz as canvas_quiz_routes
 from backend.routes import jobs as jobs_routes
+from backend.routes import admin as admin_routes
 from backend.auth import auth_router
 from backend.config import settings
 from backend.core import BaseAPIException
@@ -42,6 +44,35 @@ async def lifespan(app: FastAPI):
     # Ensure directories exist
     for directory in [settings.QUIZ_DIR, settings.EXPORTS_DIR, settings.DATA_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
+    
+    # ── Preload BAAI/bge-m3 embedding model ──────────────────────────
+    # This avoids a long wait the first time a user opens the RAG page.
+    try:
+        logger.info("Preloading embedding model (BAAI/bge-m3)...")
+        from backend.modules.document_rag.collection_manager import (
+            get_uploads_collection_manager,
+            get_canvas_collection_manager,
+        )
+        # Instantiating the managers triggers _init_embeddings() (singleton)
+        get_uploads_collection_manager()
+        get_canvas_collection_manager()
+        logger.info("Embedding model preloaded successfully ✓")
+    except Exception as e:
+        logger.warning(f"Could not preload embedding model (non-fatal): {e}")
+    
+    # ── Preload RAG & Canvas RAG services ─────────────────────────────
+    # These create ChromaVectorStore, LLM chains, etc. on first access.
+    try:
+        logger.info("Preloading RAG services...")
+        from backend.modules.document_rag.rag_service import RAGService
+        from backend.modules.document_rag.canvas_rag_service import CanvasRAGService
+        rag = RAGService.get_instance()
+        rag._ensure_initialized()
+        canvas_rag = CanvasRAGService.get_instance()
+        canvas_rag._ensure_initialized()
+        logger.info("RAG services preloaded successfully ✓")
+    except Exception as e:
+        logger.warning(f"Could not preload RAG services (non-fatal): {e}")
     
     yield
     
@@ -106,7 +137,9 @@ app.include_router(config_routes.router, prefix="/api/config", tags=["Configurat
 app.include_router(document_rag_routes.router, prefix="/api/document-rag", tags=["Document RAG"])
 app.include_router(canvas_routes.router, prefix="/api/canvas", tags=["Canvas LMS"])
 app.include_router(canvas_rag_routes.router, prefix="/api/canvas-rag", tags=["Canvas RAG"])
+app.include_router(canvas_quiz_routes.router, prefix="/api/canvas-quiz", tags=["Canvas Quiz"])
 app.include_router(jobs_routes.router, tags=["Jobs"])
+app.include_router(admin_routes.router, tags=["Admin"])
 
 # Serve static files (generated quizzes, exports)
 app.mount("/static/quizzes", StaticFiles(directory=str(settings.QUIZ_DIR)), name="quizzes")

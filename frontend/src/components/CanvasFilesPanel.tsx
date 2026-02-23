@@ -1213,14 +1213,16 @@ const CanvasFilesPanel: React.FC = () => {
         </div>
       )}
 
-      {/* Course Selection Modal */}
+      </div>{/* end canvas-content */}
+
+      {/* Course Selection Modal — rendered outside canvas-content so it stacks above hero header */}
       <CanvasCourseModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onCourseSelected={handleCourseSelected}
       />
 
-      {/* Edit Topics Modal */}
+      {/* Edit Topics Modal — also outside canvas-content for proper z-stacking */}
       {showEditTopicsModal && (
         <div className="modal-overlay edit-topics-overlay" onClick={closeEditTopicsModal}>
           <div className="edit-topics-modal" onClick={e => e.stopPropagation()}>
@@ -1347,7 +1349,6 @@ const CanvasFilesPanel: React.FC = () => {
           </div>
         </div>
       )}
-      </div>{/* end canvas-content */}
     </div>
   );
 };

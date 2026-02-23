@@ -21,8 +21,9 @@ let cachedToken: { token: string; baseUrl: string; expiresAt: number } | null = 
 /**
  * Get Canvas headers from backend (fetches decrypted token)
  * Caches the token for 5 minutes to reduce API calls
+ * Exported so canvasQuiz.ts can share the same cache.
  */
-async function getCanvasHeaders(): Promise<Record<string, string>> {
+export async function getCanvasHeaders(): Promise<Record<string, string>> {
   const now = Date.now();
   
   // Return cached token if still valid

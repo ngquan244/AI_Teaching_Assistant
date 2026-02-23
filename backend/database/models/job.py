@@ -53,6 +53,9 @@ class JobType(str, enum.Enum):
     # Chat/Agent Operations
     AGENT_INVOKE = "AGENT_INVOKE"
     
+    # Canvas Quiz
+    CANVAS_CREATE_QUIZ = "CANVAS_CREATE_QUIZ"
+    
     # Misc
     FILE_DOWNLOAD = "FILE_DOWNLOAD"
     EMAIL_SEND = "EMAIL_SEND"

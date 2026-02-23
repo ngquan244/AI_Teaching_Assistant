@@ -338,3 +338,63 @@ def download_and_index(
         raise
     finally:
         db_session.close()
+
+
+@shared_task(
+    bind=True,
+    base=RateLimitedCanvasTask,
+    name="backend.tasks.canvas_tasks.create_canvas_quiz",
+    queue="canvas",
+    max_retries=2,
+    soft_time_limit=300,
+    time_limit=600,
+)
+def create_canvas_quiz(
+    self,
+    job_id: str,
+    canvas_token: str,
+    canvas_base_url: str,
+    course_id: int,
+    quiz_params: Dict[str, Any],
+    direct_questions: List[Dict[str, Any]] | None = None,
+    source_questions: List[Dict[str, Any]] | None = None,
+    default_points: float = 1.0,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a full Canvas quiz (async Celery task version).
+    
+    Use this for large quizzes where the synchronous endpoint may time out.
+    """
+    from backend.services.canvas_service import build_full_quiz
+    
+    job_service, db_session = get_sync_job_service()
+    job_uuid = uuid.UUID(job_id)
+    
+    try:
+        job_service.start_job(job_uuid, f"Creating quiz: {quiz_params.get('title', 'Untitled')}")
+        
+        job_service.update_progress(job_uuid, 10, "Building quiz on Canvas")
+        
+        result = run_async(build_full_quiz(
+            token=canvas_token,
+            base_url=canvas_base_url,
+            course_id=course_id,
+            quiz_params=quiz_params,
+            direct_questions=direct_questions,
+            source_questions=source_questions,
+            default_points=default_points,
+        ))
+        
+        if result.get("success"):
+            job_service.complete_job(job_uuid, result)
+        else:
+            job_service.fail_job(job_uuid, result.get("error", "Quiz creation failed"))
+        
+        return result
+    except Exception as e:
+        logger.exception(f"Error in create_canvas_quiz task: {e}")
+        job_service.fail_job(job_uuid, str(e))
+        raise
+    finally:
+        db_session.close()

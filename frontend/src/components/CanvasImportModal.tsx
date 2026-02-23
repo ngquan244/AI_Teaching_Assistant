@@ -11,6 +11,7 @@ import {
   Server,
   Eye,
   EyeOff,
+  PenSquare,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api/auth';
@@ -23,6 +24,8 @@ interface CanvasImportModalProps {
   onClose: () => void;
   qtiZipBlob: Blob | null;
   defaultBankName: string;
+  /** Optional callback to navigate to Quiz Builder after QTI import */
+  onNavigateToQuizBuilder?: () => void;
 }
 
 const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
@@ -30,6 +33,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
   onClose,
   qtiZipBlob,
   defaultBankName,
+  onNavigateToQuizBuilder,
 }) => {
   const { canvasTokens, isAuthenticated } = useAuth();
   
@@ -228,7 +232,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
         <div className="modal-header">
           <h2>
             <Upload size={24} />
-            Import to Canvas Question Bank
+            Xuất câu hỏi lên Canvas
           </h2>
           <button className="close-btn" onClick={onClose}>
             <X size={20} />
@@ -242,24 +246,46 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
               <div className="progress-icon">{getStatusIcon()}</div>
               <div className="progress-status">
                 <span className={`status-badge ${importStatus}`}>
-                  {importStatus === 'creating_migration' && 'Creating Migration'}
-                  {importStatus === 'uploading_to_s3' && 'Uploading'}
-                  {importStatus === 'processing' && 'Processing'}
-                  {importStatus === 'completed' && 'Completed'}
-                  {importStatus === 'failed' && 'Failed'}
+                  {importStatus === 'creating_migration' && 'Đang khởi tạo...'}
+                  {importStatus === 'uploading_to_s3' && 'Đang tải lên...'}
+                  {importStatus === 'processing' && 'Đang xử lý...'}
+                  {importStatus === 'completed' && 'Hoàn tất'}
+                  {importStatus === 'failed' && 'Thất bại'}
                 </span>
               </div>
               <p className="progress-message">{importMessage}</p>
               {importError && <p className="error-message">{importError}</p>}
               
               {importStatus === 'completed' && (
-                <button className="btn btn-primary" onClick={onClose}>
-                  Close
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
+                  <button className="btn btn-primary" onClick={onClose}>
+                    Đóng
+                  </button>
+                  {onNavigateToQuizBuilder && (
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        onClose();
+                        onNavigateToQuizBuilder();
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(139, 92, 246, 0.1))',
+                        border: '1px solid rgba(56, 189, 248, 0.3)',
+                        color: '#38bdf8',
+                      }}
+                    >
+                      <PenSquare size={16} />
+                      Tạo Quiz từ Bank này →
+                    </button>
+                  )}
+                </div>
               )}
               {importStatus === 'failed' && (
                 <button className="btn btn-secondary" onClick={() => setImportStatus('idle')}>
-                  Try Again
+                  Thử lại
                 </button>
               )}
             </div>
@@ -278,7 +304,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                   type="text"
                   value={canvasHost}
                   onChange={(e) => setCanvasHost(e.target.value)}
-                  placeholder={isFetchingToken ? 'Loading from Settings...' : 'https://canvas.example.com'}
+                  placeholder={isFetchingToken ? 'Đang lấy từ Cài đặt...' : 'https://canvas.example.com'}
                   className={validationErrors.canvasHost ? 'error' : ''}
                   disabled={isFetchingToken}
                 />
@@ -293,7 +319,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                   <Settings size={16} />
                   Access Token
                   <span className="label-hint">
-                    {isFetchingToken ? '(loading from Settings...)' : '(from Settings or override below)'}
+                    {isFetchingToken ? '(đang lấy từ Cài đặt...)' : '(từ Cài đặt hoặc nhập thủ công)'}
                   </span>
                 </label>
                 <div className="token-input-wrapper">
@@ -301,7 +327,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                     type={showToken ? 'text' : 'password'}
                     value={accessToken}
                     onChange={(e) => setAccessToken(e.target.value)}
-                    placeholder={isFetchingToken ? 'Loading token...' : 'Canvas API access token'}
+                    placeholder={isFetchingToken ? 'Đang lấy token...' : 'Canvas API access token'}
                     className={validationErrors.accessToken ? 'error' : ''}
                     disabled={isFetchingToken}
                   />
@@ -324,7 +350,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                   <span className="error-text">{validationErrors.accessToken}</span>
                 )}
                 {!isAuthenticated && (
-                  <span className="info-text">Please login and add Canvas token in Settings first</span>
+                  <span className="info-text">Vui lòng đăng nhập và thêm Canvas token ở phần Cài đặt</span>
                 )}
               </div>
 
@@ -332,7 +358,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
               <div className="form-group">
                 <label>
                   <BookOpen size={16} />
-                  Course
+                  Khóa học
                 </label>
                 <div className="course-select-wrapper">
                   <select
@@ -342,7 +368,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                     disabled={courses.length === 0}
                   >
                     <option value="">
-                      {courses.length > 0 ? 'Select a course...' : 'Load courses first'}
+                      {courses.length > 0 ? 'Chọn khóa học...' : 'Tải danh sách trước'}
                     </option>
                     {courses.map((course) => (
                       <option key={course.id} value={course.id}>
@@ -361,7 +387,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                     ) : (
                       <ChevronDown size={14} />
                     )}
-                    {isLoadingCourses ? 'Loading...' : 'Load Courses'}
+                    {isLoadingCourses ? 'Đang tải...' : 'Tải danh sách'}
                   </button>
                 </div>
                 {coursesError && <span className="error-text">{coursesError}</span>}
@@ -374,13 +400,13 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
               <div className="form-group">
                 <label>
                   <BookOpen size={16} />
-                  Question Bank Name
+                  Tên ngân hàng câu hỏi
                 </label>
                 <input
                   type="text"
                   value={questionBankName}
                   onChange={(e) => setQuestionBankName(e.target.value)}
-                  placeholder="e.g., AI-TA Bank - Chapter 1"
+                  placeholder="VD: AI-TA Bank - Chương 1"
                   className={validationErrors.bankName ? 'error' : ''}
                 />
                 {validationErrors.bankName && (
@@ -390,17 +416,17 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
 
               {/* QTI Package Info */}
               <div className="form-group qti-info">
-                <label>QTI Package</label>
+                <label>Gói QTI</label>
                 <div className="qti-status">
                   {qtiZipBlob ? (
                     <>
                       <CheckCircle size={16} style={{ color: '#10b981' }} />
-                      <span>Ready ({(qtiZipBlob.size / 1024).toFixed(1)} KB)</span>
+                      <span>Sẵn sàng ({(qtiZipBlob.size / 1024).toFixed(1)} KB)</span>
                     </>
                   ) : (
                     <>
                       <AlertCircle size={16} style={{ color: '#f59e0b' }} />
-                      <span>No package available</span>
+                      <span>Chưa có gói nào</span>
                     </>
                   )}
                 </div>
@@ -416,7 +442,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
         {importStatus === 'idle' && (
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={onClose}>
-              Cancel
+              Hủy
             </button>
             <button
               className="btn btn-primary"
@@ -424,7 +450,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
               disabled={!qtiZipBlob}
             >
               <Upload size={16} />
-              Import to Canvas
+              Export to Canvas
             </button>
           </div>
         )}
@@ -437,16 +463,17 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           left: 0;
           right: 0;
           bottom: 0;
-          background: rgba(0, 0, 0, 0.5);
+          background: rgba(0, 0, 0, 0.65);
           display: flex;
           align-items: center;
           justify-content: center;
           z-index: 1000;
           padding: 20px;
+          backdrop-filter: blur(4px);
         }
 
         .canvas-import-modal {
-          background: white;
+          background: #131525;
           border-radius: 16px;
           width: 100%;
           max-width: 520px;
@@ -454,7 +481,8 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           overflow: hidden;
           display: flex;
           flex-direction: column;
-          box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+          box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.08);
         }
 
         .modal-header {
@@ -462,9 +490,8 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           align-items: center;
           justify-content: space-between;
           padding: 20px 24px;
-          border-bottom: 1px solid #e5e7eb;
-          background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-          color: white;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+          background: linear-gradient(135deg, rgba(56,189,248,0.12), rgba(129,140,248,0.1));
         }
 
         .modal-header h2 {
@@ -472,28 +499,34 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           align-items: center;
           gap: 12px;
           margin: 0;
-          font-size: 1.25rem;
-          font-weight: 600;
+          font-size: 1.15rem;
+          font-weight: 700;
+          background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #a78bfa 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
         }
 
         .close-btn {
-          background: rgba(255, 255, 255, 0.2);
-          border: none;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255,255,255,0.1);
           padding: 8px;
           border-radius: 8px;
           cursor: pointer;
-          color: white;
-          transition: background 0.2s;
+          color: #94a3b8;
+          transition: all 0.2s;
         }
 
         .close-btn:hover {
-          background: rgba(255, 255, 255, 0.3);
+          background: rgba(255, 255, 255, 0.1);
+          color: #e2e8f0;
         }
 
         .modal-body {
           padding: 24px;
           overflow-y: auto;
           flex: 1;
+          color: #e2e8f0;
         }
 
         .form-group {
@@ -505,32 +538,43 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           align-items: center;
           gap: 8px;
           font-weight: 600;
-          color: #374151;
+          color: #94a3b8;
           margin-bottom: 8px;
-          font-size: 0.9rem;
+          font-size: 0.85rem;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
         }
 
         .label-hint {
           font-weight: 400;
-          color: #9ca3af;
-          font-size: 0.8rem;
+          color: #475569;
+          font-size: 0.78rem;
+          text-transform: none;
+          letter-spacing: 0;
         }
 
         .form-group input,
         .form-group select {
           width: 100%;
-          padding: 12px 16px;
-          border: 2px solid #e5e7eb;
+          padding: 11px 14px;
+          border: 1px solid rgba(255,255,255,0.1);
           border-radius: 10px;
-          font-size: 0.95rem;
+          font-size: 0.9rem;
           transition: all 0.2s;
+          background: rgba(255,255,255,0.04);
+          color: #e2e8f0;
+        }
+
+        .form-group input::placeholder {
+          color: #475569;
         }
 
         .form-group input:focus,
         .form-group select:focus {
           outline: none;
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+          border-color: #38bdf8;
+          box-shadow: 0 0 0 3px rgba(56,189,248,0.12);
+          background: rgba(255,255,255,0.06);
         }
 
         .form-group input.error,
@@ -538,9 +582,21 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           border-color: #ef4444;
         }
 
+        .form-group select option {
+          background: #1e293b;
+          color: #e2e8f0;
+        }
+
         .error-text {
           display: block;
-          color: #ef4444;
+          color: #f87171;
+          font-size: 0.8rem;
+          margin-top: 6px;
+        }
+
+        .info-text {
+          display: block;
+          color: #f59e0b;
           font-size: 0.8rem;
           margin-top: 6px;
         }
@@ -555,18 +611,19 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
         }
 
         .toggle-visibility {
-          padding: 0 16px;
-          background: #f3f4f6;
-          border: 2px solid #e5e7eb;
+          padding: 0 14px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
           border-radius: 10px;
           font-size: 0.85rem;
-          color: #6b7280;
+          color: #94a3b8;
           cursor: pointer;
           transition: all 0.2s;
         }
 
         .toggle-visibility:hover {
-          background: #e5e7eb;
+          background: rgba(255,255,255,0.1);
+          color: #e2e8f0;
         }
 
         .course-select-wrapper {
@@ -590,9 +647,10 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           align-items: center;
           gap: 8px;
           padding: 12px 16px;
-          background: #f9fafb;
+          background: rgba(255,255,255,0.04);
           border-radius: 10px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid rgba(255,255,255,0.08);
+          color: #cbd5e1;
         }
 
         .import-progress-section {
@@ -623,29 +681,30 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
         .status-badge.creating_migration,
         .status-badge.uploading_to_s3,
         .status-badge.processing {
-          background: #dbeafe;
-          color: #1d4ed8;
+          background: rgba(59,130,246,0.15);
+          color: #60a5fa;
         }
 
         .status-badge.completed {
-          background: #d1fae5;
-          color: #047857;
+          background: rgba(16,185,129,0.15);
+          color: #34d399;
         }
 
         .status-badge.failed {
-          background: #fee2e2;
-          color: #b91c1c;
+          background: rgba(239,68,68,0.15);
+          color: #f87171;
         }
 
         .progress-message {
-          color: #6b7280;
+          color: #94a3b8;
           font-size: 0.95rem;
           margin-bottom: 16px;
         }
 
         .import-progress-section .error-message {
-          color: #ef4444;
-          background: #fef2f2;
+          color: #f87171;
+          background: rgba(239,68,68,0.1);
+          border: 1px solid rgba(239,68,68,0.2);
           padding: 12px 16px;
           border-radius: 8px;
           margin-bottom: 16px;
@@ -658,8 +717,8 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
           justify-content: flex-end;
           gap: 12px;
           padding: 16px 24px;
-          border-top: 1px solid #e5e7eb;
-          background: #f9fafb;
+          border-top: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.02);
         }
 
         .btn {
@@ -676,28 +735,33 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
         }
 
         .btn-primary {
-          background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
           color: white;
+          box-shadow: 0 2px 10px rgba(59,130,246,0.25);
         }
 
         .btn-primary:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          filter: brightness(1.1);
           transform: translateY(-1px);
+          box-shadow: 0 4px 16px rgba(59,130,246,0.35);
         }
 
         .btn-primary:disabled {
-          background: #94a3b8;
+          background: rgba(255,255,255,0.08);
+          color: #475569;
           cursor: not-allowed;
+          box-shadow: none;
         }
 
         .btn-secondary {
-          background: #f3f4f6;
-          color: #374151;
-          border: 1px solid #e5e7eb;
+          background: rgba(255,255,255,0.06);
+          color: #cbd5e1;
+          border: 1px solid rgba(255,255,255,0.1);
         }
 
         .btn-secondary:hover {
-          background: #e5e7eb;
+          background: rgba(255,255,255,0.1);
+          color: #e2e8f0;
         }
 
         .btn-sm {

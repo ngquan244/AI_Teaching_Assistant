@@ -128,6 +128,79 @@ export interface QTIImportResponse {
   progress_url?: string;
 }
 
+
+// ============================================================================
+// Canvas Quiz Builder Types
+// ============================================================================
+
+/** A question displayed in the Quiz Builder UI (internal app format). */
+export interface QuizBuilderQuestion {
+  /** Original question text */
+  question: string;
+  /** Answer options keyed by letter: { "A": "...", "B": "..." } */
+  options: Record<string, string>;
+  /** Correct option(s) keyed by letter: { "A": "correct text" } */
+  correct: Record<string, string>;
+}
+
+export interface CanvasQuiz {
+  id: number;
+  title: string;
+  html_url?: string;
+  description?: string;
+  quiz_type?: string;
+  time_limit?: number | null;
+  shuffle_answers?: boolean;
+  allowed_attempts?: number;
+  question_count?: number;
+  points_possible?: number;
+  published?: boolean;
+}
+
+export interface CanvasQuizCreate {
+  title: string;
+  description?: string;
+  quiz_type: 'assignment' | 'practice_quiz' | 'graded_survey' | 'survey';
+  time_limit?: number | null;
+  shuffle_answers: boolean;
+  allowed_attempts: number;
+  published: boolean;
+}
+
+/** A question provided directly by the client (sent to backend). */
+export interface DirectQuizQuestion {
+  question_text: string;
+  question_type?: string;
+  options: Record<string, string>;
+  correct_keys: string[];
+  points?: number;
+}
+
+/** Copy questions from an existing Canvas quiz. */
+export interface SourceQuizSelect {
+  source_quiz_id: number;
+  question_ids: number[];
+}
+
+export interface CreateCanvasQuizRequest {
+  course_id: number;
+  quiz: CanvasQuizCreate;
+  direct_questions: DirectQuizQuestion[];
+  source_questions: SourceQuizSelect[];
+  default_points: number;
+}
+
+export interface CreateCanvasQuizResponse {
+  success: boolean;
+  quiz_id?: number;
+  quiz_url?: string;
+  title?: string;
+  questions_added?: number;
+  groups_created?: number;
+  message?: string;
+  error?: string;
+}
+
 export interface ImportProgress {
   status: ImportProgressStatus;
   message: string;

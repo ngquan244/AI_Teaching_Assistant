@@ -67,8 +67,19 @@ class ChromaVectorStore:
         self._load_indexed_hashes()
     
     def _init_embeddings(self):
-        """Initialize HuggingFace embeddings model (singleton)."""
+        """Initialize HuggingFace embeddings model (singleton, shared with PerFileCollectionManager)."""
         if ChromaVectorStore._embedding_model is None:
+            # Check if PerFileCollectionManager already loaded it
+            try:
+                from .collection_manager import PerFileCollectionManager
+                if PerFileCollectionManager._embedding_model is not None:
+                    logger.info("Reusing embedding model from PerFileCollectionManager")
+                    ChromaVectorStore._embedding_model = PerFileCollectionManager._embedding_model
+                    self.embeddings = ChromaVectorStore._embedding_model
+                    return
+            except ImportError:
+                pass
+
             logger.info(f"Loading embedding model: {self.embedding_model_name}")
             logger.info(f"Using device: {self.device}")
             
@@ -79,6 +90,14 @@ class ChromaVectorStore:
             )
             
             logger.info("Embedding model loaded successfully")
+
+            # Share with PerFileCollectionManager so it doesn't reload
+            try:
+                from .collection_manager import PerFileCollectionManager
+                if PerFileCollectionManager._embedding_model is None:
+                    PerFileCollectionManager._embedding_model = ChromaVectorStore._embedding_model
+            except ImportError:
+                pass
         
         self.embeddings = ChromaVectorStore._embedding_model
     

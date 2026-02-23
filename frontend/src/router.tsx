@@ -5,7 +5,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
-import { LoginPage, SignupPage } from './pages';
+import { LoginPage, SignupPage, AdminLayout, AdminDashboard, AdminUsers, AdminJobs, AdminPanels } from './pages';
 import { Loader2 } from 'lucide-react';
 
 // Import the main app content (existing dashboard)
@@ -31,6 +31,33 @@ const ProtectedRoute: React.FC = () => {
     return <Navigate to="/login" replace />;
   }
   
+  return <Outlet />;
+};
+
+/**
+ * Admin Route wrapper
+ * Requires authentication + ADMIN role
+ */
+const AdminRoute: React.FC = () => {
+  const { isAuthenticated, isLoading, user } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="loading-screen">
+        <Loader2 className="spin" size={48} />
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (user?.role !== 'ADMIN') {
+    return <Navigate to="/" replace />;
+  }
+
   return <Outlet />;
 };
 
@@ -69,10 +96,21 @@ const AppRouter: React.FC = () => {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
         </Route>
+
+        {/* Admin routes - require ADMIN role */}
+        <Route element={<AdminRoute />}>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminDashboard />} />
+            <Route path="users" element={<AdminUsers />} />
+            <Route path="jobs" element={<AdminJobs />} />
+            <Route path="panels" element={<AdminPanels />} />
+          </Route>
+        </Route>
         
         {/* Protected routes - require authentication */}
         <Route element={<ProtectedRoute />}>
-          <Route path="/*" element={<App />} />
+          <Route path="/" element={<App />} />
+          <Route path="/:tab" element={<App />} />
         </Route>
       </Routes>
     </BrowserRouter>

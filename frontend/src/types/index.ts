@@ -119,10 +119,31 @@ export const TABS = {
   GRADING: 'grading',
   DOCUMENT_RAG: 'document_rag',
   CANVAS: 'canvas',
+  CANVAS_QUIZ: 'canvas_quiz',
   SETTINGS: 'settings',
 } as const;
 
 export type TabType = typeof TABS[keyof typeof TABS];
+
+/** Map each tab → URL path segment (no leading slash) */
+export const TAB_PATHS: Record<TabType, string> = {
+  [TABS.CHAT]: 'chat',
+  [TABS.UPLOAD]: 'upload',
+  [TABS.QUIZ]: 'quiz',
+  [TABS.GRADING]: 'grading',
+  [TABS.DOCUMENT_RAG]: 'rag',
+  [TABS.CANVAS]: 'canvas',
+  [TABS.CANVAS_QUIZ]: 'quiz-builder',
+  [TABS.SETTINGS]: 'settings',
+};
+
+/** Reverse lookup: URL path segment → TabType. Falls back to CHAT. */
+export function pathToTab(path: string): TabType {
+  // strip leading slash(es)
+  const segment = path.replace(/^\/+/, '').split('/')[0] || '';
+  const entry = Object.entries(TAB_PATHS).find(([, p]) => p === segment);
+  return (entry ? entry[0] : TABS.CHAT) as TabType;
+}
 
 // Re-export Canvas types
 export * from './canvas';
