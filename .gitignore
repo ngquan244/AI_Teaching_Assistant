@@ -63,7 +63,6 @@ logs/
 kaggle/Filled-temp/
 kaggle/Template/
 exports/
-quiz-gen/generated_quizzes/
 
 # === Testing ===
 .coverage

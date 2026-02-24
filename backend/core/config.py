@@ -145,10 +145,6 @@ class Settings(BaseSettings):
     def EXPORTS_DIR(self) -> Path:
         return self.PROJECT_ROOT / "exports"
     
-    @property
-    def QUIZ_DIR(self) -> Path:
-        return self.PROJECT_ROOT / "quiz-gen" / "generated_quizzes"
-    
     @model_validator(mode='after')
     def warn_dev_secrets(self) -> 'Settings':
         """Warn if using development secrets in non-dev environment."""

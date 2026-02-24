@@ -38,33 +38,6 @@ export interface UploadResponse {
   count: number;
 }
 
-export interface QuizQuestion {
-  question: string;
-  options: Record<string, string>;
-  correct: Record<string, string>;
-}
-
-export interface QuizGenerateRequest {
-  num_questions: number;
-  source_pdf?: string;
-}
-
-export interface QuizGenerateResponse {
-  success: boolean;
-  quiz_id: string;
-  num_questions: number;
-  html_file: string;
-  file_url: string;
-  message: string;
-}
-
-export interface QuizListItem {
-  id: string;
-  timestamp: string;
-  num_questions: number;
-  source_pdf?: string;
-}
-
 export interface GradingRequest {
   exam_code?: string;
 }
@@ -115,7 +88,6 @@ export interface ApiResponse<T = unknown> {
 export const TABS = {
   CHAT: 'chat',
   UPLOAD: 'upload',
-  QUIZ: 'quiz',
   GRADING: 'grading',
   DOCUMENT_RAG: 'document_rag',
   CANVAS: 'canvas',
@@ -130,7 +102,6 @@ export type TabType = typeof TABS[keyof typeof TABS];
 export const TAB_PATHS: Record<TabType, string> = {
   [TABS.CHAT]: 'chat',
   [TABS.UPLOAD]: 'upload',
-  [TABS.QUIZ]: 'quiz',
   [TABS.GRADING]: 'grading',
   [TABS.DOCUMENT_RAG]: 'rag',
   [TABS.CANVAS]: 'canvas',

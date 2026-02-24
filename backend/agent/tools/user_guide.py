@@ -21,7 +21,6 @@ SECTION_PANEL_MAP = {
     "chat ai": "chat",
     "upload bài thi": "upload",
     "upload": "upload",
-    "tạo quiz": "quiz",
     "chấm điểm": "grading",
     "rag tài liệu": "document_rag",
     "canvas lms": "canvas",

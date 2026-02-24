@@ -2,9 +2,9 @@
   "tools": {
     "execute_notebook": false,
     "calculator": false,
-    "quiz_generator": false,
     "summarize_exam_results": false,
     "document_query": false,
-    "user_guide": true
+    "user_guide": true,
+    "quiz_generator": true
   }
 }

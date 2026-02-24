@@ -7,7 +7,6 @@ Each tool is in its own module for better maintainability and extensibility.
 
 from .base import logger
 from .calculator import CalculatorTool
-from .quiz_generator import QuizGeneratorTool
 from .exam_summary import ExamResultSummaryTool
 from .grading import GradingTool, get_grading_tool
 from .document_query import DocumentQueryTool
@@ -26,7 +25,6 @@ def get_all_tools(respect_config: bool = True) -> List[BaseTool]:
     all_tools = [
         get_grading_tool(),
         CalculatorTool(),
-        QuizGeneratorTool(),
         ExamResultSummaryTool(),
         DocumentQueryTool(),
         UserGuideTool(),
@@ -60,7 +58,6 @@ def get_tool_by_name(tool_name: str) -> Optional[BaseTool]:
 __all__ = [
     # Tools
     "CalculatorTool",
-    "QuizGeneratorTool",
     "ExamResultSummaryTool",
     "GradingTool",
     "get_grading_tool",

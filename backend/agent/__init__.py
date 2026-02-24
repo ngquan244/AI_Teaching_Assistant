@@ -22,7 +22,6 @@ try:
         get_tool_by_name,
         get_grading_tool,
         CalculatorTool,
-        QuizGeneratorTool,
         ExamResultSummaryTool,
         GradingTool,
     )
@@ -34,7 +33,6 @@ except ImportError:
     def get_tool_by_name(name): return None
     def get_grading_tool(): return None
     CalculatorTool = None
-    QuizGeneratorTool = None
     ExamResultSummaryTool = None
     GradingTool = None
 
@@ -61,7 +59,6 @@ __all__ = [
     "get_tool_by_name",
     "get_grading_tool",
     "CalculatorTool",
-    "QuizGeneratorTool", 
     "ExamResultSummaryTool",
     "GradingTool",
 ]

@@ -13,7 +13,6 @@ import {
   CheckCircle,
   Wrench,
   Calculator,
-  FileText,
   BarChart3,
   GraduationCap,
 } from 'lucide-react';
@@ -27,7 +26,6 @@ import {
 const TOOL_ICONS: Record<string, React.ReactNode> = {
   execute_notebook: <GraduationCap size={20} />,
   calculator: <Calculator size={20} />,
-  quiz_generator: <FileText size={20} />,
   summarize_exam_results: <BarChart3 size={20} />,
 };
 

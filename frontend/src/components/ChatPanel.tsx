@@ -4,7 +4,7 @@ import { chatApi } from '../api/chat';
 import { useApp } from '../context/AppContext';
 import { useModelConfig } from '../context/ModelConfigContext';
 import { getToolsConfig, type ToolsConfigPublic } from '../api/admin';
-import { Send, Loader2, Trash2, Bot, User, Sparkles, GraduationCap, FileText, BrainCircuit, Wrench, ArrowDown, MessageSquare, ChevronDown, Zap, Monitor, RefreshCw, HelpCircle } from 'lucide-react';
+import { Send, Loader2, Trash2, Bot, User, Sparkles, GraduationCap, FileText, Wrench, ArrowDown, MessageSquare, ChevronDown, Zap, Monitor, RefreshCw, HelpCircle } from 'lucide-react';
 import type { ChatMessage } from '../types';
 
 /**
@@ -196,7 +196,6 @@ const ChatPanel: React.FC = () => {
   const allSuggestions = useMemo(() => [
     { tool: 'execute_notebook', icon: <GraduationCap size={18} />, label: 'Chấm điểm bài thi', desc: 'Tự động chấm điểm từ ảnh', prompt: 'Chấm điểm bài thi trong thư mục Filled-temp' },
     { tool: 'summarize_exam_results', icon: <FileText size={18} />, label: 'Tổng hợp kết quả', desc: 'Phân tích & báo cáo điểm', prompt: 'Tổng hợp kết quả mã đề 132' },
-    { tool: 'quiz_generator', icon: <BrainCircuit size={18} />, label: 'Tạo quiz từ PDF', desc: 'Sinh câu hỏi thông minh', prompt: 'Tạo quiz từ file PDF đề thi' },
     { tool: 'document_query', icon: <MessageSquare size={18} />, label: 'Hỏi đáp tài liệu', desc: 'Trả lời từ nội dung bài', prompt: 'Tóm tắt nội dung chính của tài liệu đã upload' },
     { tool: 'user_guide', icon: <HelpCircle size={18} />, label: 'Hướng dẫn sử dụng', desc: 'Cách dùng các tính năng', prompt: 'Hướng dẫn tôi cách sử dụng ứng dụng' },
   ], []);
@@ -213,7 +212,6 @@ const ChatPanel: React.FC = () => {
     const capabilities: string[] = [];
     const enabled = toolConfig ? new Set(toolConfig.enabled_tools) : null;
     if (!enabled || enabled.has('execute_notebook')) capabilities.push('chấm điểm bài thi');
-    if (!enabled || enabled.has('quiz_generator')) capabilities.push('tạo quiz');
     if (!enabled || enabled.has('summarize_exam_results')) capabilities.push('phân tích kết quả');
     if (!enabled || enabled.has('document_query')) capabilities.push('hỏi đáp tài liệu');
     if (!enabled || enabled.has('user_guide')) capabilities.push('hướng dẫn sử dụng');

@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     DATA_DIR: Path = PROJECT_ROOT / "data"
     LOGS_DIR: Path = PROJECT_ROOT / "logs"
     EXPORTS_DIR: Path = PROJECT_ROOT / "exports"
-    QUIZ_DIR: Path = PROJECT_ROOT / "quiz-gen" / "generated_quizzes"
     CONFIG_DIR: Path = PROJECT_ROOT / "config"
     MODELS_DIR: Path = PROJECT_ROOT / "models"
     
@@ -119,5 +118,4 @@ settings = Settings()
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 settings.LOGS_DIR.mkdir(parents=True, exist_ok=True)
 settings.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-settings.QUIZ_DIR.mkdir(parents=True, exist_ok=True)
 

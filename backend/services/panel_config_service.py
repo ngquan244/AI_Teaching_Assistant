@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 ALL_PANELS = [
     "chat",
     "upload",
-    "quiz",
     "grading",
     "document_rag",
     "canvas",
@@ -28,7 +27,6 @@ ALL_PANELS = [
 PANEL_LABELS: Dict[str, str] = {
     "chat": "Chat AI",
     "upload": "Upload",
-    "quiz": "Tạo Quiz",
     "grading": "Chấm điểm",
     "document_rag": "RAG Tài Liệu",
     "canvas": "Canvas LMS",

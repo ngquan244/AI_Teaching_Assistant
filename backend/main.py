@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
-from backend.routes import chat, upload, quiz, grading, config as config_routes
+from backend.routes import chat, upload, grading, config as config_routes
 from backend.routes import document_rag as document_rag_routes
 from backend.routes import canvas as canvas_routes
 from backend.routes import canvas_rag as canvas_rag_routes
@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Environment: {'development' if settings.DEBUG else 'production'}")
     
     # Ensure directories exist
-    for directory in [settings.QUIZ_DIR, settings.EXPORTS_DIR, settings.DATA_DIR]:
+    for directory in [settings.EXPORTS_DIR, settings.DATA_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
     
     # ── Preload BAAI/bge-m3 embedding model ──────────────────────────
@@ -132,7 +132,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router, prefix="/api", tags=["Authentication"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
-app.include_router(quiz.router, prefix="/api/quiz", tags=["Quiz"])
 app.include_router(grading.router, prefix="/api/grading", tags=["Grading"])
 app.include_router(config_routes.router, prefix="/api/config", tags=["Configuration"])
 app.include_router(document_rag_routes.router, prefix="/api/document-rag", tags=["Document RAG"])
@@ -143,8 +142,7 @@ app.include_router(jobs_routes.router, tags=["Jobs"])
 app.include_router(admin_routes.router, tags=["Admin"])
 app.include_router(guide_routes.router, prefix="/api/guide", tags=["Guide"])
 
-# Serve static files (generated quizzes, exports)
-app.mount("/static/quizzes", StaticFiles(directory=str(settings.QUIZ_DIR)), name="quizzes")
+# Serve static files (exports)
 app.mount("/static/exports", StaticFiles(directory=str(settings.EXPORTS_DIR)), name="exports")
 
 

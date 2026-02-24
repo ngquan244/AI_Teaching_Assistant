@@ -34,7 +34,6 @@ class Messages:
     UPLOAD_SUCCESS = "Upload thành công"
     PDF_UPLOAD_SUCCESS = "Đã upload PDF đề thi thành công"
     IMAGE_UPLOAD_SUCCESS = "Đã upload ảnh thành công"
-    QUIZ_CREATED = "Đã tạo quiz thành công"
     ROLE_SWITCHED = "Đã chuyển vai trò thành công"
     GRADING_COMPLETE = "Đã chấm điểm xong"
     HISTORY_CLEARED = "Đã xóa lịch sử chat"
@@ -42,10 +41,7 @@ class Messages:
     # Error messages
     EMPTY_MESSAGE = "Vui lòng nhập tin nhắn"
     FILE_NOT_FOUND = "Không tìm thấy file"
-    PDF_NOT_FOUND = "Không tìm thấy file PDF"
-    NO_QUESTIONS_FOUND = "Không tìm thấy câu hỏi trong PDF"
     INVALID_FILE_TYPE = "Loại file không hợp lệ"
-    QUIZ_GEN_NOT_INSTALLED = "Module quiz-gen chưa được cài đặt"
     NO_GRADING_RESULTS = "Chưa có kết quả chấm điểm"
     DATABASE_CONNECTION_ERROR = "Lỗi kết nối cơ sở dữ liệu"
 

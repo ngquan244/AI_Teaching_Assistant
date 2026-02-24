@@ -307,8 +307,6 @@ Important:
             tool_rules = []
             if "execute_notebook" in enabled_names:
                 tool_rules.append('- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"')
-            if "quiz_generator" in enabled_names:
-                tool_rules.append('- quiz_generator → ONLY when user explicitly asks to "create quiz", "tạo quiz", "tạo đề" (from exam PDFs)')
             if "calculator" in enabled_names:
                 tool_rules.append('- calculator → ONLY for explicit numeric calculations (e.g., 123 * 456 + 789)')
             if "web_search" in enabled_names:
@@ -399,7 +397,7 @@ Never pretend you can do something that is disabled. Be honest and helpful.
                 continue  # Don't add raw ToolMessage to summary
             
             # Remove tool names from content to reduce priming
-            cleaned = re.sub(r'\b(execute_notebook|quiz_generator|calculator|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\b(execute_notebook|calculator|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             summary_parts.append(f"{role}: {cleaned[:100]}...")  # Truncate long messages
         

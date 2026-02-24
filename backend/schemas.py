@@ -40,40 +40,6 @@ class UploadResponse(BaseModel):
     count: int = 0
 
 
-# ===== Quiz Schemas =====
-class QuizQuestion(BaseModel):
-    question: str
-    options: Dict[str, str]
-    correct: Dict[str, str]
-
-
-class QuizGenerateRequest(BaseModel):
-    num_questions: int = Field(default=10, ge=5, le=30)
-    source_pdf: Optional[str] = None
-
-
-class QuizData(BaseModel):
-    id: str
-    timestamp: str
-    source_pdf: Optional[str] = None
-    questions: List[QuizQuestion]
-    num_questions: int
-
-
-class QuizGenerateResponse(BaseModel):
-    success: bool
-    quiz_id: str
-    num_questions: int
-    html_file: str
-    file_url: str
-    message: str
-
-
-class QuizListResponse(BaseModel):
-    quizzes: List[Dict[str, Any]]
-    total: int
-
-
 # ===== Grading Schemas =====
 class GradingRequest(BaseModel):
     exam_code: Optional[str] = None
