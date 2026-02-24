@@ -4,7 +4,12 @@
  */
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { authApi, type User, type LoginRequest, type SignupRequest, type CanvasToken } from '../api/auth';
-import { getStoredToken, setStoredToken, removeStoredToken } from '../api/client';
+import {
+  getStoredToken,
+  setStoredToken,
+  setStoredRefreshToken,
+  removeAllTokens,
+} from '../api/client';
 
 // =============================================================================
 // Types
@@ -55,8 +60,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isLoading: false,
       });
     } catch (error) {
-      // Token invalid or expired
-      removeStoredToken();
+      // Token invalid or expired — clear all tokens
+      removeAllTokens();
       setState({
         user: null,
         canvasTokens: [],
@@ -85,8 +90,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const response = await authApi.login(data);
       
-      // Store token
+      // Store both tokens
       setStoredToken(response.tokens.access_token);
+      setStoredRefreshToken(response.tokens.refresh_token);
       
       // Fetch full profile (includes canvas tokens)
       await fetchProfile();
@@ -102,8 +108,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const response = await authApi.signup(data);
       
-      // Store token
+      // Store both tokens
       setStoredToken(response.tokens.access_token);
+      setStoredRefreshToken(response.tokens.refresh_token);
       
       // Fetch full profile
       await fetchProfile();
@@ -116,7 +123,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
    * Logout and clear state
    */
   const logout = (): void => {
-    removeStoredToken();
+    removeAllTokens();
     setState({
       user: null,
       canvasTokens: [],
