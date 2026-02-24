@@ -4,7 +4,7 @@
  * Completely separate from uploaded document RAG
  */
 
-import axios from 'axios';
+import { apiClient } from './client';
 import { authApi } from './auth';
 
 const API_BASE = '/api/canvas-rag';
@@ -189,7 +189,7 @@ export async function downloadCanvasFile(
   request: CanvasDownloadRequest
 ): Promise<CanvasDownloadResponse> {
   const headers = await getCanvasHeaders();
-  const response = await axios.post<CanvasDownloadResponse>(
+  const response = await apiClient.post<CanvasDownloadResponse>(
     `${API_BASE}/download`,
     request,
     { headers }
@@ -204,7 +204,7 @@ export async function indexCanvasFile(
   filename: string,
   courseId?: number
 ): Promise<CanvasIndexResponse> {
-  const response = await axios.post<CanvasIndexResponse>(
+  const response = await apiClient.post<CanvasIndexResponse>(
     `${API_BASE}/index`,
     { filename, course_id: courseId }
   );
@@ -218,7 +218,7 @@ export async function extractCanvasTopics(
   filename: string,
   numTopics: number = 8
 ): Promise<CanvasTopicsResponse> {
-  const response = await axios.post<CanvasTopicsResponse>(
+  const response = await apiClient.post<CanvasTopicsResponse>(
     `${API_BASE}/extract-topics`,
     { filename, num_topics: numTopics }
   );
@@ -231,7 +231,7 @@ export async function extractCanvasTopics(
 export async function getCanvasDocumentTopics(
   filename: string
 ): Promise<CanvasTopicsResponse> {
-  const response = await axios.get<CanvasTopicsResponse>(
+  const response = await apiClient.get<CanvasTopicsResponse>(
     `${API_BASE}/topics/${encodeURIComponent(filename)}`
   );
   return response.data;
@@ -244,7 +244,7 @@ export async function updateCanvasDocumentTopics(
   filename: string,
   topics: string[]
 ): Promise<{ success: boolean; message?: string }> {
-  const response = await axios.put(`${API_BASE}/topics`, {
+  const response = await apiClient.put(`${API_BASE}/topics`, {
     filename,
     topics,
   });
@@ -259,7 +259,7 @@ export async function listCanvasFiles(): Promise<{
   files: CanvasFile[];
   count: number;
 }> {
-  const response = await axios.get(`${API_BASE}/files`);
+  const response = await apiClient.get(`${API_BASE}/files`);
   return response.data;
 }
 
@@ -271,7 +271,7 @@ export async function listIndexedCanvasDocuments(): Promise<{
   documents: CanvasIndexedDocument[];
   count: number;
 }> {
-  const response = await axios.get(`${API_BASE}/indexed`);
+  const response = await apiClient.get(`${API_BASE}/indexed`);
   return response.data;
 }
 
@@ -282,7 +282,7 @@ export async function getCanvasStats(): Promise<{
   success: boolean;
   stats: CanvasStats;
 }> {
-  const response = await axios.get(`${API_BASE}/stats`);
+  const response = await apiClient.get(`${API_BASE}/stats`);
   return response.data;
 }
 
@@ -292,7 +292,7 @@ export async function getCanvasStats(): Promise<{
 export async function queryCanvasDocuments(
   request: CanvasQueryRequest
 ): Promise<CanvasQueryResponse> {
-  const response = await axios.post<CanvasQueryResponse>(
+  const response = await apiClient.post<CanvasQueryResponse>(
     `${API_BASE}/query`,
     request
   );
@@ -305,7 +305,7 @@ export async function queryCanvasDocuments(
 export async function generateCanvasQuiz(
   request: CanvasQuizRequest
 ): Promise<CanvasQuizResponse> {
-  const response = await axios.post<CanvasQuizResponse>(
+  const response = await apiClient.post<CanvasQuizResponse>(
     `${API_BASE}/generate-quiz`,
     request
   );
@@ -319,7 +319,7 @@ export async function resetCanvasIndex(): Promise<{
   success: boolean;
   message?: string;
 }> {
-  const response = await axios.post(`${API_BASE}/reset`);
+  const response = await apiClient.post(`${API_BASE}/reset`);
   return response.data;
 }
 
@@ -329,7 +329,7 @@ export async function resetCanvasIndex(): Promise<{
 export async function deleteCanvasFile(
   filename: string
 ): Promise<{ success: boolean; message?: string }> {
-  const response = await axios.delete(
+  const response = await apiClient.delete(
     `${API_BASE}/files/${encodeURIComponent(filename)}`
   );
   return response.data;
@@ -341,7 +341,7 @@ export async function deleteCanvasFile(
 export async function removeCanvasFileIndex(
   filename: string
 ): Promise<{ success: boolean; message?: string }> {
-  const response = await axios.delete(
+  const response = await apiClient.delete(
     `${API_BASE}/index/${encodeURIComponent(filename)}`
   );
   return response.data;

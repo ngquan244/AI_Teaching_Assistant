@@ -17,6 +17,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag import RAGService
 from backend.config import settings
 
@@ -109,7 +110,7 @@ def get_rag_service() -> RAGService:
 # ===== API Endpoints =====
 
 @router.post("/upload", response_model=IngestResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(user: CurrentUser, file: UploadFile = File(...)):
     """
     Upload a PDF document for RAG.
     
@@ -142,7 +143,7 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.post("/build-index", response_model=IngestResponse)
-async def build_index(filename: str = Form(...)):
+async def build_index(user: CurrentUser, filename: str = Form(...)):
     """
     Build/update the vector index for an uploaded document.
     
@@ -177,7 +178,7 @@ async def build_index(filename: str = Form(...)):
 
 
 @router.post("/upload-and-index", response_model=IngestResponse)
-async def upload_and_index(file: UploadFile = File(...)):
+async def upload_and_index(user: CurrentUser, file: UploadFile = File(...)):
     """
     Upload and immediately index a PDF document.
     
@@ -225,7 +226,7 @@ class DownloadAndIndexRequest(BaseModel):
 
 
 @router.post("/download-and-index", response_model=IngestResponse)
-async def download_and_index(request: DownloadAndIndexRequest):
+async def download_and_index(request: DownloadAndIndexRequest, user: CurrentUser):
     """
     Download a PDF from URL and index it.
     
@@ -295,7 +296,7 @@ async def download_and_index(request: DownloadAndIndexRequest):
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(request: QueryRequest, user: CurrentUser):
     """
     Query the document knowledge base.
     
@@ -337,7 +338,7 @@ async def query_documents(request: QueryRequest):
 
 
 @router.get("/stats", response_model=IndexStatsResponse)
-async def get_index_stats():
+async def get_index_stats(user: CurrentUser):
     """
     Get statistics about the document index.
     """
@@ -356,7 +357,7 @@ async def get_index_stats():
 
 
 @router.post("/reset")
-async def reset_index():
+async def reset_index(admin: AdminUser):
     """
     Reset the document index (delete all indexed documents).
     
@@ -376,7 +377,7 @@ async def reset_index():
 
 
 @router.get("/ollama-status")
-async def check_ollama_status():
+async def check_ollama_status(user: CurrentUser):
     """
     Check if Ollama is running and the model is available.
     """
@@ -396,7 +397,7 @@ async def check_ollama_status():
 
 
 @router.get("/config")
-async def get_rag_config():
+async def get_rag_config(user: CurrentUser):
     """
     Get current RAG configuration.
     """
@@ -415,7 +416,7 @@ async def get_rag_config():
 
 
 @router.get("/uploaded-files")
-async def list_uploaded_files():
+async def list_uploaded_files(user: CurrentUser):
     """
     List all uploaded PDF files.
     """
@@ -441,7 +442,7 @@ async def list_uploaded_files():
 
 
 @router.delete("/uploaded-files/{filename}")
-async def delete_uploaded_file(filename: str):
+async def delete_uploaded_file(filename: str, user: CurrentUser):
     """
     Delete an uploaded file.
     
@@ -471,7 +472,7 @@ async def delete_uploaded_file(filename: str):
 # ============================================================================
 
 @router.post("/generate-quiz", response_model=GenerateQuizResponse)
-async def generate_quiz_from_documents(request: GenerateQuizRequest):
+async def generate_quiz_from_documents(request: GenerateQuizRequest, user: CurrentUser):
     """
     Generate quiz questions from indexed documents using RAG.
     
@@ -590,7 +591,7 @@ class LLMProviderResponse(BaseModel):
 
 
 @router.get("/extract-topics")
-async def extract_topics_from_documents():
+async def extract_topics_from_documents(user: CurrentUser):
     """
     Extract suggested topics from indexed documents.
     
@@ -625,7 +626,7 @@ async def extract_topics_from_documents():
 
 
 @router.post("/export-quiz-qti")
-async def export_quiz_to_qti(request: ExportQuizRequest):
+async def export_quiz_to_qti(request: ExportQuizRequest, user: CurrentUser):
     """
     Export quiz questions to QTI 2.1 format as a ZIP package.
     
@@ -691,7 +692,7 @@ async def export_quiz_to_qti(request: ExportQuizRequest):
 # ==================== TOPIC MANAGEMENT ENDPOINTS ====================
 
 @router.get("/document-topics/{filename}")
-async def get_document_topics(filename: str):
+async def get_document_topics(filename: str, user: CurrentUser):
     """
     Get cached topics for a specific indexed document.
     Topics are extracted during indexing, so this is instant (no LLM call).
@@ -730,7 +731,7 @@ class UpdateTopicsRequest(BaseModel):
 
 
 @router.put("/document-topics/{filename}")
-async def update_document_topics(filename: str, request: UpdateTopicsRequest):
+async def update_document_topics(filename: str, request: UpdateTopicsRequest, user: CurrentUser):
     """
     Update topics for a specific document.
     Allows users to add, remove, or modify topics.
@@ -765,7 +766,7 @@ async def update_document_topics(filename: str, request: UpdateTopicsRequest):
 
 
 @router.get("/indexed-documents")
-async def list_indexed_documents():
+async def list_indexed_documents(user: CurrentUser):
     """
     List all indexed documents with their topic counts.
     """
@@ -800,7 +801,7 @@ async def list_indexed_documents():
 # ============================================================================
 
 @router.post("/set-llm", response_model=LLMProviderResponse)
-async def set_llm_provider(request: SetLLMProviderRequest):
+async def set_llm_provider(request: SetLLMProviderRequest, admin: AdminUser):
     """
     Set the LLM provider at runtime.
     
@@ -854,7 +855,7 @@ async def set_llm_provider(request: SetLLMProviderRequest):
 
 
 @router.get("/llm-provider")
-async def get_llm_provider_info():
+async def get_llm_provider_info(user: CurrentUser):
     """
     Get current LLM provider information.
     
@@ -873,7 +874,7 @@ async def get_llm_provider_info():
 
 
 @router.get("/llm-status")
-async def check_llm_status():
+async def check_llm_status(user: CurrentUser):
     """
     Check current LLM provider connection status.
     
@@ -922,6 +923,7 @@ class AsyncJobResponse(BaseModel):
 
 @router.post("/async/build-index", response_model=AsyncJobResponse)
 async def async_build_index(
+    user: CurrentUser,
     filename: str = Form(...),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -940,7 +942,7 @@ async def async_build_index(
         
         # Create job with idempotency
         job = await job_service.get_or_create_job(
-            user_id=None,  # Add user_id from auth if available
+            user_id=user.id,
             job_type=JobType.BUILD_INDEX,
             payload={"filename": filename, "file_path": str(file_path)},
             idempotency_key=f"build_index:{filename}",
@@ -969,6 +971,7 @@ async def async_build_index(
 
 @router.post("/async/upload-and-index", response_model=AsyncJobResponse)
 async def async_upload_and_index(
+    user: CurrentUser,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -990,7 +993,7 @@ async def async_upload_and_index(
         
         # Create job
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.INGEST_DOCUMENT,
             payload={"filename": file.filename, "file_path": str(file_path)},
         )
@@ -1018,6 +1021,7 @@ async def async_upload_and_index(
 @router.post("/async/query", response_model=AsyncJobResponse)
 async def async_query_documents(
     request: QueryRequest,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -1032,7 +1036,7 @@ async def async_query_documents(
         job_service = JobService(db)
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.RAG_QUERY,
             payload={
                 "question": request.question,
@@ -1064,6 +1068,7 @@ async def async_query_documents(
 @router.post("/async/generate-quiz", response_model=AsyncJobResponse)
 async def async_generate_quiz(
     request: GenerateQuizRequest,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -1096,7 +1101,7 @@ async def async_generate_quiz(
         }
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.GENERATE_QUIZ,
             payload=payload,
         )
@@ -1123,6 +1128,7 @@ async def async_generate_quiz(
 
 @router.post("/async/extract-topics", response_model=AsyncJobResponse)
 async def async_extract_topics(
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -1134,7 +1140,7 @@ async def async_extract_topics(
         job_service = JobService(db)
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.EXTRACT_TOPICS,
             payload={},
         )

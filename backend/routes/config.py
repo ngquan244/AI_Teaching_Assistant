@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from backend.schemas import ConfigResponse, ModelConfig
 from backend.config import settings
 from backend.core import BadRequestException, Messages
+from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.services.panel_config_service import get_panel_config, PANEL_LABELS
 from backend.services.model_config_service import (
     get_model_config,
@@ -35,7 +36,7 @@ class ProviderSwitchRequest(BaseModel):
 
 
 @router.get("/", response_model=ConfigResponse)
-async def get_config():
+async def get_config(user: CurrentUser):
     """Get current application configuration (filtered by admin model config)"""
     enabled = get_enabled_models(settings.LLM_PROVIDER)
     avail = enabled if enabled else settings.AVAILABLE_MODELS
@@ -49,7 +50,7 @@ async def get_config():
 
 
 @router.get("/models")
-async def get_models():
+async def get_models(user: CurrentUser):
     """Get available AI models (filtered by admin model config)"""
     enabled = get_enabled_models(settings.LLM_PROVIDER)
     avail = enabled if enabled else settings.AVAILABLE_MODELS
@@ -61,7 +62,7 @@ async def get_models():
 
 
 @router.post("/model")
-async def set_model(config: ModelConfig):
+async def set_model(config: ModelConfig, user: CurrentUser):
     """Set AI model configuration (for session)"""
     if config.model not in settings.AVAILABLE_MODELS:
         raise BadRequestException(
@@ -77,7 +78,7 @@ async def set_model(config: ModelConfig):
 
 
 @router.post("/provider")
-async def switch_provider(req: ProviderSwitchRequest):
+async def switch_provider(req: ProviderSwitchRequest, admin: AdminUser):
     """Switch LLM provider at runtime (ollama <-> groq)"""
     provider = req.provider.lower().strip()
     if provider not in ("ollama", "groq"):
@@ -117,7 +118,7 @@ async def switch_provider(req: ProviderSwitchRequest):
 # =============================================================================
 
 @router.get("/panels")
-async def get_panels_config() -> Dict[str, object]:
+async def get_panels_config(user: CurrentUser) -> Dict[str, object]:
     """
     Get panel visibility configuration.
     Returns which panels are enabled/disabled so the frontend can hide them.
@@ -134,7 +135,7 @@ async def get_panels_config() -> Dict[str, object]:
 # =============================================================================
 
 @router.get("/models-config")
-async def get_models_config() -> Dict[str, object]:
+async def get_models_config(user: CurrentUser) -> Dict[str, object]:
     """
     Get model/provider visibility config for the frontend.
     Returns enabled providers, enabled models per provider, and labels.
@@ -156,7 +157,7 @@ async def get_models_config() -> Dict[str, object]:
 # =============================================================================
 
 @router.get("/tools-config")
-async def get_tools_config() -> Dict[str, object]:
+async def get_tools_config(user: CurrentUser) -> Dict[str, object]:
     """
     Get tool visibility config for the frontend.
     Returns list of enabled tool names and labels.

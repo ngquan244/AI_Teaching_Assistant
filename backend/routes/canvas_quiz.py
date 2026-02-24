@@ -11,6 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
 
+from backend.auth.dependencies import CurrentUser
 from backend.schemas import (
     CreateCanvasQuizRequest,
     CreateCanvasQuizResponse,
@@ -50,6 +51,7 @@ def get_canvas_credentials(
 @router.get("/courses/{course_id}/quizzes")
 async def get_quizzes(
     course_id: int,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -65,6 +67,7 @@ async def get_quizzes(
 async def get_quiz_questions(
     course_id: int,
     quiz_id: int,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -83,6 +86,7 @@ async def get_quiz_questions(
 @router.post("/create-quiz", response_model=CreateCanvasQuizResponse)
 async def create_full_quiz(
     request: CreateCanvasQuizRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):

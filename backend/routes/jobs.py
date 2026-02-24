@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_async_session
+from backend.auth.dependencies import CurrentUser
 from backend.services.job_service import JobService
 from backend.database.models.job import JobStatus, JobType, JobEventLevel
 
@@ -111,6 +112,7 @@ def _event_to_out(event) -> JobEventOut:
 @router.get("/{job_id}", response_model=JobOut)
 async def get_job(
     job_id: UUID,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -129,6 +131,7 @@ async def get_job(
 
 @router.get("", response_model=JobListOut)
 async def list_jobs(
+    user: CurrentUser,
     user_id: Optional[UUID] = Query(None, description="Filter by user ID"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -191,6 +194,7 @@ async def list_jobs(
 @router.post("/{job_id}/cancel", response_model=CancelResponse)
 async def cancel_job(
     job_id: UUID,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -224,6 +228,7 @@ async def cancel_job(
 @router.get("/{job_id}/events", response_model=List[JobEventOut])
 async def get_job_events(
     job_id: UUID,
+    user: CurrentUser,
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -255,6 +260,7 @@ async def get_job_events(
 @router.get("/{job_id}/stream")
 async def stream_job_events(
     job_id: UUID,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -333,6 +339,7 @@ async def stream_job_events(
 @router.post("/{job_id}/retry", response_model=RetryResponse)
 async def retry_job(
     job_id: UUID,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -404,6 +411,7 @@ async def retry_job(
 @router.delete("/{job_id}")
 async def delete_job(
     job_id: UUID,
+    user: CurrentUser,
     db: AsyncSession = Depends(get_async_session),
 ):
     """

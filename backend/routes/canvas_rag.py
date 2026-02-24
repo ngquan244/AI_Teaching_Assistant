@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Form, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class CanvasGenerateQuizRequest(BaseModel):
 @router.post("/download")
 async def download_canvas_file(
     request: CanvasDownloadRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None),
     x_canvas_base_url: Optional[str] = Header(None)
 ):
@@ -99,7 +101,7 @@ async def download_canvas_file(
 
 
 @router.post("/index")
-async def index_canvas_file(request: CanvasIndexRequest):
+async def index_canvas_file(request: CanvasIndexRequest, user: CurrentUser):
     """
     Index a downloaded Canvas file.
     Stores in separate ChromaDB collection from uploaded files.
@@ -124,7 +126,7 @@ async def index_canvas_file(request: CanvasIndexRequest):
 
 
 @router.post("/extract-topics")
-async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest):
+async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest, user: CurrentUser):
     """
     Extract topics from an indexed Canvas file.
     """
@@ -137,7 +139,7 @@ async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest):
 
 
 @router.get("/topics/{filename}")
-async def get_canvas_document_topics(filename: str):
+async def get_canvas_document_topics(filename: str, user: CurrentUser):
     """
     Get topics for a Canvas document.
     """
@@ -146,7 +148,7 @@ async def get_canvas_document_topics(filename: str):
 
 
 @router.put("/topics")
-async def update_canvas_document_topics(request: CanvasUpdateTopicsRequest):
+async def update_canvas_document_topics(request: CanvasUpdateTopicsRequest, user: CurrentUser):
     """
     Update topics for a Canvas document.
     """
@@ -159,7 +161,7 @@ async def update_canvas_document_topics(request: CanvasUpdateTopicsRequest):
 
 
 @router.get("/files")
-async def list_canvas_files():
+async def list_canvas_files(user: CurrentUser):
     """
     List all downloaded Canvas files.
     """
@@ -168,7 +170,7 @@ async def list_canvas_files():
 
 
 @router.get("/indexed")
-async def list_indexed_canvas_documents():
+async def list_indexed_canvas_documents(user: CurrentUser):
     """
     List all indexed Canvas documents with topics.
     """
@@ -177,7 +179,7 @@ async def list_indexed_canvas_documents():
 
 
 @router.get("/stats")
-async def get_canvas_stats():
+async def get_canvas_stats(user: CurrentUser):
     """
     Get Canvas index statistics.
     """
@@ -191,7 +193,7 @@ async def get_canvas_stats():
 
 
 @router.post("/query")
-async def query_canvas_documents(request: CanvasQueryRequest):
+async def query_canvas_documents(request: CanvasQueryRequest, user: CurrentUser):
     """
     Query the Canvas document knowledge base.
     """
@@ -211,7 +213,7 @@ async def query_canvas_documents(request: CanvasQueryRequest):
 
 
 @router.post("/generate-quiz")
-async def generate_quiz_from_canvas_documents(request: CanvasGenerateQuizRequest):
+async def generate_quiz_from_canvas_documents(request: CanvasGenerateQuizRequest, user: CurrentUser):
     """
     Generate quiz from Canvas documents.
     """
@@ -234,7 +236,7 @@ async def generate_quiz_from_canvas_documents(request: CanvasGenerateQuizRequest
 
 
 @router.post("/reset")
-async def reset_canvas_index():
+async def reset_canvas_index(admin: AdminUser):
     """
     Reset Canvas index (delete all indexed documents and files).
     """
@@ -247,7 +249,7 @@ async def reset_canvas_index():
 
 
 @router.delete("/files/{filename}")
-async def delete_canvas_file(filename: str):
+async def delete_canvas_file(filename: str, user: CurrentUser):
     """
     Delete a Canvas file and its index data.
     """
@@ -263,7 +265,7 @@ async def delete_canvas_file(filename: str):
 
 
 @router.delete("/index/{filename}")
-async def remove_canvas_file_index(filename: str):
+async def remove_canvas_file_index(filename: str, user: CurrentUser):
     """
     Remove index for a Canvas file (keep the file).
     """

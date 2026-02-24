@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, UploadFile, File
 from typing import List
 
+from backend.auth.dependencies import CurrentUser
 from backend.schemas import UploadResponse
 from backend.services import file_service
 
@@ -13,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/images", response_model=UploadResponse)
-async def upload_exam_images(files: List[UploadFile] = File(...)):
+async def upload_exam_images(user: CurrentUser, files: List[UploadFile] = File(...)):
     """Upload exam images for grading"""
     uploaded_files, count = await file_service.upload_images(files)
     
@@ -26,13 +27,13 @@ async def upload_exam_images(files: List[UploadFile] = File(...)):
 
 
 @router.get("/status")
-async def get_upload_status():
+async def get_upload_status(user: CurrentUser):
     """Get current upload status"""
     return file_service.get_upload_status()
 
 
 @router.delete("/images")
-async def clear_uploaded_images():
+async def clear_uploaded_images(user: CurrentUser):
     """Clear all uploaded images"""
     count = file_service.clear_images()
     return {

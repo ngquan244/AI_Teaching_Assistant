@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
+from backend.auth.dependencies import CurrentUser
 from backend.schemas import GradingRequest, GradingResponse, GradingResult, GradingSummary
 from backend.services import grading_service
 from backend.config import settings
@@ -37,7 +38,7 @@ def get_processor() -> ExamProcessor:
 
 
 @router.post("/execute")
-async def execute_grading():
+async def execute_grading(user: CurrentUser):
     """Execute grading on all images in Filled-temp folder"""
     try:
         processor = get_processor()
@@ -62,7 +63,7 @@ async def execute_grading():
 
 
 @router.post("/grade-single")
-async def grade_single_image(file: UploadFile = File(...)):
+async def grade_single_image(user: CurrentUser, file: UploadFile = File(...)):
     """Grade a single uploaded exam image"""
     try:
         # Read image
@@ -89,9 +90,8 @@ async def grade_single_image(file: UploadFile = File(...)):
 
 
 @router.post("/summary", response_model=GradingResponse)
-async def summarize_exam_results(request: GradingRequest):
+async def summarize_exam_results(request: GradingRequest, user: CurrentUser):
     """Summarize exam results by exam code"""
-    require_teacher()
     
     # Get results from database
     data = grading_service.get_results_by_exam_code(request.exam_code)
@@ -127,7 +127,7 @@ async def summarize_exam_results(request: GradingRequest):
 
 
 @router.get("/results")
-async def get_all_results():
+async def get_all_results(user: CurrentUser):
     """Get all grading results from JSON file"""
     results = grading_service.get_results_from_json()
     

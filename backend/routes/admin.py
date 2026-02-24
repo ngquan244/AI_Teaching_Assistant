@@ -413,7 +413,7 @@ class ToolConfigOut(BaseModel):
 
 class UpdateToolConfigRequest(BaseModel):
     """Partial update for tool config."""
-    tools: dict  # { "calculator": false, ... }
+    tools: dict  # { "tool_name": bool, ... }
 
 
 def _tool_config_out(config: dict) -> ToolConfigOut:

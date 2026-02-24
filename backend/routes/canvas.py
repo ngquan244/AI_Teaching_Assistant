@@ -7,6 +7,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from backend.auth.dependencies import CurrentUser
 from backend.services.canvas_service import (
     fetch_canvas_courses,
     fetch_course_files,
@@ -67,6 +68,7 @@ def get_canvas_credentials(
 
 @router.get("/courses")
 async def get_courses(
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -92,6 +94,7 @@ async def get_courses(
 @router.get("/courses/{course_id}/files")
 async def get_course_files(
     course_id: int,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -120,6 +123,7 @@ async def get_course_files(
 @router.post("/download")
 async def download_single_file(
     request: FileDownloadRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -152,6 +156,7 @@ async def download_single_file(
 @router.post("/download/batch")
 async def download_multiple_files(
     request: BatchDownloadRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -189,6 +194,7 @@ async def download_multiple_files(
 @router.post("/import-qti-bank")
 async def import_qti_bank(
     request: QTIImportRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
@@ -282,6 +288,7 @@ class AsyncJobResponse(PydanticBaseModel):
 @router.post("/async/download")
 async def async_download_single_file(
     request: FileDownloadRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
@@ -297,7 +304,7 @@ async def async_download_single_file(
         job_service = JobService(db)
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.CANVAS_FILE_DOWNLOAD,
             payload={
                 "file_id": request.file_id,
@@ -334,6 +341,7 @@ async def async_download_single_file(
 @router.post("/async/download/batch")
 async def async_download_batch(
     request: BatchDownloadRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
@@ -355,7 +363,7 @@ async def async_download_batch(
         ]
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.CANVAS_FILE_DOWNLOAD,
             payload={"course_id": request.course_id, "files": files_data},
         )
@@ -381,6 +389,7 @@ async def async_download_batch(
 @router.post("/async/import-qti-bank")
 async def async_import_qti_bank(
     request: QTIImportRequest,
+    user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
     x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
@@ -406,7 +415,7 @@ async def async_import_qti_bank(
         job_service = JobService(db)
         
         job = await job_service.create_job(
-            user_id=None,
+            user_id=user.id,
             job_type=JobType.CANVAS_QTI_IMPORT,
             payload={
                 "course_id": request.course_id,

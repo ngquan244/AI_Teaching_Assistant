@@ -70,11 +70,6 @@ class ReActAgent:
         re.IGNORECASE
     )
     
-    CALCULATOR_PATTERNS = re.compile(
-        r'(\d+\s*[\+\-\*\/\%\^]\s*\d+|tính|calculate|compute)\s*[\d\+\-\*\/\(\)\.\s]+',
-        re.IGNORECASE
-    )
-    
     # Web search: "cập nhật/update" ONLY with news/online context
     WEB_SEARCH_PATTERNS = re.compile(
         r'(tin\s*tức|news|mới\s*nhất|latest|hôm\s*nay|today|tuần\s*này|this\s*week|search\s*online|tìm\s*trên\s*mạng|(cập\s*nhật|update).*(tin|news|mới|online|mạng)|(tin|news|mới|online|mạng).*(cập\s*nhật|update))',
@@ -231,9 +226,6 @@ class ReActAgent:
         
         # Short messages without explicit tool triggers -> no tools
         if char_count <= 15 or word_count <= 3:
-            # Unless it's a clear calculation
-            if self.CALCULATOR_PATTERNS.search(text):
-                return "allow_tools"
             return "no_tools"
         
         # Just mentioning "tool" or "tools" is NOT enough to trigger tools
@@ -243,9 +235,6 @@ class ReActAgent:
         
         # 2. Check for EXPLICIT tool triggers
         if self.GRADE_EXAM_PATTERNS.search(text):
-            return "allow_tools"
-        
-        if self.CALCULATOR_PATTERNS.search(text):
             return "allow_tools"
         
         if self.WEB_SEARCH_PATTERNS.search(text):
@@ -299,8 +288,6 @@ Important:
             tool_rules = []
             if "execute_notebook" in enabled_names:
                 tool_rules.append('- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"')
-            if "calculator" in enabled_names:
-                tool_rules.append('- calculator → ONLY for explicit numeric calculations (e.g., 123 * 456 + 789)')
             if "web_search" in enabled_names:
                 tool_rules.append('- web_search → ONLY for current events, news, or up-to-date information')
             if "document_query" in enabled_names:
@@ -391,7 +378,7 @@ Never pretend you can do something that is disabled. Be honest and helpful.
                 continue  # Don't add raw ToolMessage to summary
             
             # Remove tool names from content to reduce priming
-            cleaned = re.sub(r'\b(execute_notebook|calculator|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\b(execute_notebook|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             summary_parts.append(f"{role}: {cleaned[:100]}...")  # Truncate long messages
         
