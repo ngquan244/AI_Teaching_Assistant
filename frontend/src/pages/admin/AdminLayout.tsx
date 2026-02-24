@@ -12,6 +12,8 @@ import {
   ArrowLeft,
   ShieldCheck,
   PanelTop,
+  Cpu,
+  Wrench,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import './Admin.css';
@@ -21,6 +23,8 @@ const ADMIN_NAV = [
   { to: '/admin/users', icon: Users, label: 'Quản lý Users' },
   { to: '/admin/jobs', icon: Activity, label: 'Quản lý Jobs' },
   { to: '/admin/panels', icon: PanelTop, label: 'Quản lý Panel' },
+  { to: '/admin/models', icon: Cpu, label: 'Quản lý Model' },
+  { to: '/admin/tools', icon: Wrench, label: 'Quản lý Tools' },
 ];
 
 const AdminLayout: React.FC = () => {

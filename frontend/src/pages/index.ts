@@ -3,4 +3,4 @@
  */
 export { default as LoginPage } from './Login';
 export { default as SignupPage } from './Signup';
-export { AdminLayout, AdminDashboard, AdminUsers, AdminJobs, AdminPanels } from './admin';
+export { AdminLayout, AdminDashboard, AdminUsers, AdminJobs, AdminPanels, AdminModels, AdminTools } from './admin';

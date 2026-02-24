@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "ollama": false,
+    "groq": true
+  },
+  "models": {
+    "ollama": {
+      "llama3.1:latest": true,
+      "phi3:latest": false,
+      "mistral:latest": false,
+      "gemma2:latest": false
+    },
+    "groq": {
+      "llama-3.3-70b-versatile": true,
+      "llama-3.1-8b-instant": true,
+      "gemma2-9b-it": true,
+      "mixtral-8x7b-32768": true
+    }
+  }
+}

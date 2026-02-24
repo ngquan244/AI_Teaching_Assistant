@@ -1,9 +1,11 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppProvider, useApp } from './context/AppContext';
 import { usePanelConfig, getFirstVisibleTab } from './context/PanelConfigContext';
+import { useModelConfig } from './context/ModelConfigContext';
 import { useAuth } from './context/AuthContext';
-import { Sidebar, ChatPanel, UploadPanel, QuizPanel, GradingPanel, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel } from './components';
+import { useToast } from './context/ToastContext';
+import { Sidebar, ChatPanel, UploadPanel, QuizPanel, GradingPanel, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, GuidePanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, TAB_PATHS, pathToTab } from './types';
 import type { QuizQuestion } from './api/documentRag';
@@ -12,12 +14,27 @@ import './App.css';
 
 const ALL_TAB_KEYS = Object.values(TABS);
 
+/** Human-friendly panel names for toast messages */
+const TAB_LABELS: Record<string, string> = {
+  chat: 'Chat AI',
+  upload: 'Upload',
+  quiz: 'Quiz',
+  grading: 'Chấm bài',
+  document_rag: 'Tài liệu RAG',
+  canvas: 'Canvas',
+  canvas_quiz: 'Quiz Builder',
+  guide: 'Hướng dẫn',
+  settings: 'Cài đặt',
+};
+
 const AppContent: React.FC = () => {
-  const { loading } = useApp();
+  const { loading, config, switchProvider } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const { isPanelVisible, loaded: panelConfigLoaded } = usePanelConfig();
+  const { isProviderEnabled, enabledProviders, loaded: modelConfigLoaded } = useModelConfig();
   const { user } = useAuth();
+  const { showToast } = useToast();
 
   // Admins always see all panels
   const isAdmin = user?.role === 'ADMIN';
@@ -39,9 +56,32 @@ const AppContent: React.FC = () => {
     if (!panelConfigLoaded || isAdmin) return;
     const redirect = getFirstVisibleTab(activeTab, isPanelVisible, ALL_TAB_KEYS);
     if (redirect) {
+      const label = TAB_LABELS[activeTab] || activeTab;
+      showToast(`Panel "${label}" đã bị quản trị viên tắt. Đang chuyển sang tab khác...`, 'warning', 5000);
       navigate('/' + TAB_PATHS[redirect], { replace: true });
     }
-  }, [activeTab, isPanelVisible, panelConfigLoaded, isAdmin, navigate]);
+  }, [activeTab, isPanelVisible, panelConfigLoaded, isAdmin, navigate, showToast]);
+
+  // Auto-switch provider if current provider was disabled by admin
+  const prevProviderRef = useRef(config?.llm_provider);
+  useEffect(() => {
+    if (!modelConfigLoaded || isAdmin || !config) return;
+
+    const current = config.llm_provider || 'ollama';
+    // Only act if the current provider just became disabled
+    if (!isProviderEnabled(current) && enabledProviders.length > 0) {
+      const newProvider = enabledProviders[0];
+      // Prevent duplicate switches
+      if (prevProviderRef.current !== newProvider) {
+        prevProviderRef.current = newProvider;
+        const provLabel = current === 'groq' ? 'Groq' : 'Ollama';
+        showToast(`Provider "${provLabel}" đã bị tắt bởi quản trị viên. Tự động chuyển sang ${enabledProviders[0]}.`, 'warning', 5000);
+        switchProvider(enabledProviders[0] as 'ollama' | 'groq');
+      }
+    } else {
+      prevProviderRef.current = current;
+    }
+  }, [modelConfigLoaded, isAdmin, config, isProviderEnabled, enabledProviders, switchProvider, showToast]);
 
   // Shared state: questions to inject into QuizBuilder from other panels
   const [quizBuilderQuestions, setQuizBuilderQuestions] = useState<QuizBuilderQuestion[]>([]);
@@ -114,6 +154,11 @@ const AppContent: React.FC = () => {
               questions={quizBuilderQuestions}
               onQuestionsClear={() => setQuizBuilderQuestions([])}
             />
+          </div>
+        )}
+        {checkVisible(TABS.GUIDE) && (
+          <div style={{ display: activeTab === TABS.GUIDE ? 'block' : 'none', height: '100%' }}>
+            <GuidePanel />
           </div>
         )}
         {checkVisible(TABS.SETTINGS) && (

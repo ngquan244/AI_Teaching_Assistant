@@ -70,6 +70,7 @@ import {
   generateCanvasQuiz,
 } from '../api/canvasRag';
 import CanvasImportModal from './CanvasImportModal';
+import { useModelConfig } from '../context/ModelConfigContext';
 
 // Indexed document info
 interface IndexedDocument {
@@ -186,6 +187,9 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
   
+  // Model config (admin filtering)
+  const { showProviderSwitch, isProviderEnabled } = useModelConfig();
+
   // LLM Provider states
   const [llmProviderInfo, setLlmProviderInfo] = useState<LLMProviderInfo | null>(null);
   const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
@@ -1011,22 +1015,30 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           <div className="rag-status-item llm-provider-item">
             <Zap size={16} className="provider-icon" />
             <span className="rag-status-label">Provider:</span>
-            <div className="provider-dropdown-wrapper">
-              <select
-                className="provider-dropdown-inline"
-                value={llmProviderInfo?.current_provider || 'ollama'}
-                onChange={(e) => handleSwitchProvider(e.target.value as 'ollama' | 'groq')}
-                disabled={isSwitchingProvider}
-              >
-                <option value="ollama">🖥️ Ollama</option>
-                <option value="groq" disabled={!llmProviderInfo?.groq_configured}>
-                  ☁️ Groq {!llmProviderInfo?.groq_configured ? '(N/A)' : ''}
-                </option>
-              </select>
-              {isSwitchingProvider && (
-                <Loader2 size={12} className="spin provider-dropdown-loading" />
-              )}
-            </div>
+            {showProviderSwitch ? (
+              <div className="provider-dropdown-wrapper">
+                <select
+                  className="provider-dropdown-inline"
+                  value={llmProviderInfo?.current_provider || 'ollama'}
+                  onChange={(e) => handleSwitchProvider(e.target.value as 'ollama' | 'groq')}
+                  disabled={isSwitchingProvider}
+                >
+                  {isProviderEnabled('ollama') && <option value="ollama">🖥️ Ollama</option>}
+                  {isProviderEnabled('groq') && (
+                    <option value="groq" disabled={!llmProviderInfo?.groq_configured}>
+                      ☁️ Groq {!llmProviderInfo?.groq_configured ? '(N/A)' : ''}
+                    </option>
+                  )}
+                </select>
+                {isSwitchingProvider && (
+                  <Loader2 size={12} className="spin provider-dropdown-loading" />
+                )}
+              </div>
+            ) : (
+              <span className="provider-label-static">
+                {(llmProviderInfo?.current_provider || 'ollama') === 'groq' ? '⚡ Groq' : '🖥️ Ollama'}
+              </span>
+            )}
           </div>
           <div className="rag-status-divider" />
           <div className={`rag-status-item model-status-item ${ollamaStatus?.connected ? 'connected' : 'disconnected'}`}>

@@ -3,9 +3,12 @@
  * Fetches panel visibility config from the backend and provides it to the app.
  * Hidden panels are completely removed from the teacher UI.
  */
-import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { getPanelConfig } from '../api/admin';
 import { useAuth } from './AuthContext';
+
+/** How often (ms) to poll for config changes — 30 seconds */
+const POLL_INTERVAL = 30_000;
 import type { TabType } from '../types';
 
 // =============================================================================
@@ -61,10 +64,40 @@ export const PanelConfigProvider: React.FC<{ children: ReactNode }> = ({ childre
     }
   }, []);
 
+  // Initial fetch
   useEffect(() => {
     if (isAuthenticated) {
       fetchConfig();
     }
+  }, [isAuthenticated, fetchConfig]);
+
+  // Polling: re-fetch every POLL_INTERVAL while tab is visible
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const poll = () => {
+      // Skip when tab is hidden to save bandwidth
+      if (!document.hidden) {
+        fetchConfig();
+      }
+    };
+
+    pollRef.current = setInterval(poll, POLL_INTERVAL);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [isAuthenticated, fetchConfig]);
+
+  // Also refetch when user returns to the tab (instant catch-up)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const onVisibility = () => {
+      if (!document.hidden) fetchConfig();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [isAuthenticated, fetchConfig]);
 
   const isPanelVisible = useCallback(

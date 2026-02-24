@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
+import { useModelConfig } from '../context/ModelConfigContext';
 import { authApi } from '../api/auth';
 import { clearCanvasTokenCache } from '../api/canvas';
 import { clearCanvasRagTokenCache } from '../api/canvasRag';
@@ -22,6 +23,7 @@ const DEFAULT_CANVAS_URL = 'https://lms.uet.vnu.edu.vn';
 
 const SettingsPanel: React.FC = () => {
   const { config, model, setModel, maxIterations, setMaxIterations } = useApp();
+  const { showModelSelector, getEnabledModels } = useModelConfig();
   const { canvasTokens, refreshProfile, isAuthenticated } = useAuth();
 
   // Canvas settings state
@@ -411,13 +413,20 @@ const SettingsPanel: React.FC = () => {
 
         <div className="form-group">
           <label>Chọn model:</label>
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            {config?.available_models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          {showModelSelector(config?.llm_provider || 'ollama') ? (
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              {(getEnabledModels(config?.llm_provider || 'ollama').length > 0
+                ? getEnabledModels(config?.llm_provider || 'ollama')
+                : config?.available_models || []
+              ).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="provider-label-static">{model}</span>
+          )}
         </div>
 
         <div className="form-group">

@@ -22,6 +22,7 @@ from backend.routes import canvas_rag as canvas_rag_routes
 from backend.routes import canvas_quiz as canvas_quiz_routes
 from backend.routes import jobs as jobs_routes
 from backend.routes import admin as admin_routes
+from backend.routes import guide as guide_routes
 from backend.auth import auth_router
 from backend.config import settings
 from backend.core import BaseAPIException
@@ -140,6 +141,7 @@ app.include_router(canvas_rag_routes.router, prefix="/api/canvas-rag", tags=["Ca
 app.include_router(canvas_quiz_routes.router, prefix="/api/canvas-quiz", tags=["Canvas Quiz"])
 app.include_router(jobs_routes.router, tags=["Jobs"])
 app.include_router(admin_routes.router, tags=["Admin"])
+app.include_router(guide_routes.router, prefix="/api/guide", tags=["Guide"])
 
 # Serve static files (generated quizzes, exports)
 app.mount("/static/quizzes", StaticFiles(directory=str(settings.QUIZ_DIR)), name="quizzes")

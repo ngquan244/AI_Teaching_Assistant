@@ -20,6 +20,7 @@ ALL_PANELS = [
     "document_rag",
     "canvas",
     "canvas_quiz",
+    "guide",
     "settings",
 ]
 
@@ -32,6 +33,7 @@ PANEL_LABELS: Dict[str, str] = {
     "document_rag": "RAG Tài Liệu",
     "canvas": "Canvas LMS",
     "canvas_quiz": "Tạo Canvas Quiz",
+    "guide": "Hướng dẫn",
     "settings": "Cài đặt",
 }
 

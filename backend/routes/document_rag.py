@@ -824,6 +824,14 @@ async def set_llm_provider(request: SetLLMProviderRequest):
             detail=f"Invalid provider: {request.provider}. Valid options: {valid_providers}"
         )
     
+    # Check if provider is enabled by admin
+    from backend.services.model_config_service import is_provider_enabled
+    if not is_provider_enabled(request.provider.lower()):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Provider '{request.provider}' is currently disabled by the administrator."
+        )
+    
     try:
         rag_service = get_rag_service()
         result = rag_service.set_llm_provider(

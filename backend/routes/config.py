@@ -10,6 +10,21 @@ from backend.schemas import ConfigResponse, ModelConfig
 from backend.config import settings
 from backend.core import BadRequestException, Messages
 from backend.services.panel_config_service import get_panel_config, PANEL_LABELS
+from backend.services.model_config_service import (
+    get_model_config,
+    get_enabled_providers,
+    get_enabled_models,
+    is_provider_enabled,
+    ALL_PROVIDERS,
+    ALL_MODELS,
+    PROVIDER_LABELS,
+    MODEL_LABELS,
+)
+from backend.services.tool_config_service import (
+    get_enabled_tools,
+    TOOL_LABELS,
+    TOOL_DESCRIPTIONS,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,9 +36,11 @@ class ProviderSwitchRequest(BaseModel):
 
 @router.get("/", response_model=ConfigResponse)
 async def get_config():
-    """Get current application configuration"""
+    """Get current application configuration (filtered by admin model config)"""
+    enabled = get_enabled_models(settings.LLM_PROVIDER)
+    avail = enabled if enabled else settings.AVAILABLE_MODELS
     return ConfigResponse(
-        available_models=settings.AVAILABLE_MODELS,
+        available_models=avail,
         default_model=settings.DEFAULT_MODEL,
         max_iterations=settings.MAX_ITERATIONS,
         llm_provider=settings.LLM_PROVIDER,
@@ -33,9 +50,11 @@ async def get_config():
 
 @router.get("/models")
 async def get_models():
-    """Get available AI models"""
+    """Get available AI models (filtered by admin model config)"""
+    enabled = get_enabled_models(settings.LLM_PROVIDER)
+    avail = enabled if enabled else settings.AVAILABLE_MODELS
     return {
-        "models": settings.AVAILABLE_MODELS,
+        "models": avail,
         "default": settings.DEFAULT_MODEL,
         "provider": settings.LLM_PROVIDER,
     }
@@ -64,6 +83,10 @@ async def switch_provider(req: ProviderSwitchRequest):
     if provider not in ("ollama", "groq"):
         raise BadRequestException("Provider không hợp lệ. Chọn 'ollama' hoặc 'groq'.")
 
+    # Check if the provider is enabled by admin
+    if not is_provider_enabled(provider):
+        raise BadRequestException(f"Provider '{provider}' đã bị admin vô hiệu hóa.")
+
     if provider == "groq" and not settings.GROQ_API_KEY:
         raise BadRequestException("Không thể chuyển sang Groq: chưa cấu hình GROQ_API_KEY.")
 
@@ -76,11 +99,15 @@ async def switch_provider(req: ProviderSwitchRequest):
 
     logger.info(f"LLM provider switched to: {provider}")
 
+    # Filter available models through admin config
+    enabled = get_enabled_models(provider)
+    avail = enabled if enabled else settings.AVAILABLE_MODELS
+
     return {
         "success": True,
         "provider": settings.LLM_PROVIDER,
         "default_model": settings.DEFAULT_MODEL,
-        "available_models": settings.AVAILABLE_MODELS,
+        "available_models": avail,
         "message": f"Đã chuyển sang provider: {provider}",
     }
 
@@ -99,4 +126,44 @@ async def get_panels_config() -> Dict[str, object]:
     return {
         "panels": config,
         "labels": PANEL_LABELS,
+    }
+
+
+# =============================================================================
+# Model / Provider Visibility (public – any authenticated user can read)
+# =============================================================================
+
+@router.get("/models-config")
+async def get_models_config() -> Dict[str, object]:
+    """
+    Get model/provider visibility config for the frontend.
+    Returns enabled providers, enabled models per provider, and labels.
+    """
+    enabled_providers = get_enabled_providers()
+    enabled_models = {
+        p: get_enabled_models(p) for p in enabled_providers
+    }
+    return {
+        "enabled_providers": enabled_providers,
+        "enabled_models": enabled_models,
+        "provider_labels": PROVIDER_LABELS,
+        "model_labels": MODEL_LABELS,
+    }
+
+
+# =============================================================================
+# Tool Visibility (public – any authenticated user can read)
+# =============================================================================
+
+@router.get("/tools-config")
+async def get_tools_config() -> Dict[str, object]:
+    """
+    Get tool visibility config for the frontend.
+    Returns list of enabled tool names and labels.
+    """
+    enabled = get_enabled_tools()
+    return {
+        "enabled_tools": enabled,
+        "tool_labels": TOOL_LABELS,
+        "tool_descriptions": TOOL_DESCRIPTIONS,
     }

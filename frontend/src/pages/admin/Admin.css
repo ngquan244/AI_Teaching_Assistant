@@ -886,3 +886,308 @@
 .status-disabled {
   color: var(--text-muted);
 }
+
+/* ==========================================================================
+   Admin Models Page
+   ========================================================================== */
+
+.model-providers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.model-provider-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.model-provider-card.provider-disabled {
+  opacity: 0.6;
+}
+
+.model-provider-card:hover {
+  border-color: var(--amber-400);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.08);
+}
+
+.provider-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.provider-card-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.provider-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--amber-500);
+  flex-shrink: 0;
+}
+
+.provider-card-icon.groq {
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+}
+
+.provider-card-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.provider-card-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.provider-models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+  transition: opacity 0.3s;
+}
+
+.models-dimmed {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.model-item.model-enabled {
+  border-color: var(--amber-400);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.model-item.model-disabled {
+  opacity: 0.55;
+}
+
+.model-item-info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.model-item-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.model-item-info > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.model-item-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.model-item-id {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.model-toggle-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+
+.model-toggle-btn:hover {
+  color: var(--text);
+}
+
+.model-toggle-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.model-counter-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber-600);
+  font-weight: 600;
+}
+
+/* Provider / Model static labels (shown when only 1 option) */
+.provider-label-static {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.chat-model-static {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.chat-model-static .model-static-name {
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Admin Tools Page
+   ========================================================================== */
+
+.tool-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tool-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.15rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 0.2s, box-shadow 0.2s, opacity 0.25s;
+}
+
+.tool-card.tool-enabled {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.tool-card.tool-disabled {
+  opacity: 0.55;
+}
+
+.tool-card:hover {
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.08);
+}
+
+.tool-card-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.tool-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(100, 116, 139, 0.12);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: background 0.2s, color 0.2s;
+}
+
+.tool-card-icon.active {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+
+.tool-card-info {
+  min-width: 0;
+}
+
+.tool-card-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 0.2rem;
+}
+
+.tool-card-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 0 0 0.3rem;
+  line-height: 1.4;
+}
+
+.tool-card-id {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: rgba(100, 116, 139, 0.1);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.tool-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.tool-info-box svg {
+  flex-shrink: 0;
+  color: var(--amber-500);
+  margin-top: 2px;
+}

@@ -120,6 +120,7 @@ export const TABS = {
   DOCUMENT_RAG: 'document_rag',
   CANVAS: 'canvas',
   CANVAS_QUIZ: 'canvas_quiz',
+  GUIDE: 'guide',
   SETTINGS: 'settings',
 } as const;
 
@@ -134,6 +135,7 @@ export const TAB_PATHS: Record<TabType, string> = {
   [TABS.DOCUMENT_RAG]: 'rag',
   [TABS.CANVAS]: 'canvas',
   [TABS.CANVAS_QUIZ]: 'quiz-builder',
+  [TABS.GUIDE]: 'guide',
   [TABS.SETTINGS]: 'settings',
 };
 

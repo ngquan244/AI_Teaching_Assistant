@@ -1,8 +1,87 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { chatApi } from '../api/chat';
 import { useApp } from '../context/AppContext';
-import { Send, Loader2, Trash2, Bot, User, Sparkles, GraduationCap, FileText, BrainCircuit, Wrench, ArrowDown, MessageSquare, ChevronDown, Zap, Monitor, RefreshCw } from 'lucide-react';
+import { useModelConfig } from '../context/ModelConfigContext';
+import { getToolsConfig, type ToolsConfigPublic } from '../api/admin';
+import { Send, Loader2, Trash2, Bot, User, Sparkles, GraduationCap, FileText, BrainCircuit, Wrench, ArrowDown, MessageSquare, ChevronDown, Zap, Monitor, RefreshCw, HelpCircle } from 'lucide-react';
 import type { ChatMessage } from '../types';
+
+/**
+ * Render chat message text with clickable links.
+ * Supports markdown links [text](url) and plain URLs.
+ */
+function renderMessageContent(text: string, onNavigate: (path: string) => void): React.ReactNode {
+  // Match markdown links [label](url) or plain https?:// URLs
+  const linkRegex = /\[([^\]]+)\]\((\/[^)]+|https?:\/\/[^)]+)\)|(\/guide\b)|(https?:\/\/[^\s)]+)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkRegex.exec(text)) !== null) {
+    // Push text before the match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    if (match[1] && match[2]) {
+      // Markdown link: [label](url)
+      const label = match[1];
+      const url = match[2];
+      if (url.startsWith('/')) {
+        // Internal link — use SPA navigation
+        parts.push(
+          <a
+            key={match.index}
+            href={url}
+            className="chat-link"
+            onClick={(e) => { e.preventDefault(); onNavigate(url); }}
+          >
+            {label}
+          </a>
+        );
+      } else {
+        // External link
+        parts.push(
+          <a key={match.index} href={url} className="chat-link" target="_blank" rel="noopener noreferrer">
+            {label}
+          </a>
+        );
+      }
+    } else {
+      // Plain URL or bare /guide
+      const url = match[3] || match[4];
+      const label = url.startsWith('/') ? 'Hướng dẫn' : url;
+      if (url.startsWith('/')) {
+        parts.push(
+          <a
+            key={match.index}
+            href={url}
+            className="chat-link"
+            onClick={(e) => { e.preventDefault(); onNavigate(url); }}
+          >
+            {label}
+          </a>
+        );
+      } else {
+        parts.push(
+          <a key={match.index} href={url} className="chat-link" target="_blank" rel="noopener noreferrer">
+            {label}
+          </a>
+        );
+      }
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Push remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
+}
 
 /* ---------- tiny helper: random stars ---------- */
 const generateStars = (count: number) =>
@@ -16,7 +95,9 @@ const generateStars = (count: number) =>
   }));
 
 const ChatPanel: React.FC = () => {
+  const navigate = useNavigate();
   const { model, setModel, maxIterations, chatMessages, setChatMessages, chatToolsUsed, setChatToolsUsed, clearChat, config, switchProvider, switchingProvider } = useApp();
+  const { showProviderSwitch, showModelSelector, isProviderEnabled } = useModelConfig();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState('');
@@ -26,6 +107,12 @@ const ChatPanel: React.FC = () => {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const stars = useMemo(() => generateStars(28), []);
+
+  // ---------- Tool config for dynamic suggestions ----------
+  const [toolConfig, setToolConfig] = useState<ToolsConfigPublic | null>(null);
+  useEffect(() => {
+    getToolsConfig().then(setToolConfig).catch(() => {});
+  }, []);
 
   const scrollToBottom = () => {
     const container = messagesContainerRef.current;
@@ -105,12 +192,34 @@ const ChatPanel: React.FC = () => {
     }
   };
 
-  const suggestions = [
-    { icon: <GraduationCap size={18} />, label: 'Chấm điểm bài thi', desc: 'Tự động chấm điểm từ ảnh', prompt: 'Chấm điểm bài thi trong thư mục Filled-temp' },
-    { icon: <FileText size={18} />, label: 'Tổng hợp kết quả', desc: 'Phân tích & báo cáo điểm', prompt: 'Tổng hợp kết quả mã đề 132' },
-    { icon: <BrainCircuit size={18} />, label: 'Tạo quiz từ PDF', desc: 'Sinh câu hỏi thông minh', prompt: 'Tạo quiz từ file PDF đề thi' },
-    { icon: <MessageSquare size={18} />, label: 'Hỏi đáp tài liệu', desc: 'Trả lời từ nội dung bài', prompt: 'Tóm tắt nội dung chính của tài liệu đã upload' },
-  ];
+  // All suggestions mapped to their required tool (null = always shown)
+  const allSuggestions = useMemo(() => [
+    { tool: 'execute_notebook', icon: <GraduationCap size={18} />, label: 'Chấm điểm bài thi', desc: 'Tự động chấm điểm từ ảnh', prompt: 'Chấm điểm bài thi trong thư mục Filled-temp' },
+    { tool: 'summarize_exam_results', icon: <FileText size={18} />, label: 'Tổng hợp kết quả', desc: 'Phân tích & báo cáo điểm', prompt: 'Tổng hợp kết quả mã đề 132' },
+    { tool: 'quiz_generator', icon: <BrainCircuit size={18} />, label: 'Tạo quiz từ PDF', desc: 'Sinh câu hỏi thông minh', prompt: 'Tạo quiz từ file PDF đề thi' },
+    { tool: 'document_query', icon: <MessageSquare size={18} />, label: 'Hỏi đáp tài liệu', desc: 'Trả lời từ nội dung bài', prompt: 'Tóm tắt nội dung chính của tài liệu đã upload' },
+    { tool: 'user_guide', icon: <HelpCircle size={18} />, label: 'Hướng dẫn sử dụng', desc: 'Cách dùng các tính năng', prompt: 'Hướng dẫn tôi cách sử dụng ứng dụng' },
+  ], []);
+
+  // Filter suggestions by enabled tools
+  const suggestions = useMemo(() => {
+    if (!toolConfig) return allSuggestions; // show all while loading
+    const enabled = new Set(toolConfig.enabled_tools);
+    return allSuggestions.filter(s => s.tool === null || enabled.has(s.tool));
+  }, [allSuggestions, toolConfig]);
+
+  // Dynamic welcome message based on enabled tools
+  const welcomeMessage = useMemo(() => {
+    const capabilities: string[] = [];
+    const enabled = toolConfig ? new Set(toolConfig.enabled_tools) : null;
+    if (!enabled || enabled.has('execute_notebook')) capabilities.push('chấm điểm bài thi');
+    if (!enabled || enabled.has('quiz_generator')) capabilities.push('tạo quiz');
+    if (!enabled || enabled.has('summarize_exam_results')) capabilities.push('phân tích kết quả');
+    if (!enabled || enabled.has('document_query')) capabilities.push('hỏi đáp tài liệu');
+    if (!enabled || enabled.has('user_guide')) capabilities.push('hướng dẫn sử dụng');
+    if (capabilities.length === 0) return 'Tôi luôn sẵn sàng trò chuyện với bạn.';
+    return `Tôi có thể giúp bạn ${capabilities.join(', ')}, và nhiều việc khác.`;
+  }, [toolConfig]);
 
   return (
     <div className="chat-panel">
@@ -146,64 +255,81 @@ const ChatPanel: React.FC = () => {
             <h2>AI Teaching Assistant</h2>
             <span className="chat-header-status">
               <span className="status-dot" />
-              {/* Provider Toggle Switch */}
-              <div className={`provider-switch ${switchingProvider ? 'switching' : ''}`}>
-                <span className={`provider-switch-label ${config?.llm_provider !== 'groq' ? 'active' : ''}`}>
-                  <Monitor size={11} /> Ollama
+              {/* Provider Toggle Switch — hidden when only 1 provider is enabled */}
+              {showProviderSwitch ? (
+                <div className={`provider-switch ${switchingProvider ? 'switching' : ''}`}>
+                  {isProviderEnabled('ollama') && (
+                    <span className={`provider-switch-label ${config?.llm_provider !== 'groq' ? 'active' : ''}`}>
+                      <Monitor size={11} /> Ollama
+                    </span>
+                  )}
+                  <button
+                    className={`provider-switch-track ${config?.llm_provider === 'groq' ? 'groq' : 'ollama'}`}
+                    onClick={() => {
+                      const next = config?.llm_provider === 'groq' ? 'ollama' : 'groq';
+                      switchProvider(next).catch(() => {});
+                    }}
+                    disabled={switchingProvider || loading}
+                    title={`Chuyển sang ${config?.llm_provider === 'groq' ? 'Ollama' : 'Groq'}`}
+                    aria-label="Toggle LLM provider"
+                  >
+                    <span className="provider-switch-thumb">
+                      {switchingProvider ? <RefreshCw size={10} className="spin" /> : null}
+                    </span>
+                  </button>
+                  {isProviderEnabled('groq') && (
+                    <span className={`provider-switch-label ${config?.llm_provider === 'groq' ? 'active' : ''}`}>
+                      <Zap size={11} /> Groq
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <span className="provider-label-static">
+                  {config?.llm_provider === 'groq' ? <><Zap size={11} /> Groq</> : <><Monitor size={11} /> Ollama</>}
                 </span>
-                <button
-                  className={`provider-switch-track ${config?.llm_provider === 'groq' ? 'groq' : 'ollama'}`}
-                  onClick={() => {
-                    const next = config?.llm_provider === 'groq' ? 'ollama' : 'groq';
-                    switchProvider(next).catch(() => {});
-                  }}
-                  disabled={switchingProvider || loading}
-                  title={`Chuyển sang ${config?.llm_provider === 'groq' ? 'Ollama' : 'Groq'}`}
-                  aria-label="Toggle LLM provider"
-                >
-                  <span className="provider-switch-thumb">
-                    {switchingProvider ? <RefreshCw size={10} className="spin" /> : null}
-                  </span>
-                </button>
-                <span className={`provider-switch-label ${config?.llm_provider === 'groq' ? 'active' : ''}`}>
-                  <Zap size={11} /> Groq
-                </span>
-              </div>
+              )}
             </span>
           </div>
         </div>
 
         <div className="chat-header-actions">
-          {/* Model Selector */}
-          <div className="chat-model-selector" ref={modelDropdownRef}>
-            <button
-              className="chat-model-trigger"
-              onClick={() => setShowModelDropdown((v) => !v)}
-              title="Chọn model AI"
-            >
-              <Sparkles size={13} className="chat-model-trigger-icon" />
-              <span className="chat-model-trigger-label">{model}</span>
-              <ChevronDown size={14} className={`chat-model-chevron ${showModelDropdown ? 'open' : ''}`} />
-            </button>
+          {/* Model Selector — hidden when only 1 model enabled */}
+          {showModelSelector(config?.llm_provider || 'ollama') ? (
+            <div className="chat-model-selector" ref={modelDropdownRef}>
+              <button
+                className="chat-model-trigger"
+                onClick={() => setShowModelDropdown((v) => !v)}
+                title="Chọn model AI"
+              >
+                <Sparkles size={13} className="chat-model-trigger-icon" />
+                <span className="chat-model-trigger-label">{model}</span>
+                <ChevronDown size={14} className={`chat-model-chevron ${showModelDropdown ? 'open' : ''}`} />
+              </button>
 
-            {showModelDropdown && (
-              <div className="chat-model-dropdown">
-                <div className="chat-model-dropdown-header">
-                  Chọn model
+              {showModelDropdown && (
+                <div className="chat-model-dropdown">
+                  <div className="chat-model-dropdown-header">
+                    Chọn model
+                  </div>
+                  {config?.available_models.map((m) => (
+                    <button
+                      key={m}
+                      className={`chat-model-option ${m === model ? 'active' : ''}`}
+                      onClick={() => { setModel(m); setShowModelDropdown(false); }}
+                    >
+                      <span className="chat-model-option-name">{m}</span>
+                      {m === model && <span className="chat-model-option-check">✓</span>}
+                    </button>
+                  ))}
                 </div>
-                {config?.available_models.map((m) => (
-                  <button
-                    key={m}
-                    className={`chat-model-option ${m === model ? 'active' : ''}`}
-                    onClick={() => { setModel(m); setShowModelDropdown(false); }}
-                  >
-                    <span className="chat-model-option-name">{m}</span>
-                    {m === model && <span className="chat-model-option-check">✓</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div className="chat-model-static">
+              <Sparkles size={13} />
+              <span>{model}</span>
+            </div>
+          )}
 
           <button className="chat-clear-btn" onClick={clearChat} title="Xóa lịch sử chat">
             <Trash2 size={16} />
@@ -226,7 +352,8 @@ const ChatPanel: React.FC = () => {
               <div className="chat-welcome-logo-ring chat-welcome-logo-ring-3" />
             </div>
             <h3>Xin chào! Tôi là Teaching Assistant</h3>
-            <p>Tôi có thể giúp bạn chấm điểm bài thi, tạo quiz, phân tích kết quả và nhiều việc khác.</p>
+            {welcomeMessage && <p>{welcomeMessage}</p>}
+            {suggestions.length > 0 && (
             <div className="chat-suggestions">
               {suggestions.map((s, i) => (
                 <button
@@ -243,6 +370,7 @@ const ChatPanel: React.FC = () => {
                 </button>
               ))}
             </div>
+            )}
           </div>
         )}
 
@@ -256,7 +384,7 @@ const ChatPanel: React.FC = () => {
               {msg.role === 'user' ? <User size={18} /> : <Bot size={18} />}
             </div>
             <div className="chat-msg-bubble">
-              <pre>{msg.content}</pre>
+              <pre>{renderMessageContent(msg.content, navigate)}</pre>
               <span className="chat-msg-time">
                 {new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
               </span>

@@ -14,6 +14,11 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 from .tools import get_all_tools
+from backend.services.tool_config_service import (
+    ALL_TOOLS as ALL_KNOWN_TOOLS,
+    TOOL_LABELS as TOOL_LABEL_MAP,
+    get_enabled_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,22 @@ class ReActAgent:
     # Report/summary patterns - for grading results aggregation
     REPORT_PATTERNS = re.compile(
         r'(tổng\s*hợp|thống\s*kê|báo\s*cáo|summary|report|aggregate).*(kết\s*quả|điểm|mã\s*đề|results?|scores?)|((kết\s*quả|điểm|mã\s*đề|results?|scores?).*(tổng\s*hợp|thống\s*kê|báo\s*cáo|summary|report))',
+        re.IGNORECASE
+    )
+    
+    # Document RAG query patterns - asking about uploaded documents
+    DOCUMENT_QUERY_PATTERNS = re.compile(
+        r'(tóm\s*tắt|nội\s*dung|tài\s*liệu|document|upload).*(gì|nào|về|chính|chủ\s*đề)|'
+        r'(hỏi|hỏi\s*đáp|query|search|tìm).*(tài\s*liệu|document|pdf|file)|'
+        r'(tài\s*liệu|document|pdf|file).*(nói|viết|đề\s*cập|chứa|chương|phần)|'
+        r'(trong|theo)\s*(tài\s*liệu|document|pdf|file)|'
+        r'(summarize|tóm\s*tắt)\s*(tài\s*liệu|document|nội\s*dung|content)',
+        re.IGNORECASE
+    )
+    
+    # User guide / help patterns
+    GUIDE_PATTERNS = re.compile(
+        r'(hướng\s*dẫn|cách\s*(sử\s*dụng|dùng|dụng|upload|tải|chấm|tạo)|trợ\s*giúp|giúp\s*tôi|help\s*me|how\s*to|guide|tutorial|làm\s*sao|làm\s*thế\s*nào)',
         re.IGNORECASE
     )
     
@@ -242,6 +263,14 @@ class ReActAgent:
         if self.REPORT_PATTERNS.search(text):
             return "allow_tools"
         
+        # Document RAG query patterns
+        if self.DOCUMENT_QUERY_PATTERNS.search(text):
+            return "allow_tools"
+        
+        # User guide / help patterns
+        if self.GUIDE_PATTERNS.search(text):
+            return "allow_tools"
+        
         # 3. Default: answer with plain LLM (no tools)
         # This covers general knowledge questions
         return "default_no_tools"
@@ -264,32 +293,75 @@ Important:
 - If asked about data/results that you don't have, ask the user to provide the data or specify the file/source.
 """
         
+        # Build disabled tools notice
+        disabled_tools_notice = self._get_disabled_tools_notice()
+        
         if allow_tools:
             tool_descriptions = "\n".join([
                 f"- {tool.name}: {tool.description}"
                 for tool in self.tools
             ])
             
-            return base_prompt + f"""
+            # Build dynamic tool usage rules (only for enabled tools)
+            enabled_names = {t.name for t in self.tools}
+            tool_rules = []
+            if "execute_notebook" in enabled_names:
+                tool_rules.append('- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"')
+            if "quiz_generator" in enabled_names:
+                tool_rules.append('- quiz_generator → ONLY when user explicitly asks to "create quiz", "tạo quiz", "tạo đề" (from exam PDFs)')
+            if "calculator" in enabled_names:
+                tool_rules.append('- calculator → ONLY for explicit numeric calculations (e.g., 123 * 456 + 789)')
+            if "web_search" in enabled_names:
+                tool_rules.append('- web_search → ONLY for current events, news, or up-to-date information')
+            if "document_query" in enabled_names:
+                tool_rules.append('- document_query → When user asks about uploaded documents content: "tóm tắt tài liệu", "tài liệu nói gì về...", "nội dung chính"')
+            if "user_guide" in enabled_names:
+                tool_rules.append('- user_guide → When user asks for help/guidance: "hướng dẫn", "cách sử dụng", "làm sao", "help". ALWAYS include the clickable link [Hướng dẫn](/guide) in your response so they can view the full guide.')
+            tool_rules_str = "\n".join(tool_rules)
+            
+            prompt = base_prompt + f"""
 You have access to the following tools:
 {tool_descriptions}
 
 Tool usage rules:
-- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"
-- quiz_generator → ONLY when user explicitly asks to "create quiz", "tạo quiz", "tạo đề" (from exam PDFs)
-- calculator → ONLY for explicit numeric calculations (e.g., 123 * 456 + 789)
-- web_search → ONLY for current events, news, or up-to-date information
+{tool_rules_str}
 
 When using tools:
 - Extract and display full information from results
 - Format output clearly
 - If a tool returns an error, explain the issue and answer from your knowledge if possible
 """
+            if disabled_tools_notice:
+                prompt += disabled_tools_notice
+            return prompt
         else:
-            return base_prompt + """
+            no_tools_prompt = base_prompt + """
 Answer the user's question directly from your knowledge. Do NOT mention or try to use any tools.
 """
+            if disabled_tools_notice:
+                no_tools_prompt += disabled_tools_notice
+            return no_tools_prompt
     
+    def _get_disabled_tools_notice(self) -> str:
+        """Build a notice about admin-disabled tools so agent can inform users."""
+        try:
+            enabled = get_enabled_tools()
+            disabled = [t for t in ALL_KNOWN_TOOLS if t not in enabled]
+            if not disabled:
+                return ""
+            disabled_labels = [TOOL_LABEL_MAP.get(t, t) for t in disabled]
+            disabled_str = ", ".join(disabled_labels)
+            return f"""
+IMPORTANT — Disabled features:
+The following features have been TEMPORARILY DISABLED by the administrator: {disabled_str}.
+If a user asks about any of these features, DO NOT try to perform the action.
+Instead, politely inform them: "Tính năng [tên tính năng] hiện đang tạm thời bị khóa bởi quản trị viên. Vui lòng liên hệ admin để được hỗ trợ."
+Never pretend you can do something that is disabled. Be honest and helpful.
+"""
+        except Exception as e:
+            logger.warning("Could not build disabled tools notice: %s", e)
+            return ""
+
     def _summarize_history(self, history_messages: list[BaseMessage]) -> SystemMessage:
         """
         Summarize long history into a SystemMessage to reduce tool priming.
