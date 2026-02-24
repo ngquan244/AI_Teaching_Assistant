@@ -88,19 +88,13 @@ class Settings(BaseSettings):
             return self.GROQ_AVAILABLE_MODELS
         return self.OLLAMA_AVAILABLE_MODELS
     
-    # Email settings
-    EMAIL_RECEIVER: str = "22028171@vnu.edu.vn"
-    EMAIL_USER: str = "testcgvhehe@gmail.com"
-    EMAIL_PASSWORD: str = "gtsv imfc umpp pvoh"
+    # Email settings (set via .env — NEVER hardcode credentials)
+    EMAIL_RECEIVER: str = ""
+    EMAIL_USER: str = ""
+    EMAIL_PASSWORD: str = ""
     
-    # Database settings
-    SQL_SERVER_CONN_STR: str = (
-        "Driver={ODBC Driver 17 for SQL Server};"
-        "Server=244-NGUYEN-QUAN\\SQL2022;"
-        "Database=AI_Agent;"
-        "Trusted_Connection=yes;"
-        "Encrypt=no;"
-    )
+    # Database settings (SQL Server — legacy, set via .env if needed)
+    SQL_SERVER_CONN_STR: str = ""
     
     # UI Configuration (for Gradio if needed in future)
     UI_PORT: int = 7860

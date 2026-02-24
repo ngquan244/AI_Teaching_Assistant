@@ -5,6 +5,8 @@ Creates the first ADMIN user in the database.
 Run: python -m backend.scripts.seed_admin
 """
 import asyncio
+import secrets
+import string
 import sys
 from pathlib import Path
 
@@ -18,15 +20,32 @@ from sqlalchemy import select
 
 DEFAULT_ADMIN_EMAIL = "admin@grader.local"
 DEFAULT_ADMIN_NAME = "System Admin"
-DEFAULT_ADMIN_PASSWORD = "Admin@2024!"
+
+
+def _generate_secure_password(length: int = 16) -> str:
+    """Generate a cryptographically secure random password."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
+    # Ensure at least one of each required category
+    password = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%&*"),
+    ]
+    password += [secrets.choice(alphabet) for _ in range(length - 4)]
+    secrets.SystemRandom().shuffle(password)
+    return "".join(password)
 
 
 async def seed_admin(
     email: str = DEFAULT_ADMIN_EMAIL,
     name: str = DEFAULT_ADMIN_NAME,
-    password: str = DEFAULT_ADMIN_PASSWORD,
+    password: str | None = None,
 ):
     """Create admin user if not exists."""
+    # Generate secure random password if none provided
+    if password is None:
+        password = _generate_secure_password()
     async with AsyncSessionLocal() as db:
         # Check if admin already exists
         result = await db.execute(
@@ -70,7 +89,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Seed admin user")
     parser.add_argument("--email", default=DEFAULT_ADMIN_EMAIL, help="Admin email")
     parser.add_argument("--name", default=DEFAULT_ADMIN_NAME, help="Admin name")
-    parser.add_argument("--password", default=DEFAULT_ADMIN_PASSWORD, help="Admin password")
+    parser.add_argument("--password", default=None, help="Admin password (auto-generated if omitted)")
     args = parser.parse_args()
 
     await seed_admin(email=args.email, name=args.name, password=args.password)
