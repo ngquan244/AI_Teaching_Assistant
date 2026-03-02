@@ -10,4 +10,6 @@ export { default as CanvasCourseModal } from './CanvasCourseModal';
 export { default as CanvasFileSelectModal } from './CanvasFileSelectModal';
 export { default as CanvasImportModal } from './CanvasImportModal';
 export { default as GuidePanel } from './GuidePanel';
+export { default as CanvasSimulationPanel } from './CanvasSimulationPanel';
+export { default as CanvasResultsPanel } from './CanvasResultsPanel';
 export { default as UserMenu } from './UserMenu';

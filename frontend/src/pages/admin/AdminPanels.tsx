@@ -15,6 +15,8 @@ import {
   FileText,
   FolderOpen,
   PenSquare,
+  PlayCircle,
+  PieChart,
   Settings,
   AlertCircle,
   CheckCircle,
@@ -29,6 +31,8 @@ const PANEL_ICONS: Record<string, typeof MessageSquare> = {
   document_rag: FileText,
   canvas: FolderOpen,
   canvas_quiz: PenSquare,
+  canvas_simulation: PlayCircle,
+  canvas_results: PieChart,
   settings: Settings,
 };
 
@@ -40,6 +44,8 @@ const PANEL_DESCRIPTIONS: Record<string, string> = {
   document_rag: 'Hỏi đáp dựa trên tài liệu (RAG)',
   canvas: 'Kết nối và quản lý Canvas LMS',
   canvas_quiz: 'Tạo quiz trên Canvas từ tài liệu',
+  canvas_simulation: 'Tạo test student và giả lập nộp bài quiz trên Canvas',
+  canvas_results: 'Tổng hợp kết quả quiz, điểm khóa học và xuất báo cáo Excel/CSV',
   settings: 'Cấu hình model AI, provider và các tùy chọn',
 };
 

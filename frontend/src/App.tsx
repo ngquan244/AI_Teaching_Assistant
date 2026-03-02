@@ -5,7 +5,7 @@ import { usePanelConfig, getFirstVisibleTab } from './context/PanelConfigContext
 import { useModelConfig } from './context/ModelConfigContext';
 import { useAuth } from './context/AuthContext';
 import { useToast } from './context/ToastContext';
-import { Sidebar, ChatPanel, UploadPanel, GradingPanel, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, GuidePanel } from './components';
+import { Sidebar, ChatPanel, UploadPanel, GradingPanel, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, TAB_PATHS, pathToTab } from './types';
 import type { QuizQuestion } from './api/documentRag';
@@ -22,6 +22,8 @@ const TAB_LABELS: Record<string, string> = {
   document_rag: 'Tài liệu RAG',
   canvas: 'Canvas',
   canvas_quiz: 'Quiz Builder',
+  canvas_simulation: 'Giả lập Quiz',
+  canvas_results: 'Kết quả Canvas',
   guide: 'Hướng dẫn',
   settings: 'Cài đặt',
 };
@@ -148,6 +150,16 @@ const AppContent: React.FC = () => {
               questions={quizBuilderQuestions}
               onQuestionsClear={() => setQuizBuilderQuestions([])}
             />
+          </div>
+        )}
+        {checkVisible(TABS.CANVAS_SIMULATION) && (
+          <div style={{ display: activeTab === TABS.CANVAS_SIMULATION ? 'block' : 'none', height: '100%' }}>
+            <CanvasSimulationPanel />
+          </div>
+        )}
+        {checkVisible(TABS.CANVAS_RESULTS) && (
+          <div style={{ display: activeTab === TABS.CANVAS_RESULTS ? 'block' : 'none', height: '100%' }}>
+            <CanvasResultsPanel />
           </div>
         )}
         {checkVisible(TABS.GUIDE) && (

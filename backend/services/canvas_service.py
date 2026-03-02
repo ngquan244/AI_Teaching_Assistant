@@ -1097,3 +1097,448 @@ async def build_full_quiz(
         "published": should_publish,
         "message": f"Quiz created with {questions_added} questions.",
     }
+
+
+# ============================================================================
+# Canvas User, Enrollment, Quiz-Submission APIs  (Simulation + Results)
+# ============================================================================
+
+def _masq(params: dict | None, as_user_id: int | None) -> dict:
+    """Inject ``as_user_id`` query-param when masquerading."""
+    params = dict(params or {})
+    if as_user_id is not None:
+        params["as_user_id"] = as_user_id
+    return params
+
+
+def _parse_canvas_user_error(response: httpx.Response) -> str | None:
+    """Extract user-friendly message from Canvas user-creation error."""
+    try:
+        data = response.json()
+        errors = data.get("errors", {})
+        msgs = []
+        # pseudonym unique_id taken
+        uid_errors = errors.get("pseudonym", {}).get("unique_id", [])
+        for e in uid_errors:
+            if e.get("type") == "taken":
+                msgs.append("Email/login ID đã tồn tại trên Canvas. Hãy dùng email khác.")
+        # generic pseudonym invalid
+        pseudo_errors = errors.get("user", {}).get("pseudonyms", [])
+        for e in pseudo_errors:
+            if e.get("type") == "invalid":
+                msgs.append("Pseudonym không hợp lệ.")
+        if msgs:
+            return " | ".join(msgs)
+    except Exception:
+        pass
+    return None
+
+
+async def create_canvas_user(
+    token: str,
+    base_url: str,
+    account_id: str | int,
+    name: str,
+    email: str,
+    *,
+    skip_registration: bool = True,
+) -> dict:
+    """
+    Create a new user in a Canvas account.
+    POST /api/v1/accounts/:account_id/users
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/accounts/{account_id}/users"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    payload = {
+        "user": {"name": name, "skip_registration": skip_registration},
+        "pseudonym": {
+            "unique_id": email,
+            "send_confirmation": False,
+        },
+        "communication_channel": {
+            "type": "email",
+            "address": email,
+            "skip_confirmation": True,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            user = resp.json()
+            return {"success": True, "user": user, "canvas_user_id": user["id"]}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500]
+            logger.error(f"Error creating Canvas user: {e} — {body}")
+            # Parse common Canvas errors for user-friendly messages
+            friendly = _parse_canvas_user_error(e.response)
+            return {"success": False, "error": friendly or f"Canvas API {e.response.status_code}: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error creating Canvas user: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def enroll_user(
+    token: str,
+    base_url: str,
+    course_id: int,
+    canvas_user_id: int,
+    role: str = "StudentEnrollment",
+    state: str = "active",
+) -> dict:
+    """
+    Enroll a Canvas user in a course.
+    POST /api/v1/courses/:course_id/enrollments
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/enrollments"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "enrollment": {
+            "user_id": canvas_user_id,
+            "type": role,
+            "enrollment_state": state,
+            "notify": False,
+        }
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            enrollment = resp.json()
+            return {
+                "success": True,
+                "enrollment": enrollment,
+                "enrollment_id": enrollment.get("id"),
+            }
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500]
+            logger.error(f"Error enrolling user: {e} — {body}")
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error enrolling user: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def unenroll_user(
+    token: str,
+    base_url: str,
+    course_id: int,
+    enrollment_id: int,
+    task: str = "delete",
+) -> dict:
+    """
+    Conclude / deactivate / delete an enrollment.
+    DELETE /api/v1/courses/:course_id/enrollments/:id
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/enrollments/{enrollment_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"task": task}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(url, headers=headers, params=params)
+            resp.raise_for_status()
+            return {"success": True, "enrollment": resp.json()}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500]
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body}"}
+        except httpx.RequestError as e:
+            return {"success": False, "error": "Network error"}
+
+
+async def delete_canvas_user(
+    token: str,
+    base_url: str,
+    account_id: str | int,
+    canvas_user_id: int,
+) -> dict:
+    """
+    Delete a user from a Canvas account.
+    DELETE /api/v1/accounts/:account_id/users/:user_id
+    Requires admin privileges on the account.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/accounts/{account_id}/users/{canvas_user_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(url, headers=headers)
+            resp.raise_for_status()
+            return {"success": True, "user": resp.json()}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500]
+            logger.error(f"Error deleting Canvas user {canvas_user_id}: {e} — {body}")
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error deleting Canvas user: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def get_course_enrollments(
+    token: str,
+    base_url: str,
+    course_id: int,
+    *,
+    enrollment_type: str | None = "StudentEnrollment",
+    per_page: int = 100,
+) -> dict:
+    """
+    List enrollments for a course. Supports pagination.
+    GET /api/v1/courses/:course_id/enrollments
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/enrollments"
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict = {"per_page": per_page}
+    if enrollment_type:
+        params["type[]"] = enrollment_type
+
+    all_enrollments: list = []
+    page = 1
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            while True:
+                params["page"] = page
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                all_enrollments.extend(batch)
+                if 'rel="next"' not in resp.headers.get("Link", ""):
+                    break
+                page += 1
+            return {"success": True, "enrollments": all_enrollments}
+        except httpx.HTTPStatusError as e:
+            return {"success": False, "error": f"Canvas API {e.response.status_code}", "enrollments": []}
+        except httpx.RequestError as e:
+            return {"success": False, "error": "Network error", "enrollments": []}
+
+
+# ── Quiz Submission lifecycle ────────────────────────────────────────────
+
+async def start_quiz_submission(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_id: int,
+    *,
+    as_user_id: int | None = None,
+    access_code: str | None = None,
+) -> dict:
+    """
+    Start a quiz-taking session (create a QuizSubmission).
+    POST /api/v1/courses/:course_id/quizzes/:quiz_id/submissions
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/quizzes/{quiz_id}/submissions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body: dict = {}
+    if access_code:
+        body["access_code"] = access_code
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                url, headers=headers, json=body, params=_masq(None, as_user_id)
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            qs = data["quiz_submissions"][0]
+            return {
+                "success": True,
+                "quiz_submission": qs,
+                "quiz_submission_id": qs["id"],
+                "validation_token": qs["validation_token"],
+                "attempt": qs["attempt"],
+            }
+        except httpx.HTTPStatusError as e:
+            body_text = e.response.text[:500]
+            logger.error(f"Error starting quiz submission: {e} — {body_text}")
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body_text}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error starting quiz submission: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def answer_quiz_questions(
+    token: str,
+    base_url: str,
+    quiz_submission_id: int,
+    attempt: int,
+    validation_token: str,
+    answers: list[dict],
+    *,
+    as_user_id: int | None = None,
+    access_code: str | None = None,
+) -> dict:
+    """
+    Answer one or more quiz questions.
+    POST /api/v1/quiz_submissions/:quiz_submission_id/questions
+
+    answers: [{"id": question_id, "answer": <value>}, ...]
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/quiz_submissions/{quiz_submission_id}/questions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body: dict = {
+        "attempt": attempt,
+        "validation_token": validation_token,
+        "quiz_questions": answers,
+    }
+    if access_code:
+        body["access_code"] = access_code
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(
+                url, headers=headers, json=body, params=_masq(None, as_user_id)
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "success": True,
+                "quiz_submission_questions": data.get("quiz_submission_questions", []),
+            }
+        except httpx.HTTPStatusError as e:
+            body_text = e.response.text[:500]
+            logger.error(f"Error answering quiz questions: {e} — {body_text}")
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body_text}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error answering questions: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def complete_quiz_submission(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_id: int,
+    submission_id: int,
+    attempt: int,
+    validation_token: str,
+    *,
+    as_user_id: int | None = None,
+    access_code: str | None = None,
+) -> dict:
+    """
+    Complete (turn in) a quiz submission — triggers auto-grading.
+    POST /api/v1/courses/:cid/quizzes/:qid/submissions/:sid/complete
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/quizzes/{quiz_id}/submissions/{submission_id}/complete"
+    )
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body: dict = {"attempt": attempt, "validation_token": validation_token}
+    if access_code:
+        body["access_code"] = access_code
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                url, headers=headers, json=body, params=_masq(None, as_user_id)
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            qs = data["quiz_submissions"][0]
+            return {
+                "success": True,
+                "quiz_submission": qs,
+                "score": qs.get("score"),
+                "kept_score": qs.get("kept_score"),
+                "workflow_state": qs.get("workflow_state"),
+            }
+        except httpx.HTTPStatusError as e:
+            body_text = e.response.text[:500]
+            logger.error(f"Error completing quiz submission: {e} — {body_text}")
+            return {"success": False, "error": f"Canvas API {e.response.status_code}: {body_text}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error completing submission: {e}")
+            return {"success": False, "error": "Network error"}
+
+
+async def get_quiz_submissions(
+    token: str,
+    base_url: str,
+    course_id: int,
+    quiz_id: int,
+    *,
+    per_page: int = 50,
+) -> dict:
+    """
+    Get all quiz submissions for a quiz.
+    GET /api/v1/courses/:course_id/quizzes/:quiz_id/submissions
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/quizzes/{quiz_id}/submissions"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    all_subs: list = []
+    page = 1
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            while True:
+                resp = await client.get(
+                    url, headers=headers, params={"per_page": per_page, "page": page}
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                subs = data.get("quiz_submissions", [])
+                if not subs:
+                    break
+                all_subs.extend(subs)
+                if 'rel="next"' not in resp.headers.get("Link", ""):
+                    break
+                page += 1
+            return {"success": True, "quiz_submissions": all_subs, "total": len(all_subs)}
+        except httpx.HTTPStatusError as e:
+            return {"success": False, "error": f"Canvas API {e.response.status_code}", "quiz_submissions": []}
+        except httpx.RequestError as e:
+            return {"success": False, "error": "Network error", "quiz_submissions": []}
+
+
+async def get_assignment_submissions(
+    token: str,
+    base_url: str,
+    course_id: int,
+    assignment_id: int,
+    *,
+    per_page: int = 50,
+) -> dict:
+    """
+    List assignment submissions (quiz submissions link to assignments).
+    GET /api/v1/courses/:course_id/assignments/:assignment_id/submissions
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/assignments/{assignment_id}/submissions"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    all_subs: list = []
+    page = 1
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            while True:
+                resp = await client.get(
+                    url, headers=headers, params={"per_page": per_page, "page": page}
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                all_subs.extend(batch)
+                if 'rel="next"' not in resp.headers.get("Link", ""):
+                    break
+                page += 1
+            return {"success": True, "submissions": all_subs, "total": len(all_subs)}
+        except httpx.HTTPStatusError as e:
+            return {"success": False, "error": f"Canvas API {e.response.status_code}", "submissions": []}
+        except httpx.RequestError as e:
+            return {"success": False, "error": "Network error", "submissions": []}

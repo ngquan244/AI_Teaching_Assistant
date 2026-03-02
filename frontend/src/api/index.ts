@@ -7,3 +7,5 @@ export { apiClient, getStoredToken, setStoredToken, removeStoredToken, removeAll
 export { authApi } from './auth';
 export * from './auth';
 export * as documentRagApi from './documentRag';
+export { canvasSimApi } from './canvasSim';
+export { canvasResultsApi } from './canvasResults';
