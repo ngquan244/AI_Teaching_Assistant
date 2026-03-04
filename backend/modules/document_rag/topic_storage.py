@@ -6,6 +6,7 @@ Stores extracted topics per document for quick retrieval.
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from datetime import datetime
@@ -32,6 +33,7 @@ class TopicStorage:
         self.storage_dir = Path(storage_dir or rag_config.PERSIST_DIRECTORY)
         self.storage_file = self.storage_dir / "document_topics.json"
         self._topics: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.RLock()
         
         # Ensure directory exists
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -48,23 +50,25 @@ class TopicStorage:
     
     def _load(self):
         """Load topics from disk."""
-        try:
-            if self.storage_file.exists():
-                with open(self.storage_file, 'r', encoding='utf-8') as f:
-                    self._topics = json.load(f)
-                logger.info(f"Loaded topics for {len(self._topics)} documents")
-        except Exception as e:
-            logger.warning(f"Could not load topics: {e}")
-            self._topics = {}
+        with self._lock:
+            try:
+                if self.storage_file.exists():
+                    with open(self.storage_file, 'r', encoding='utf-8') as f:
+                        self._topics = json.load(f)
+                    logger.info(f"Loaded topics for {len(self._topics)} documents")
+            except Exception as e:
+                logger.warning(f"Could not load topics: {e}")
+                self._topics = {}
     
     def _save(self):
         """Save topics to disk."""
-        try:
-            with open(self.storage_file, 'w', encoding='utf-8') as f:
-                json.dump(self._topics, f, ensure_ascii=False, indent=2)
-            logger.info(f"Saved topics for {len(self._topics)} documents")
-        except Exception as e:
-            logger.error(f"Could not save topics: {e}")
+        with self._lock:
+            try:
+                with open(self.storage_file, 'w', encoding='utf-8') as f:
+                    json.dump(self._topics, f, ensure_ascii=False, indent=2)
+                logger.info(f"Saved topics for {len(self._topics)} documents")
+            except Exception as e:
+                logger.error(f"Could not save topics: {e}")
     
     def save_topics(
         self,
@@ -83,12 +87,13 @@ class TopicStorage:
             user_id: Optional user ID for per-user scoping
         """
         key = self._make_key(file_hash, user_id)
-        self._topics[key] = {
-            "filename": filename,
-            "topics": topics,
-            "extracted_at": datetime.now().isoformat(),
-            "user_id": user_id,
-        }
+        with self._lock:
+            self._topics[key] = {
+                "filename": filename,
+                "topics": topics,
+                "extracted_at": datetime.now().isoformat(),
+                "user_id": user_id,
+            }
         self._save()
         logger.info(f"Saved {len(topics)} topics for {filename} (user={user_id})")
     
@@ -104,11 +109,12 @@ class TopicStorage:
             List of topics or None if not found
         """
         key = self._make_key(file_hash, user_id)
-        if key in self._topics:
-            return self._topics[key].get("topics", [])
-        # Fallback: try legacy key (no user_id)
-        if user_id and file_hash in self._topics:
-            return self._topics[file_hash].get("topics", [])
+        with self._lock:
+            if key in self._topics:
+                return self._topics[key].get("topics", [])
+            # Fallback: try legacy key (no user_id)
+            if user_id and file_hash in self._topics:
+                return self._topics[file_hash].get("topics", [])
         return None
     
     def get_topics_by_filename(
@@ -134,11 +140,12 @@ class TopicStorage:
     def has_topics(self, file_hash: str, user_id: Optional[str] = None) -> bool:
         """Check if topics exist for a document."""
         key = self._make_key(file_hash, user_id)
-        if key in self._topics:
-            return True
-        if user_id and file_hash in self._topics:
-            return True
-        return False
+        with self._lock:
+            if key in self._topics:
+                return True
+            if user_id and file_hash in self._topics:
+                return True
+            return False
     
     def get_all_documents(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -148,22 +155,23 @@ class TopicStorage:
             List of document info dictionaries
         """
         documents = []
-        for key, data in self._topics.items():
-            entry_user = data.get("user_id")
-            if user_id is not None and entry_user is not None and entry_user != user_id:
-                continue
-            # Extract file_hash from composite key
-            if ":" in key:
-                file_hash = key.split(":", 1)[1]
-            else:
-                file_hash = key
-            documents.append({
-                "file_hash": file_hash,
-                "filename": data.get("filename", "unknown"),
-                "topic_count": len(data.get("topics", [])),
-                "extracted_at": data.get("extracted_at"),
-                "user_id": entry_user,
-            })
+        with self._lock:
+            for key, data in self._topics.items():
+                entry_user = data.get("user_id")
+                if user_id is not None and entry_user is not None and entry_user != user_id:
+                    continue
+                # Extract file_hash from composite key
+                if ":" in key:
+                    file_hash = key.split(":", 1)[1]
+                else:
+                    file_hash = key
+                documents.append({
+                    "file_hash": file_hash,
+                    "filename": data.get("filename", "unknown"),
+                    "topic_count": len(data.get("topics", [])),
+                    "extracted_at": data.get("extracted_at"),
+                    "user_id": entry_user,
+                })
         return documents
     
     def remove_document(self, file_hash: str, user_id: Optional[str] = None) -> bool:
@@ -178,10 +186,11 @@ class TopicStorage:
             True if removed, False if not found
         """
         key = self._make_key(file_hash, user_id)
-        if key in self._topics:
-            del self._topics[key]
-            self._save()
-            return True
+        with self._lock:
+            if key in self._topics:
+                del self._topics[key]
+                self._save()
+                return True
         return False
     
     def update_topics_by_filename(
@@ -201,28 +210,30 @@ class TopicStorage:
         Returns:
             True if updated, False if not found
         """
-        for key, data in self._topics.items():
-            if data.get("filename") == filename:
-                entry_user = data.get("user_id")
-                if user_id is None or entry_user == user_id or entry_user is None:
-                    self._topics[key]["topics"] = topics
-                    self._topics[key]["updated_at"] = datetime.now().isoformat()
-                    self._save()
-                    logger.info(f"Updated {len(topics)} topics for {filename}")
-                    return True
+        with self._lock:
+            for key, data in self._topics.items():
+                if data.get("filename") == filename:
+                    entry_user = data.get("user_id")
+                    if user_id is None or entry_user == user_id or entry_user is None:
+                        self._topics[key]["topics"] = topics
+                        self._topics[key]["updated_at"] = datetime.now().isoformat()
+                        self._save()
+                        logger.info(f"Updated {len(topics)} topics for {filename}")
+                        return True
         return False
     
     def clear(self, user_id: Optional[str] = None):
         """Clear stored topics. If user_id given, only clear that user's topics."""
-        if user_id is None:
-            self._topics = {}
-        else:
-            keys_to_remove = [
-                key for key, data in self._topics.items()
-                if data.get("user_id") == user_id
-            ]
-            for key in keys_to_remove:
-                del self._topics[key]
+        with self._lock:
+            if user_id is None:
+                self._topics = {}
+            else:
+                keys_to_remove = [
+                    key for key, data in self._topics.items()
+                    if data.get("user_id") == user_id
+                ]
+                for key in keys_to_remove:
+                    del self._topics[key]
         self._save()
         logger.info(f"Cleared stored topics (user={user_id})")
 

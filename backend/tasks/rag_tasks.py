@@ -13,6 +13,7 @@ from celery import shared_task
 from backend.celery_app import BaseTaskWithRetry
 from backend.services.job_service import get_sync_job_service
 from backend.database.models import JobStatus
+from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +74,14 @@ def ingest_document(
         job_service.update_progress(job_uuid, 10, "Reading PDF")
         
         # Ingest document
-        result = rag_service.ingest_document(
-            file_path=file_path,
-            skip_if_exists=skip_if_exists,
-            extract_topics=extract_topics,
-            user_id=user_id,
-        )
+        with SessionLocal() as rag_db:
+            result = rag_service.ingest_document(
+                file_path=file_path,
+                skip_if_exists=skip_if_exists,
+                extract_topics=extract_topics,
+                user_id=user_id,
+                db_session=rag_db,
+            )
         
         if result.get("success"):
             job_service.complete_job(job_uuid, result)
@@ -146,7 +149,10 @@ def build_index(
         # Ingest document into per-file collection
         # This uses the new PerFileCollectionManager - no global locks!
         rag_service = _get_rag_service()
-        result = rag_service.ingest_document(str(file_path), user_id=user_id)
+        with SessionLocal() as rag_db:
+            result = rag_service.ingest_document(
+                str(file_path), user_id=user_id, db_session=rag_db,
+            )
         
         if result.get("success"):
             # Log the collection name for debugging
@@ -206,14 +212,16 @@ def query_documents(
         job_service.start_job(job_uuid, "Processing query")
         
         rag_service = _get_rag_service()
-        result = rag_service.query(
-            question=question,
-            k=k,
-            return_context=return_context,
-            file_hashes=file_hashes,
-            selected_documents=selected_documents,
-            user_id=user_id,
-        )
+        with SessionLocal() as rag_db:
+            result = rag_service.query(
+                question=question,
+                k=k,
+                return_context=return_context,
+                file_hashes=file_hashes,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
         
         if result.get("success"):
             job_service.complete_job(job_uuid, result)
@@ -252,7 +260,8 @@ def extract_topics(
         job_service.start_job(job_uuid, "Extracting topics")
         
         rag_service = _get_rag_service()
-        result = rag_service.extract_topics(user_id=user_id)
+        with SessionLocal() as rag_db:
+            result = rag_service.extract_topics(user_id=user_id, db_session=rag_db)
         
         job_service.complete_job(job_uuid, result)
         return result
@@ -306,7 +315,11 @@ def canvas_index_file(
             return {"success": False, "error": error}
         
         # Ingest into per-file collection with course_id for naming
-        result = service.ingest_document(str(file_path), course_id=course_id)
+        with SessionLocal() as rag_db:
+            result = service.ingest_document(
+                str(file_path), course_id=course_id,
+                user_id=user_id, db_session=rag_db,
+            )
         
         if result.get("success"):
             collection_name = result.get("collection_name", "unknown")

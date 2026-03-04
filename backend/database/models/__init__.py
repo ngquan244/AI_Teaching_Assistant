@@ -10,6 +10,11 @@ from .canvas_simulation import (
     CanvasAuditLog,
     AuditAction,
 )
+from .rag_document import (
+    RAGCollection,
+    RAGDocumentTopic,
+    RAGSourceType,
+)
 
 __all__ = [
     "User",
@@ -28,4 +33,7 @@ __all__ = [
     "SimulationStatus",
     "CanvasAuditLog",
     "AuditAction",
+    "RAGCollection",
+    "RAGDocumentTopic",
+    "RAGSourceType",
 ]

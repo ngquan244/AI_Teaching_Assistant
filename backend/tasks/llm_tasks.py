@@ -12,6 +12,7 @@ from celery import shared_task
 
 from backend.celery_app import RateLimitedLLMTask
 from backend.services.job_service import get_sync_job_service
+from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +79,18 @@ def generate_quiz(
         job_service.update_progress(job_uuid, 20, "Generating quiz questions")
         
         # Generate quiz
-        result = rag_service.generate_quiz(
-            topics=topics if len(topics) > 1 else None,
-            topic=topics[0] if len(topics) == 1 else None,
-            num_questions=num_questions,
-            difficulty=difficulty,
-            language=language,
-            k=k,
-            selected_documents=selected_documents,
-            user_id=user_id,
-        )
+        with SessionLocal() as rag_db:
+            result = rag_service.generate_quiz(
+                topics=topics if len(topics) > 1 else None,
+                topic=topics[0] if len(topics) == 1 else None,
+                num_questions=num_questions,
+                difficulty=difficulty,
+                language=language,
+                k=k,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
         
         job_service.update_progress(job_uuid, 90, "Formatting results")
         
@@ -197,12 +200,14 @@ def rag_query(
         
         job_service.update_progress(job_uuid, 30, "Retrieving context")
         
-        result = rag_service.query(
-            question=question,
-            k=k,
-            return_context=return_context,
-            user_id=user_id,
-        )
+        with SessionLocal() as rag_db:
+            result = rag_service.query(
+                question=question,
+                k=k,
+                return_context=return_context,
+                user_id=user_id,
+                db_session=rag_db,
+            )
         
         if result.get("success"):
             job_service.complete_job(job_uuid, result)
@@ -246,7 +251,8 @@ def extract_document_topics(
         else:
             rag_service = _get_rag_service()
         
-        result = rag_service.extract_topics(user_id=user_id)
+        with SessionLocal() as rag_db:
+            result = rag_service.extract_topics(user_id=user_id, db_session=rag_db)
         
         job_service.complete_job(job_uuid, result)
         return result

@@ -407,7 +407,7 @@ const SettingsPanel: React.FC = () => {
             {config?.llm_provider === 'groq' ? '⚡ Groq Cloud' : '🖥️ Ollama Local'}
           </span>
           {config?.llm_provider === 'groq' && (
-            <span className="provider-hint">Inference nhanh qua Groq LPU</span>
+            <span className="provider-hint">Groq LPU</span>
           )}
         </div>
 
@@ -442,34 +442,7 @@ const SettingsPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* System Info Section */}
-      <div className="settings-section">
-        <h3>Thông tin hệ thống</h3>
-        <div className="info-list">
-          <div className="info-item">
-            <span>API URL:</span>
-            <code>http://localhost:8080</code>
-          </div>
-          <div className="info-item">
-            <span>LLM Provider:</span>
-            <code className={`provider-code provider-code-${config?.llm_provider || 'ollama'}`}>
-              {config?.llm_provider === 'groq' ? 'Groq Cloud' : 'Ollama Local'}
-            </code>
-          </div>
-          <div className="info-item">
-            <span>Model mặc định:</span>
-            <code>{config?.default_model}</code>
-          </div>
-          <div className="info-item">
-            <span>Groq API:</span>
-            <code>{config?.groq_available ? '✅ Configured' : '❌ Not configured'}</code>
-          </div>
-          <div className="info-item">
-            <span>Phiên bản:</span>
-            <code>1.0.0</code>
-          </div>
-        </div>
-      </div>
+
     </div>
   );
 };

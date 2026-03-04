@@ -21,6 +21,7 @@ from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag import RAGService
 from backend.core.config import settings
 from backend.utils import get_user_rag_dir
+from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,8 @@ async def build_index(user: CurrentUser, filename: str = Form(...)):
     
     try:
         rag_service = get_rag_service()
-        result = rag_service.ingest_document(str(file_path), user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.ingest_document(str(file_path), user_id=str(user.id), db_session=db)
         
         return IngestResponse(
             success=result.get("success", False),
@@ -201,7 +203,8 @@ async def upload_and_index(user: CurrentUser, file: UploadFile = File(...)):
         
         # Index the document
         rag_service = get_rag_service()
-        result = rag_service.ingest_document(str(file_path), user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.ingest_document(str(file_path), user_id=str(user.id), db_session=db)
         
         return IngestResponse(
             success=result.get("success", False),
@@ -272,7 +275,8 @@ async def download_and_index(request: DownloadAndIndexRequest, user: CurrentUser
         
         # Index the document
         rag_service = get_rag_service()
-        result = rag_service.ingest_document(str(file_path), user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.ingest_document(str(file_path), user_id=str(user.id), db_session=db)
         
         return IngestResponse(
             success=result.get("success", False),
@@ -317,14 +321,16 @@ async def query_documents(request: QueryRequest, user: CurrentUser):
     
     try:
         rag_service = get_rag_service()
-        result = rag_service.query(
-            question=request.question,
-            k=request.k,
-            return_context=request.return_context,
-            file_hashes=request.file_hashes,
-            selected_documents=request.selected_documents,
-            user_id=str(user.id)
-        )
+        with SessionLocal() as db:
+            result = rag_service.query(
+                question=request.question,
+                k=request.k,
+                return_context=request.return_context,
+                file_hashes=request.file_hashes,
+                selected_documents=request.selected_documents,
+                user_id=str(user.id),
+                db_session=db,
+            )
         
         return QueryResponse(
             success=result.get("success", False),
@@ -346,7 +352,8 @@ async def get_index_stats(user: CurrentUser):
     """
     try:
         rag_service = get_rag_service()
-        stats = rag_service.get_index_stats(user_id=str(user.id))
+        with SessionLocal() as db:
+            stats = rag_service.get_index_stats(user_id=str(user.id), db_session=db)
         
         return IndexStatsResponse(
             success=True,
@@ -367,7 +374,8 @@ async def reset_index(user: CurrentUser):
     
     try:
         rag_service = get_rag_service()
-        result = rag_service.reset_index(user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.reset_index(user_id=str(user.id), db_session=db)
         
         return result
         
@@ -512,24 +520,26 @@ async def generate_quiz_from_documents(request: GenerateQuizRequest, user: Curre
     try:
         rag_service = get_rag_service()
         
-        # Check if index has documents
-        stats = rag_service.get_index_stats(user_id=str(user.id))
-        if stats.get("total_documents", 0) == 0:
-            raise HTTPException(
-                status_code=400, 
-                detail="No documents indexed. Please upload and index documents first."
+        # Check if index has documents and generate quiz
+        with SessionLocal() as db:
+            stats = rag_service.get_index_stats(user_id=str(user.id), db_session=db)
+            if stats.get("total_documents", 0) == 0:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="No documents indexed. Please upload and index documents first."
+                )
+            
+            # Generate quiz with multiple topics support
+            result = rag_service.generate_quiz(
+                topic=topics_list[0] if len(topics_list) == 1 else None,
+                topics=topics_list if len(topics_list) > 1 else None,
+                num_questions=request.num_questions,
+                difficulty=request.difficulty,
+                language=request.language,
+                selected_documents=request.selected_documents,
+                user_id=str(user.id),
+                db_session=db,
             )
-        
-        # Generate quiz with multiple topics support
-        result = rag_service.generate_quiz(
-            topic=topics_list[0] if len(topics_list) == 1 else None,
-            topics=topics_list if len(topics_list) > 1 else None,
-            num_questions=request.num_questions,
-            difficulty=request.difficulty,
-            language=request.language,
-            selected_documents=request.selected_documents,
-            user_id=str(user.id)
-        )
         
         if not result.get("success"):
             return GenerateQuizResponse(
@@ -609,16 +619,17 @@ async def extract_topics_from_documents(user: CurrentUser):
         rag_service = get_rag_service()
         
         # Check if index has documents
-        stats = rag_service.get_index_stats(user_id=str(user.id))
-        if stats.get("total_documents", 0) == 0:
-            return {
-                "success": False,
-                "topics": [],
-                "message": "Chưa có tài liệu nào được index"
-            }
-        
-        # Extract topics
-        result = rag_service.extract_topics(user_id=str(user.id))
+        with SessionLocal() as db:
+            stats = rag_service.get_index_stats(user_id=str(user.id), db_session=db)
+            if stats.get("total_documents", 0) == 0:
+                return {
+                    "success": False,
+                    "topics": [],
+                    "message": "Chưa có tài liệu nào được index"
+                }
+            
+            # Extract topics
+            result = rag_service.extract_topics(user_id=str(user.id), db_session=db)
         
         return result
         
@@ -701,7 +712,10 @@ async def get_document_topics(filename: str, user: CurrentUser):
     """
     try:
         rag_service = get_rag_service()
-        result = rag_service.get_document_topics(filename, user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.get_document_topics(
+                filename, user_id=str(user.id), db_session=db,
+            )
         
         if not result.get("success"):
             raise HTTPException(
@@ -744,7 +758,10 @@ async def update_document_topics(filename: str, request: UpdateTopicsRequest, us
         # Convert string topics to dict format
         topics_dict = [{"name": topic, "description": ""} for topic in request.topics if topic.strip()]
         
-        result = rag_service.update_document_topics(filename, topics_dict, user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.update_document_topics(
+                filename, topics_dict, user_id=str(user.id), db_session=db,
+            )
         
         if not result.get("success"):
             raise HTTPException(
@@ -774,7 +791,10 @@ async def list_indexed_documents(user: CurrentUser):
     """
     try:
         rag_service = get_rag_service()
-        result = rag_service.get_indexed_documents_with_topics(user_id=str(user.id))
+        with SessionLocal() as db:
+            result = rag_service.get_indexed_documents_with_topics(
+                user_id=str(user.id), db_session=db,
+            )
         documents = result.get("documents", [])
         
         # Format for frontend - use actual filename for topic lookup

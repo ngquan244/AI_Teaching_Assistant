@@ -10,11 +10,14 @@ Supports multiple LLM providers:
 """
 
 import os
+import uuid
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from langchain_core.documents import Document
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from .config import rag_config
 from .ingest import load_pdf_documents, get_file_metadata, compute_file_hash
@@ -29,7 +32,12 @@ from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
 from .topic_storage import topic_storage
+from .rag_repository import (
+    RAGCollectionRepository,
+    SyncRAGCollectionRepository,
+)
 from .llm_providers import BaseLLM, LLMFactory, LLMProvider
+from backend.database.models.rag_document import RAGSourceType
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +168,7 @@ class RAGService:
         skip_if_exists: bool = True,
         extract_topics: bool = True,
         user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a PDF document into the vector store.
@@ -169,6 +178,8 @@ class RAGService:
             skip_if_exists: Skip if document already indexed
             extract_topics: Extract and save topics after indexing
             user_id: User ID for per-user scoping
+            db_session: Sync DB session (Celery). When provided, metadata
+                        is persisted to PostgreSQL via SyncRAGCollectionRepository.
             
         Returns:
             Dictionary with ingestion results
@@ -191,10 +202,33 @@ class RAGService:
             file_hash = file_meta["file_hash"]
             filename = file_meta["filename"]
             
-            # Check for duplicates using per-file collection manager
-            if skip_if_exists and self._collection_manager.is_indexed(file_hash, user_id=user_id):
+            # Check for duplicates — check DB first, then legacy
+            already_indexed = False
+            if db_session and user_id:
+                try:
+                    already_indexed = SyncRAGCollectionRepository.is_indexed(
+                        db_session, file_hash, uuid.UUID(user_id),
+                    )
+                except Exception as e:
+                    logger.warning(f"DB is_indexed check failed: {e}")
+                    db_session.rollback()
+            if not already_indexed:
+                already_indexed = self._collection_manager.is_indexed(file_hash, user_id=user_id)
+            
+            if skip_if_exists and already_indexed:
                 logger.info(f"Document already indexed in per-file collection: {file_path}")
                 collection_name = self._collection_manager.get_collection_name(file_hash)
+                has_topics = False
+                if db_session and user_id:
+                    try:
+                        has_topics = SyncRAGCollectionRepository.has_topics(
+                            db_session, file_hash, uuid.UUID(user_id),
+                        )
+                    except Exception as e:
+                        logger.warning(f"DB has_topics check failed: {e}")
+                        db_session.rollback()
+                if not has_topics:
+                    has_topics = topic_storage.has_topics(file_hash, user_id=user_id)
                 return {
                     "success": True,
                     "message": "Document already indexed",
@@ -203,7 +237,7 @@ class RAGService:
                     "collection_name": collection_name,
                     "chunks_added": 0,
                     "already_indexed": True,
-                    "has_topics": topic_storage.has_topics(file_hash, user_id=user_id)
+                    "has_topics": has_topics,
                 }
             
             # Load PDF
@@ -233,6 +267,19 @@ class RAGService:
             collection_name = self._collection_manager.get_collection_name(file_hash)
             logger.info(f"Successfully ingested {added_count} chunks from {file_path} into collection: {collection_name}")
             
+            # Register in DB if session available
+            if db_session and user_id:
+                col_row = SyncRAGCollectionRepository.register(
+                    db_session,
+                    user_id=uuid.UUID(user_id),
+                    file_hash=file_hash,
+                    filename=filename,
+                    collection_name=collection_name or f"doc_{file_hash[:16]}",
+                    source=RAGSourceType.UPLOAD,
+                    chunk_count=added_count,
+                    is_indexed=True,
+                )
+            
             # Extract and save topics for this document
             topics_extracted = []
             if extract_topics:
@@ -241,6 +288,14 @@ class RAGService:
                     topics_result = self._extract_topics_from_chunks(chunks, file_meta)
                     if topics_result.get("success") and topics_result.get("topics"):
                         topics_extracted = topics_result["topics"]
+                        # Save to DB if session available
+                        if db_session and user_id and col_row:
+                            SyncRAGCollectionRepository.save_topics(
+                                db_session,
+                                collection_id=col_row.id,
+                                topics=topics_extracted,
+                            )
+                        # Always save to legacy too for backward compatibility
                         topic_storage.save_topics(
                             file_hash=file_hash,
                             filename=filename,
@@ -303,6 +358,7 @@ class RAGService:
         file_hashes: Optional[List[str]] = None,
         selected_documents: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
         Query the document knowledge base.
@@ -314,6 +370,7 @@ class RAGService:
             file_hashes: Optional list of file hashes to query (per-file collections)
             selected_documents: Optional list of filenames to query
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata lookup
             
         Returns:
             Dictionary with:
@@ -330,13 +387,38 @@ class RAGService:
         
         # If filenames provided, resolve to file hashes
         if selected_documents and not target_hashes:
-            for meta in self._collection_manager.registry.get_all(user_id=user_id):
-                if meta.filename in selected_documents:
-                    target_hashes.append(meta.file_hash)
+            if db_session and user_id:
+                try:
+                    rows = SyncRAGCollectionRepository.get_by_filenames(
+                        db_session, selected_documents, uuid.UUID(user_id),
+                    )
+                    target_hashes = [r.file_hash for r in rows]
+                except Exception as e:
+                    logger.warning(f"DB get_by_filenames failed: {e}")
+                    db_session.rollback()
+            # Also check legacy to cover pre-migration documents
+            if not target_hashes:
+                for meta in self._collection_manager.registry.get_all(user_id=user_id):
+                    if meta.filename in selected_documents:
+                        target_hashes.append(meta.file_hash)
         
         # If no specific files selected, query all indexed files for this user
         if not target_hashes:
-            target_hashes = [meta.file_hash for meta in self._collection_manager.registry.get_all(user_id=user_id)]
+            if db_session and user_id:
+                try:
+                    all_rows = SyncRAGCollectionRepository.get_all(
+                        db_session, uuid.UUID(user_id),
+                    )
+                    target_hashes = [r.file_hash for r in all_rows]
+                except Exception as e:
+                    logger.warning(f"DB get_all failed: {e}")
+                    db_session.rollback()
+            # Merge with legacy hashes
+            legacy_hashes = {meta.file_hash for meta in self._collection_manager.registry.get_all(user_id=user_id)}
+            existing = set(target_hashes)
+            for h in legacy_hashes:
+                if h not in existing:
+                    target_hashes.append(h)
         
         # Check if there are indexed documents
         if not target_hashes:
@@ -372,20 +454,52 @@ class RAGService:
                 "error": str(e)
             }
     
-    def get_index_stats(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_index_stats(
+        self,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Get statistics about the document index.
         
         Args:
             user_id: If given, only return stats for this user's documents
+            db_session: Sync DB session for metadata lookup
         
         Returns:
             Dictionary with index statistics (aggregated across all per-file collections)
         """
         self._ensure_initialized()
         
-        # Get stats from per-file collection manager
-        indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
+        # Prefer DB source when available, merge with legacy
+        db_indexed = []
+        if db_session and user_id:
+            try:
+                rows = SyncRAGCollectionRepository.get_all(
+                    db_session, uuid.UUID(user_id),
+                )
+                db_indexed = [
+                    {
+                        "file_hash": r.file_hash,
+                        "filename": r.filename,
+                        "collection_name": r.collection_name,
+                        "chunk_count": r.chunk_count or 0,
+                        "indexed_at": r.created_at.isoformat() if r.created_at else None,
+                    }
+                    for r in rows
+                ]
+            except Exception as e:
+                logger.warning(f"DB query failed for get_index_stats, falling back to legacy: {e}")
+                db_session.rollback()
+
+        # Always merge with legacy to show pre-migration files
+        seen_hashes = {f["file_hash"] for f in db_indexed}
+        legacy_files = self._collection_manager.get_indexed_files(user_id=user_id)
+        for f in legacy_files:
+            if f.get("file_hash") not in seen_hashes:
+                db_indexed.append(f)
+
+        indexed_files = db_indexed
         total_chunks = sum(f.get("chunk_count", 0) for f in indexed_files)
         
         return {
@@ -397,13 +511,18 @@ class RAGService:
             "embedding_model": rag_config.EMBEDDING_MODEL
         }
     
-    def reset_index(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def reset_index(
+        self,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Reset the document index.
         If user_id given, only reset that user's collections.
         
         Args:
             user_id: If given, only reset this user's data
+            db_session: Sync DB session for metadata cleanup
         
         Returns:
             Dictionary with reset status
@@ -413,10 +532,17 @@ class RAGService:
         logger.warning(f"Resetting per-file document collections (user={user_id})")
         
         try:
-            # Reset per-file collections
+            # Reset per-file collections (ChromaDB)
             success = self._collection_manager.reset_all(user_id=user_id)
             
-            # Also clear stored topics
+            # Clear DB records if session available
+            if db_session and user_id:
+                SyncRAGCollectionRepository.clear(
+                    db_session, uuid.UUID(user_id),
+                )
+                logger.info(f"Cleared DB collection records (user={user_id})")
+            
+            # Also clear stored topics (JSON fallback)
             topic_storage.clear(user_id=user_id)
             logger.info(f"Cleared stored topics (user={user_id})")
             
@@ -571,6 +697,7 @@ class RAGService:
         k: int = 10,
         selected_documents: List[str] = None,
         user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
         Generate quiz questions from the document knowledge base.
@@ -584,6 +711,7 @@ class RAGService:
             k: Number of documents to retrieve for context per topic
             selected_documents: Optional list of document filenames to retrieve from
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata lookup
         """
         self._ensure_initialized()
         
@@ -605,7 +733,7 @@ class RAGService:
         num_questions = max(1, min(30, num_questions))
         
         # Check if index has documents
-        stats = self.get_index_stats(user_id=user_id)
+        stats = self.get_index_stats(user_id=user_id, db_session=db_session)
         if stats["total_documents"] == 0:
             return {
                 "success": False,
@@ -618,9 +746,20 @@ class RAGService:
             target_hashes = None
             if selected_documents:
                 target_hashes = []
-                for meta in self._collection_manager.registry.get_all(user_id=user_id):
-                    if meta.filename in selected_documents:
-                        target_hashes.append(meta.file_hash)
+                if db_session and user_id:
+                    try:
+                        rows = SyncRAGCollectionRepository.get_by_filenames(
+                            db_session, selected_documents, uuid.UUID(user_id),
+                        )
+                        target_hashes = [r.file_hash for r in rows]
+                    except Exception as e:
+                        logger.warning(f"DB get_by_filenames failed in generate_quiz: {e}")
+                        db_session.rollback()
+                # Merge with legacy
+                if not target_hashes:
+                    for meta in self._collection_manager.registry.get_all(user_id=user_id):
+                        if meta.filename in selected_documents:
+                            target_hashes.append(meta.file_hash)
             
             # If multiple topics, use the new multi-topic method
             if len(topic_list) > 1:
@@ -655,19 +794,20 @@ class RAGService:
                 "error": f"Lỗi khi tạo quiz: {str(e)}"
             }
     
-    def extract_topics(self, max_topics: int = 10, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def extract_topics(self, max_topics: int = 10, user_id: Optional[str] = None, db_session: Optional[Session] = None) -> Dict[str, Any]:
         """
         Extract suggested topics from indexed documents (legacy method).
         
         Args:
             max_topics: Maximum number of topics to extract
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata lookup
         """
         self._ensure_initialized()
         
         logger.info(f"Extracting topics from indexed documents (user={user_id})")
         
-        stats = self.get_index_stats(user_id=user_id)
+        stats = self.get_index_stats(user_id=user_id, db_session=db_session)
         if stats["total_documents"] == 0:
             return {
                 "success": False,
@@ -687,17 +827,34 @@ class RAGService:
                 "message": f"Lỗi: {str(e)}"
             }
     
-    def get_document_topics(self, filename: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_document_topics(
+        self,
+        filename: str,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Get pre-extracted topics for a specific document.
         
         Args:
             filename: Document filename
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata lookup
         """
         logger.info(f"Getting topics for document: {filename} (user={user_id})")
         
-        topics = topic_storage.get_topics_by_filename(filename, user_id=user_id)
+        topics = None
+        if db_session and user_id:
+            try:
+                topics = SyncRAGCollectionRepository.get_topics_by_filename(
+                    db_session, filename, uuid.UUID(user_id),
+                )
+            except Exception as e:
+                logger.warning(f"DB query failed for get_document_topics: {e}")
+                db_session.rollback()
+        # Fallback to legacy if DB returned nothing
+        if topics is None:
+            topics = topic_storage.get_topics_by_filename(filename, user_id=user_id)
         
         if topics is not None:
             return {
@@ -709,7 +866,9 @@ class RAGService:
         
         # Topics not found - try to extract them now
         logger.info(f"No cached topics, extracting for: {filename}")
-        result = self.extract_topics_for_document(filename, user_id=user_id)
+        result = self.extract_topics_for_document(
+            filename, user_id=user_id, db_session=db_session,
+        )
         
         if result.get("success"):
             return result
@@ -721,26 +880,46 @@ class RAGService:
             "message": "Không tìm thấy topics cho tài liệu này. Có thể cần index lại."
         }
     
-    def extract_topics_for_document(self, filename: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def extract_topics_for_document(
+        self,
+        filename: str,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Extract and cache topics for a specific document.
         
         Args:
             filename: Document filename
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata persistence
         """
         self._ensure_initialized()
         
         logger.info(f"Extracting topics for document: {filename} (user={user_id})")
         
         try:
-            # Find the file_hash for this filename from collection registry
-            indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
+            # Find the file_hash for this filename
             file_hash = None
-            for file_info in indexed_files:
-                if file_info.get("filename") == filename:
-                    file_hash = file_info.get("file_hash")
-                    break
+            col_row = None
+            if db_session and user_id:
+                try:
+                    rows = SyncRAGCollectionRepository.get_by_filenames(
+                        db_session, [filename], uuid.UUID(user_id),
+                    )
+                    if rows:
+                        col_row = rows[0]
+                        file_hash = col_row.file_hash
+                except Exception as e:
+                    logger.warning(f"DB lookup failed in extract_topics: {e}")
+                    db_session.rollback()
+            # Fallback to legacy if DB returned nothing
+            if not file_hash:
+                indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
+                for file_info in indexed_files:
+                    if file_info.get("filename") == filename:
+                        file_hash = file_info.get("file_hash")
+                        break
             
             if not file_hash:
                 return {
@@ -777,7 +956,14 @@ class RAGService:
             if result.get("success") and result.get("topics"):
                 topics = result["topics"]
                 
-                # Save to storage using the actual file_hash from the collection registry
+                # Persist to DB if session available
+                if db_session and user_id and col_row:
+                    SyncRAGCollectionRepository.save_topics(
+                        db_session,
+                        collection_id=col_row.id,
+                        topics=topics,
+                    )
+                # Always save to legacy too for backward compatibility
                 topic_storage.save_topics(
                     file_hash=file_hash,
                     filename=filename,
@@ -809,32 +995,59 @@ class RAGService:
                 "message": str(e)
             }
     
-    def get_indexed_documents_with_topics(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_indexed_documents_with_topics(
+        self,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Get list of all indexed documents with their topic counts.
         
         Args:
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata lookup
         """
         self._ensure_initialized()
         
-        # Get documents that already have topics
+        if db_session and user_id:
+            # DB path — single authoritative query
+            try:
+                rows = SyncRAGCollectionRepository.get_all_documents_with_topics(
+                    db_session, uuid.UUID(user_id),
+                )
+                db_documents = [
+                    {
+                        "filename": r["filename"],
+                        "topic_count": r["topic_count"],
+                        "extracted_at": r.get("topics_updated_at"),
+                    }
+                    for r in rows
+                ]
+            except Exception as e:
+                logger.warning(f"DB query failed for get_indexed_documents_with_topics, falling back to legacy: {e}")
+                db_session.rollback()
+                db_documents = []
+        else:
+            db_documents = []
+
+        # Always merge with legacy JSON/ChromaDB to show pre-migration data
+        docs_dict = {d["filename"]: d for d in db_documents}
+
+        # Fallback: merge JSON topic storage + collection manager
         docs_with_topics = topic_storage.get_all_documents(user_id=user_id)
-        docs_dict = {d["filename"]: d for d in docs_with_topics}
+        for d in docs_with_topics:
+            if d["filename"] not in docs_dict:
+                docs_dict[d["filename"]] = d
         
-        # Get indexed files from per-file collection manager (not legacy vectorstore)
         indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
-        
-        # Merge: add files that don't have topics yet
         for file_info in indexed_files:
             filename = file_info.get("filename", "unknown")
             if filename not in docs_dict:
                 docs_dict[filename] = {
                     "filename": filename,
-                    "topic_count": 0,  # Not extracted yet
+                    "topic_count": 0,
                     "extracted_at": None
                 }
-        
         documents = list(docs_dict.values())
         
         return {
@@ -843,7 +1056,13 @@ class RAGService:
             "count": len(documents)
         }
     
-    def update_document_topics(self, filename: str, topics: List[Dict[str, str]], user_id: Optional[str] = None) -> Dict[str, Any]:
+    def update_document_topics(
+        self,
+        filename: str,
+        topics: List[Dict[str, str]],
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """
         Update topics for a specific document.
         
@@ -851,10 +1070,21 @@ class RAGService:
             filename: Document filename
             topics: List of topic dictionaries
             user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata persistence
         """
         logger.info(f"Updating topics for document: {filename}, topics: {topics} (user={user_id})")
         
-        success = topic_storage.update_topics_by_filename(filename, topics, user_id=user_id)
+        success = False
+        if db_session and user_id:
+            try:
+                success = SyncRAGCollectionRepository.update_topics_by_filename(
+                    db_session, filename, topics, uuid.UUID(user_id),
+                )
+            except Exception as e:
+                logger.warning(f"DB query failed for update_document_topics, falling back to legacy: {e}")
+                db_session.rollback()
+        if not success:
+            success = topic_storage.update_topics_by_filename(filename, topics, user_id=user_id)
         
         if success:
             return {

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
+from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +118,13 @@ async def index_canvas_file(request: CanvasIndexRequest, user: CurrentUser):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.filename}")
     
-    result = service.ingest_document(
-        file_path=str(file_path),
-        course_id=request.course_id
-    )
+    with SessionLocal() as db:
+        result = service.ingest_document(
+            file_path=str(file_path),
+            course_id=request.course_id,
+            user_id=str(user.id),
+            db_session=db,
+        )
     
     return result
 
@@ -143,8 +147,15 @@ async def get_canvas_document_topics(filename: str, user: CurrentUser):
     """
     Get topics for a Canvas document.
     """
-    service = get_canvas_rag_service()
-    return service.get_document_topics(filename)
+    try:
+        service = get_canvas_rag_service()
+        with SessionLocal() as db:
+            return service.get_document_topics(
+                filename, user_id=str(user.id), db_session=db,
+            )
+    except Exception as e:
+        logger.error(f"Error getting Canvas document topics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/topics")
@@ -152,12 +163,20 @@ async def update_canvas_document_topics(request: CanvasUpdateTopicsRequest, user
     """
     Update topics for a Canvas document.
     """
-    logger.info(f"Updating topics for Canvas file: {request.filename}")
-    
-    service = get_canvas_rag_service()
-    result = service.update_document_topics(request.filename, request.topics)
-    
-    return result
+    try:
+        logger.info(f"Updating topics for Canvas file: {request.filename}")
+        
+        service = get_canvas_rag_service()
+        with SessionLocal() as db:
+            result = service.update_document_topics(
+                request.filename, request.topics,
+                user_id=str(user.id), db_session=db,
+            )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error updating Canvas document topics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/files")
@@ -174,8 +193,15 @@ async def list_indexed_canvas_documents(user: CurrentUser):
     """
     List all indexed Canvas documents with topics.
     """
-    service = get_canvas_rag_service()
-    return service.list_indexed_documents()
+    try:
+        service = get_canvas_rag_service()
+        with SessionLocal() as db:
+            return service.list_indexed_documents(
+                user_id=str(user.id), db_session=db,
+            )
+    except Exception as e:
+        logger.error(f"Error listing indexed Canvas documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/stats")
@@ -203,11 +229,14 @@ async def query_canvas_documents(request: CanvasQueryRequest, user: CurrentUser)
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
     service = get_canvas_rag_service()
-    result = service.query(
-        question=request.question,
-        k=request.k,
-        return_context=request.return_context
-    )
+    with SessionLocal() as db:
+        result = service.query(
+            question=request.question,
+            k=request.k,
+            return_context=request.return_context,
+            user_id=str(user.id),
+            db_session=db,
+        )
     
     return result
 
@@ -223,14 +252,17 @@ async def generate_quiz_from_canvas_documents(request: CanvasGenerateQuizRequest
         raise HTTPException(status_code=400, detail="At least one topic is required")
     
     service = get_canvas_rag_service()
-    result = service.generate_quiz(
-        topics=request.topics,
-        num_questions=request.num_questions,
-        difficulty=request.difficulty,
-        language=request.language,
-        k=request.k,
-        selected_documents=request.selected_documents
-    )
+    with SessionLocal() as db:
+        result = service.generate_quiz(
+            topics=request.topics,
+            num_questions=request.num_questions,
+            difficulty=request.difficulty,
+            language=request.language,
+            k=request.k,
+            selected_documents=request.selected_documents,
+            user_id=str(user.id),
+            db_session=db,
+        )
     
     return result
 

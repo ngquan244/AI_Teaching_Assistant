@@ -9,15 +9,17 @@ collection to eliminate write lock contention between users.
 """
 
 import os
+import uuid as _uuid
 import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 
 import httpx
 from langchain_core.documents import Document
+from sqlalchemy.orm import Session
 
 from .config import rag_config
 from .ingest import load_pdf_documents, get_file_metadata
@@ -32,6 +34,8 @@ from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
 from .llm_providers import BaseLLM, LLMFactory
+from .rag_repository import SyncRAGCollectionRepository
+from backend.database.models.rag_document import RAGSourceType
 
 logger = logging.getLogger(__name__)
 
@@ -353,20 +357,19 @@ class CanvasRAGService:
         self,
         file_path: str,
         extract_topics: bool = True,
-        course_id: Optional[int] = None
+        course_id: Optional[int] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a Canvas PDF document into a per-file collection.
-        
-        This uses per-file collections to enable concurrent indexing:
-        - Collection name: 'canvas_{course_id}_{file_hash[:16]}'
-        - Each file gets its own collection - no global write locks
-        - Indexing file A does NOT block indexing file B
         
         Args:
             file_path: Path to the PDF file
             extract_topics: Whether to extract topics after indexing
             course_id: Canvas course ID for collection naming
+            user_id: User ID for per-user scoping
+            db_session: Sync DB session for metadata persistence
         """
         self._ensure_initialized()
         
@@ -468,6 +471,27 @@ class CanvasRAGService:
                 "topic_count": len(topics_extracted)
             }
             self._save_indexed_registry(indexed_registry)
+            
+            # ---- Persist to PostgreSQL when session available ----
+            col_row = None
+            if db_session and user_id:
+                col_row = SyncRAGCollectionRepository.register(
+                    db_session,
+                    user_id=_uuid.UUID(user_id),
+                    file_hash=file_hash,
+                    filename=filename,
+                    collection_name=collection_name or f"canvas_{file_hash[:16]}",
+                    source=RAGSourceType.CANVAS,
+                    course_id=int(course_id) if course_id else None,
+                    chunk_count=added_count,
+                    is_indexed=True,
+                )
+                if topics_extracted and col_row:
+                    SyncRAGCollectionRepository.save_topics(
+                        db_session,
+                        collection_id=col_row.id,
+                        topics=topics_extracted,
+                    )
             
             return {
                 "success": True,
@@ -607,15 +631,35 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     
     # ===== Topic Management =====
     
-    def get_document_topics(self, filename: str) -> Dict[str, Any]:
+    def get_document_topics(
+        self,
+        filename: str,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
         """Get topics for a Canvas document."""
         self._ensure_initialized()
         
-        topics = self._topic_storage.get_topics_by_filename(filename)
+        topics = None
+        if db_session and user_id:
+            try:
+                topics = SyncRAGCollectionRepository.get_topics_by_filename(
+                    db_session, filename, _uuid.UUID(user_id),
+                )
+            except Exception as e:
+                logger.warning(f"DB query failed for get_document_topics, falling back to legacy: {e}")
+                db_session.rollback()
+        if topics is None:
+            raw = self._topic_storage.get_topics_by_filename(filename)
+            if raw:
+                topics = raw
+        
         if topics:
+            # Normalise to list of strings for Canvas API compatibility
+            names = [t["name"] if isinstance(t, dict) else t for t in topics]
             return {
                 "success": True,
-                "topics": [t["name"] for t in topics],
+                "topics": names,
                 "filename": filename
             }
         return {
@@ -627,13 +671,26 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     def update_document_topics(
         self,
         filename: str,
-        topics: List[str]
+        topics: List[str],
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """Update topics for a Canvas document."""
         self._ensure_initialized()
         
         topic_dicts = [{"name": t, "description": ""} for t in topics]
-        success = self._topic_storage.update_topics_by_filename(filename, topic_dicts)
+        
+        success = False
+        if db_session and user_id:
+            try:
+                success = SyncRAGCollectionRepository.update_topics_by_filename(
+                    db_session, filename, topic_dicts, _uuid.UUID(user_id),
+                )
+            except Exception as e:
+                logger.warning(f"DB query failed for update_document_topics, falling back to legacy: {e}")
+                db_session.rollback()
+        if not success:
+            success = self._topic_storage.update_topics_by_filename(filename, topic_dicts)
         
         return {
             "success": success,
@@ -642,16 +699,46 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     
     # ===== List and Stats =====
     
-    def list_indexed_documents(self) -> Dict[str, Any]:
-        """List all indexed Canvas documents from both collection_manager and registry."""
+    def list_indexed_documents(
+        self,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
+        """List all indexed Canvas documents."""
         self._ensure_initialized()
         
-        documents = []
-        seen_hashes = set()
+        # ---- DB-backed path ----
+        db_documents = []
+        db_seen_hashes = set()
+        if db_session and user_id:
+            try:
+                rows = SyncRAGCollectionRepository.get_all_documents_with_topics(
+                    db_session, _uuid.UUID(user_id),
+                    source=RAGSourceType.CANVAS,
+                )
+                for r in rows:
+                    db_documents.append({
+                        "filename": r["filename"],
+                        "original_filename": r["filename"],
+                        "file_hash": r["file_hash"],
+                        "indexed_at": r.get("indexed_at"),
+                        "chunks_added": r.get("chunk_count", 0),
+                        "topic_count": r.get("topic_count", 0),
+                        "course_id": r.get("course_id"),
+                    })
+                    db_seen_hashes.add(r["file_hash"])
+            except Exception as e:
+                logger.warning(f"DB query failed for list_indexed_documents, falling back to legacy: {e}")
+                db_session.rollback()
+        
+        documents = list(db_documents)
+        seen_hashes = set(db_seen_hashes)
         
         # Source 1: Get from indexed_files_registry (legacy)
         indexed_registry = self._load_indexed_registry()
         for file_hash, data in indexed_registry.items():
+            if file_hash in seen_hashes:
+                continue
             filename = data.get("filename", "unknown")
             topics = self._topic_storage.get_topics(file_hash) or []
             documents.append({
@@ -767,7 +854,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         self,
         question: str,
         k: int = 6,
-        return_context: bool = False
+        return_context: bool = False,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """Query the Canvas document knowledge base."""
         self._ensure_initialized()
@@ -780,7 +869,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         difficulty: str = "medium",
         language: str = "vi",
         k: int = 10,
-        selected_documents: Optional[List[str]] = None
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """Generate quiz from Canvas documents."""
         self._ensure_initialized()
