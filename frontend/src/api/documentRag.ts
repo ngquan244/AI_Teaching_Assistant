@@ -242,17 +242,6 @@ export const downloadAndIndexFromUrl = async (
 };
 
 /**
- * Query the document knowledge base
- */
-export const queryRAG = async (request: RAGQueryRequest): Promise<RAGQueryResponse> => {
-  const response = await apiClient.post<RAGQueryResponse>(
-    '/api/document-rag/query',
-    request
-  );
-  return response.data;
-};
-
-/**
  * Get index statistics
  */
 export const getRAGStats = async (): Promise<RAGStatsResponse> => {

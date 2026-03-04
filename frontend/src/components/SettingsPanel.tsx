@@ -173,12 +173,12 @@ const SettingsPanel: React.FC = () => {
         <div className="section-header">
           <h3>
             <Key size={20} />
-            Canvas LMS Integration
+            Canvas LMS - Kết nối
           </h3>
           {isAuthenticated && (
             <div className="security-badge">
               <CheckCircle size={14} />
-              <span>Encrypted Storage</span>
+              <span>Bảo mật</span>
             </div>
           )}
         </div>
@@ -190,8 +190,8 @@ const SettingsPanel: React.FC = () => {
               <AlertTriangle size={24} />
             </div>
             <div className="notice-content">
-              <h4>Authentication Required</h4>
-              <p>Please login to configure Canvas LMS integration and securely store your access token.</p>
+              <h4>Yêu cầu đăng nhập</h4>
+              <p>Vui lòng đăng nhập để cấu hình kết nối Canvas LMS và lưu trữ access token an toàn.</p>
             </div>
           </div>
         )}
@@ -249,12 +249,12 @@ const SettingsPanel: React.FC = () => {
                       </div>
                     </div>
                     <div className="info-row">
-                      <span className="info-label">Token Type:</span>
-                      <span className="info-value">{activeToken?.token_type || 'PAT'}</span>
+                      <span className="info-label">Loại xác thực:</span>
+                      <span className="info-value">{activeToken?.token_type === 'PAT' ? 'Token cá nhân' : (activeToken?.token_type || 'Token cá nhân')}</span>
                     </div>
                     {activeToken?.last_used_at && (
                       <div className="info-row">
-                        <span className="info-label">Last Used:</span>
+                        <span className="info-label">Sử dụng lần cuối:</span>
                         <span className="info-value">
                           {new Date(activeToken.last_used_at).toLocaleString()}
                         </span>
@@ -407,7 +407,7 @@ const SettingsPanel: React.FC = () => {
             {config?.llm_provider === 'groq' ? '⚡ Groq Cloud' : '🖥️ Ollama Local'}
           </span>
           {config?.llm_provider === 'groq' && (
-            <span className="provider-hint">Groq LPU</span>
+            <span className="provider-hint">Xử lý nhanh</span>
           )}
         </div>
 
@@ -430,7 +430,7 @@ const SettingsPanel: React.FC = () => {
         </div>
 
         <div className="form-group">
-          <label>Số vòng lặp tối đa:</label>
+          <label>Độ sâu phân tích:</label>
           <input
             type="range"
             min={5}

@@ -113,12 +113,12 @@ const StatusIcon: React.FC<{ status: ExtendedFileStatus }> = ({ status }) => {
 const statusLabels: Record<ExtendedFileStatus, string> = {
   queued: 'Đang chờ',
   downloading: 'Đang tải...',
-  hashing: 'Đang kiểm tra MD5...',
+  hashing: 'Đang kiểm tra...',
   saved: 'Đã lưu',
   duplicate: 'Đã có sẵn',
   failed: 'Thất bại',
-  indexing: 'Đang index...',
-  indexed: 'Đã index',
+  indexing: 'Đang xử lý...',
+  indexed: 'Đã xử lý',
   extracting: 'Đang trích xuất...',
 };
 

@@ -575,7 +575,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
               <div className="cqp-info-bar">
                 <Info size={16} />
                 <span>
-                  Chọn câu hỏi thủ công từ bank <strong>(Manual)</strong> hoặc tạo nhóm ngẫu nhiên <strong>(Random Group)</strong>.
+                  Chọn câu hỏi thủ công từ bank <strong>(Chọn thủ công)</strong> hoặc tạo nhóm ngẫu nhiên <strong>(Nhóm ngẫu nhiên)</strong>.
                 </span>
               </div>
 
@@ -627,10 +627,10 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
                           </div>
                           <div className="cqp-bank-badges">
                             {selCount > 0 && (
-                              <span className="cqp-badge manual">{selCount} manual</span>
+                              <span className="cqp-badge manual">{selCount} đã chọn</span>
                             )}
                             {groupCount > 0 && (
-                              <span className="cqp-badge random">{groupCount} group</span>
+                              <span className="cqp-badge random">{groupCount} nhóm</span>
                             )}
                             <button
                               className="cqp-btn-icon-sm add"
@@ -797,7 +797,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
                   </div>
                   <div className="cqp-review-item">
                     <span className="cqp-review-label">Loại</span>
-                    <span className="cqp-review-value">{quizType}</span>
+                    <span className="cqp-review-value">{{ assignment: 'Bài kiểm tra', practice_quiz: 'Bài luyện tập', graded_survey: 'Khảo sát có điểm', survey: 'Khảo sát' }[quizType] || quizType}</span>
                   </div>
                   <div className="cqp-review-item">
                     <span className="cqp-review-label">Thời gian</span>
@@ -809,7 +809,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
                   </div>
                   <div className="cqp-review-item">
                     <span className="cqp-review-label">Publish</span>
-                    <span className="cqp-review-value">{publishImmediately ? 'Ngay lập tức' : 'Draft'}</span>
+                    <span className="cqp-review-value">{publishImmediately ? 'Ngay lập tức' : 'Bản nháp'}</span>
                   </div>
                 </div>
 
@@ -829,7 +829,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
                 </div>
 
                 <div className="cqp-review-section">
-                  <h4>Random Groups</h4>
+                  <h4>Nhóm ngẫu nhiên</h4>
                   {questionGroups.length === 0 ? (
                     <p className="cqp-muted">Không có</p>
                   ) : (
@@ -888,8 +888,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
 
                 <div className="cqp-result-details">
                   <span>Câu hỏi: <strong>{result.questions_added}</strong></span>
-                  <span>Groups: <strong>{result.groups_created}</strong></span>
-                  {result.quiz_id && <span>Quiz ID: <strong>{result.quiz_id}</strong></span>}
+                  <span>Nhóm: <strong>{result.groups_created}</strong></span>
                 </div>
 
                 {result.quiz_url && (

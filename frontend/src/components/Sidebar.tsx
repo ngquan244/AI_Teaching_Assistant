@@ -21,7 +21,7 @@ const SIDEBAR_TABS: TabItem[] = [
   { id: TABS.CHAT, label: 'Chat AI', icon: MessageSquare },
   { id: TABS.UPLOAD, label: 'Upload', icon: FileUp },
   { id: TABS.GRADING, label: 'Chấm điểm', icon: BarChart3 },
-  { id: TABS.DOCUMENT_RAG, label: 'RAG Tài Liệu', icon: FileText },
+  { id: TABS.DOCUMENT_RAG, label: 'Tài Liệu', icon: FileText },
   { id: TABS.CANVAS, label: 'Canvas LMS', icon: FolderOpen },
   { id: TABS.CANVAS_QUIZ, label: 'Tạo Canvas Quiz', icon: PenSquare },
   { id: TABS.CANVAS_SIMULATION, label: 'Giả lập Quiz', icon: PlayCircle },

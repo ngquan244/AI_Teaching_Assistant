@@ -271,7 +271,7 @@ const CanvasFileSelectModal: React.FC<CanvasFileSelectModalProps> = ({
                       </div>
                       <div className="course-status">
                         {course.workflow_state === 'available' && (
-                          <span className="status-badge active">Active</span>
+                          <span className="status-badge active">Đang hoạt động</span>
                         )}
                         <ChevronRight size={20} className="course-arrow" />
                       </div>

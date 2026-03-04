@@ -53,7 +53,7 @@ const UserMenu: React.FC = () => {
         </div>
         <div className="user-info">
           <span className="user-name">{user.name}</span>
-          <span className="user-role">{user.role}</span>
+          <span className="user-role">{{ ADMIN: 'Quản trị viên', TEACHER: 'Giáo viên', USER: 'Người dùng' }[user.role] || user.role}</span>
         </div>
         <ChevronDown size={16} className={`chevron ${isOpen ? 'open' : ''}`} />
       </button>
@@ -67,7 +67,7 @@ const UserMenu: React.FC = () => {
           <div className="dropdown-divider" />
           <button className="dropdown-item logout" onClick={handleLogout}>
             <LogOut size={16} />
-            <span>Sign out</span>
+            <span>Đăng xuất</span>
           </button>
         </div>
       )}

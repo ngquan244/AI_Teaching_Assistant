@@ -121,7 +121,7 @@ const CanvasCourseModal: React.FC<CanvasCourseModalProps> = ({
                   </div>
                   <div className="course-status">
                     {course.workflow_state === 'available' && (
-                      <span className="status-badge active">Active</span>
+                      <span className="status-badge active">Đang hoạt động</span>
                     )}
                     {selectedId === course.id && (
                       <CheckCircle size={20} className="check-icon" />

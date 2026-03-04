@@ -362,7 +362,7 @@ const CanvasResultsPanel: React.FC = () => {
                       <div className="cres-stat-icon std"><BarChart2 size={20} /></div>
                       <div className="cres-stat-body">
                         <span className="cres-stat-val">{quizResults.std_dev?.toFixed(2) ?? '—'}</span>
-                        <span className="cres-stat-label">Std Dev</span>
+                        <span className="cres-stat-label">Độ lệch chuẩn</span>
                       </div>
                     </div>
                   </div>
@@ -373,7 +373,7 @@ const CanvasResultsPanel: React.FC = () => {
                   {/* Submissions table */}
                   <div className="cres-card">
                     <h3 className="cres-card-title">
-                      <ClipboardList size={18} /> Chi tiết submissions
+                      <ClipboardList size={18} /> Chi tiết bài nộp
                       <div className="cres-export-wrap" ref={quizExportRef}>
                         <button
                           className="cres-btn-export"
@@ -400,9 +400,9 @@ const CanvasResultsPanel: React.FC = () => {
                       <table className="cres-table">
                         <thead>
                           <tr>
-                            <th>User</th>
-                            <th>Attempt</th>
-                            <th>Score</th>
+                            <th>Sinh viên</th>
+                            <th>Lần làm</th>
+                            <th>Điểm</th>
                             <th>%</th>
                             <th>Trạng thái</th>
                             <th>Nộp lúc</th>
@@ -415,7 +415,7 @@ const CanvasResultsPanel: React.FC = () => {
                               : 0;
                             return (
                               <tr key={i}>
-                                <td>{s.user_name ?? `User #${s.user_id}`}</td>
+                                <td>{s.user_name ?? `Sinh viên #${s.user_id}`}</td>
                                 <td>{s.attempt}</td>
                                 <td className="cres-mono">
                                   {s.score != null ? s.score.toFixed(1) : '—'}
@@ -428,7 +428,7 @@ const CanvasResultsPanel: React.FC = () => {
                                 </td>
                                 <td>
                                   <span className={`cres-badge ${s.workflow_state}`}>
-                                    {s.workflow_state}
+                                    {{ complete: 'Hoàn thành', pending_review: 'Chờ chấm', untaken: 'Chưa làm', settings_only: 'Chỉ cài đặt', preview: 'Xem trước' }[s.workflow_state] || s.workflow_state}
                                   </span>
                                 </td>
                                 <td className="cres-mono cres-small">
@@ -507,16 +507,16 @@ const CanvasResultsPanel: React.FC = () => {
                           <tr>
                             <th>Sinh viên</th>
                             <th>Trạng thái</th>
-                            <th>Current Score</th>
-                            <th>Final Score</th>
-                            <th>Grade</th>
+                            <th>Điểm hiện tại</th>
+                            <th>Điểm cuối</th>
+                            <th>Xếp loại</th>
                           </tr>
                         </thead>
                         <tbody>
                           {courseGrades.enrollments.map((e, i) => (
                             <tr key={i}>
                               <td>{e.user_name}</td>
-                              <td className="cres-mono">{e.enrollment_state ?? '—'}</td>
+                              <td className="cres-mono">{{ active: 'Đang học', completed: 'Hoàn thành', invited: 'Đã mời', inactive: 'Không hoạt động' }[e.enrollment_state ?? ''] ?? e.enrollment_state ?? '—'}</td>
                               <td>
                                 {e.current_score != null ? (
                                   <span className={`cres-pct ${e.current_score >= 80 ? 'hi' : e.current_score >= 50 ? 'mid' : 'lo'}`}>

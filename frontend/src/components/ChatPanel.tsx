@@ -418,12 +418,20 @@ const ChatPanel: React.FC = () => {
       {chatToolsUsed.length > 0 && (
         <div className="chat-tools-bar">
           <Wrench size={14} />
-          <span className="chat-tools-label">Tools đã dùng:</span>
-          {chatToolsUsed.map((tool, index) => (
-            <span key={index} className="chat-tool-badge">
-              {tool.tool}
-            </span>
-          ))}
+          <span className="chat-tools-label">Tính năng đã dùng:</span>
+          {chatToolsUsed.map((tool, index) => {
+            const friendlyToolNames: Record<string, string> = {
+              execute_notebook: 'Chạy notebook',
+              summarize_exam_results: 'Tổng hợp kết quả',
+              document_query: 'Tra cứu tài liệu',
+              user_guide: 'Hướng dẫn sử dụng',
+            };
+            return (
+              <span key={index} className="chat-tool-badge">
+                {friendlyToolNames[tool.tool] || tool.tool}
+              </span>
+            );
+          })}
         </div>
       )}
 

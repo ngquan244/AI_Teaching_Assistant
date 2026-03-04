@@ -450,7 +450,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
               disabled={!qtiZipBlob}
             >
               <Upload size={16} />
-              Export to Canvas
+              Tải QTI lên Canvas
             </button>
           </div>
         )}

@@ -43,7 +43,6 @@ const generateRAGStars = (count: number) =>
   }));
 import {
   uploadAndIndexDocument,
-  queryRAG,
   getRAGStats,
   resetRAGIndex,
   checkOllamaStatus,
@@ -83,11 +82,7 @@ interface IndexedDocument {
 // Topic source type
 type TopicSource = 'upload' | 'canvas';
 
-interface QueryResult {
-  answer: string;
-  sources: RAGSource[];
-  context?: string;
-}
+
 
 // Multi-file upload status
 type FileUploadStatus = 'waiting' | 'uploading' | 'success' | 'error' | 'already_indexed';
@@ -103,8 +98,7 @@ interface UploadFileItem {
   };
 }
 
-// Tab type
-type ActiveTab = 'query' | 'quiz';
+
 
 interface DocumentRAGPanelProps {
   /** Callback to deploy generated quiz to QuizBuilder tab */
@@ -119,13 +113,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<UploadFileItem[]>([]);
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
-  const [question, setQuestion] = useState('');
-  const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
-  const [showContext, setShowContext] = useState(false);
-  const [showSources, setShowSources] = useState(true);
-  
-  // Tab state
-  const [activeTab, setActiveTab] = useState<ActiveTab>('quiz');
+
   
   // Quiz states
   const [quizTopic, setQuizTopic] = useState('');
@@ -175,7 +163,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   
   // Loading states
   const [isUploading, setIsUploading] = useState(false);
-  const [isQuerying, setIsQuerying] = useState(false);
+
   const [isResetting, setIsResetting] = useState(false);
   
   // Status states
@@ -185,7 +173,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   
   // Messages
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
-  const [queryError, setQueryError] = useState<string | null>(null);
+
   
   // Model config (admin filtering)
   const { showProviderSwitch, isProviderEnabled } = useModelConfig();
@@ -282,7 +270,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       console.error('Error switching provider:', error);
       setProviderMessage({
         type: 'error',
-        text: `Lỗi khi chuyển provider: ${error}`
+        text: `Lỗi khi chuyển mô hình AI: ${error}`
       });
     } finally {
       setIsSwitchingProvider(false);
@@ -685,7 +673,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               idx === i ? { 
                 ...f, 
                 status: 'success' as FileUploadStatus,
-                message: `${response.pages_loaded} trang, ${response.chunks_added} chunks`,
+                message: `${response.pages_loaded} trang, ${response.chunks_added} phần nội dung`,
                 details: {
                   filename: response.filename,
                   pages_loaded: response.pages_loaded,
@@ -763,41 +751,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     }
   };
 
-  const handleQuery = async () => {
-    if (!question.trim()) {
-      setQueryError('Vui lòng nhập câu hỏi');
-      return;
-    }
 
-    setIsQuerying(true);
-    setQueryError(null);
-    setQueryResult(null);
-
-    try {
-      const response = await queryRAG({
-        question: question.trim(),
-        return_context: showContext,
-      });
-
-      if (response.success) {
-        setQueryResult({
-          answer: response.answer,
-          sources: response.sources,
-          context: response.context,
-        });
-      } else {
-        setQueryError(response.error || 'Lỗi khi truy vấn');
-      }
-    } catch (error) {
-      console.error('Query error:', error);
-      setQueryError('Lỗi khi xử lý câu hỏi. Hãy kiểm tra Ollama đang chạy.');
-    } finally {
-      setIsQuerying(false);
-    }
-  };
 
   const handleResetIndex = async () => {
-    if (!window.confirm('Bạn có chắc muốn xóa toàn bộ index? Hành động này không thể hoàn tác.')) {
+    if (!window.confirm('Bạn có chắc muốn xóa toàn bộ dữ liệu đã xử lý? Hành động này không thể hoàn tác.')) {
       return;
     }
 
@@ -806,16 +763,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     try {
       const response = await resetRAGIndex();
       if (response.success) {
-        setUploadMessage({ type: 'success', text: 'Đã reset index thành công' });
-        setQueryResult(null);
+        setUploadMessage({ type: 'success', text: 'Đã xóa dữ liệu thành công' });
         setGeneratedQuiz([]);
         await loadIndexStats();
       } else {
-        setUploadMessage({ type: 'error', text: response.error || 'Lỗi khi reset index' });
+        setUploadMessage({ type: 'error', text: response.error || 'Lỗi khi xóa dữ liệu' });
       }
     } catch (error) {
       console.error('Reset error:', error);
-      setUploadMessage({ type: 'error', text: 'Lỗi khi reset index' });
+      setUploadMessage({ type: 'error', text: 'Lỗi khi xóa dữ liệu' });
     } finally {
       setIsResetting(false);
     }
@@ -865,7 +821,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       }
     } catch (error) {
       console.error('Quiz generation error:', error);
-      setQuizError('Lỗi khi tạo quiz. Hãy kiểm tra Ollama đang chạy và có tài liệu đã được index.');
+      setQuizError('Lỗi khi tạo quiz. Hãy kiểm tra hệ thống AI đang hoạt động và có tài liệu đã được xử lý.');
     } finally {
       setIsGeneratingQuiz(false);
     }
@@ -993,28 +949,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         </div>
         <div className="rag-hero-text">
           <h2>RAG Tài liệu</h2>
-          <p>Upload tài liệu PDF, tạo quiz và hỏi đáp thông minh</p>
+          <p>Upload tài liệu PDF và tạo quiz thông minh</p>
         </div>
-        <button
-          className="btn-hero-refresh"
-          onClick={() => {
-            loadIndexStats();
-            loadOllamaStatus();
-            loadUploadedFiles();
-            loadLLMProviderInfo();
-          }}
-          title="Làm mới trạng thái"
-        >
-          <RefreshCw size={18} />
-        </button>
-      </div>
 
-      <div className="rag-content">
-        {/* Status Bar - Compact Inline */}
-        <div className="rag-status-bar">
-          <div className="rag-status-item llm-provider-item">
-            <Zap size={16} className="provider-icon" />
-            <span className="rag-status-label">Provider:</span>
+        {/* AI Status Chips — integrated into header */}
+        <div className="rag-header-chips">
+          <div className="rag-chip rag-chip-provider">
+            <Zap size={13} />
             {showProviderSwitch ? (
               <div className="provider-dropdown-wrapper">
                 <select
@@ -1035,30 +976,42 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 )}
               </div>
             ) : (
-              <span className="provider-label-static">
+              <span className="rag-chip-text">
                 {(llmProviderInfo?.current_provider || 'ollama') === 'groq' ? '⚡ Groq' : '🖥️ Ollama'}
               </span>
             )}
           </div>
-          <div className="rag-status-divider" />
-          <div className={`rag-status-item model-status-item ${ollamaStatus?.connected ? 'connected' : 'disconnected'}`}>
-            <Server size={16} />
-            <span className="rag-status-label">Model:</span>
-            <span className="rag-status-value">
-              {ollamaStatus?.connected ? (
-                <>
-                  <CheckCircle size={13} className="status-icon success" />
-                  <span className="model-name-inline">{llmProviderInfo?.current_model || ollamaStatus.model || 'Connected'}</span>
-                </>
-              ) : (
-                <>
-                  <AlertCircle size={13} className="status-icon error" />
-                  <span className="status-text-inline">Chưa kết nối</span>
-                </>
-              )}
-            </span>
+          <div className="rag-chip-divider" />
+          <div className={`rag-chip rag-chip-model ${ollamaStatus?.connected ? 'connected' : 'disconnected'}`}>
+            {ollamaStatus?.connected ? (
+              <>
+                <CheckCircle size={12} className="rag-chip-status-icon" />
+                <span className="rag-chip-model-name">{llmProviderInfo?.current_model || ollamaStatus.model || 'Sẵn sàng'}</span>
+              </>
+            ) : (
+              <>
+                <AlertCircle size={12} className="rag-chip-status-icon" />
+                <span className="rag-chip-text disconnected">Chưa sẵn sàng</span>
+              </>
+            )}
           </div>
         </div>
+
+        <button
+          className="btn-hero-refresh"
+          onClick={() => {
+            loadIndexStats();
+            loadOllamaStatus();
+            loadUploadedFiles();
+            loadLLMProviderInfo();
+          }}
+          title="Làm mới trạng thái"
+        >
+          <RefreshCw size={18} />
+        </button>
+      </div>
+
+      <div className="rag-content">
 
         {/* Upload Section - Full Width */}
         <div className="upload-section-redesign">
@@ -1066,7 +1019,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
 
               <h3>
                 <Upload size={18} />
-                Upload & Index PDF
+                Tải lên tài liệu PDF
                 {selectedFiles.length > 0 && (
                   <span className="files-count-badge">{selectedFiles.length} file</span>
                 )}
@@ -1221,7 +1174,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   ) : (
                     <>
                       <Database size={16} />
-                      Build Index {selectedFiles.filter(f => f.status === 'waiting').length > 0 && 
+                      Tải lên & Xử lý {selectedFiles.filter(f => f.status === 'waiting').length > 0 && 
                         `(${selectedFiles.filter(f => f.status === 'waiting').length} file)`}
                     </>
                   )}
@@ -1231,14 +1184,14 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   className="btn btn-outline-danger btn-reset"
                   onClick={handleResetIndex}
                   disabled={isResetting || (indexStats?.total_documents ?? 0) === 0}
-                  title="Xóa toàn bộ index"
+                  title="Xóa toàn bộ dữ liệu đã xử lý"
                 >
                   {isResetting ? (
                     <Loader2 size={16} className="spin" />
                   ) : (
                     <Trash2 size={16} />
                   )}
-                  Reset
+                  Xóa dữ liệu
                 </button>
               </div>
 
@@ -1262,26 +1215,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           </div>
         )}
 
-        {/* Tab Navigation */}
-        <div className="tab-navigation">
-          <button
-            className={`tab-btn ${activeTab === 'quiz' ? 'active' : ''}`}
-            onClick={() => setActiveTab('quiz')}
-          >
-            <BookOpen size={18} />
-            Tạo Quiz
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'query' ? 'active' : ''}`}
-            onClick={() => setActiveTab('query')}
-          >
-            <Search size={18} />
-            Hỏi đáp
-          </button>
-        </div>
-
         {/* Quiz Generation Section */}
-        {activeTab === 'quiz' && (
           <div className="quiz-section">
             <h3>
               <BookOpen size={18} />
@@ -1453,125 +1387,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               </div>
             )}
           </div>
-        )}
-
-        {/* Query Section */}
-        {activeTab === 'query' && (
-        <>
-        <div className="query-section">
-          <h3>
-            <Search size={18} />
-            Hỏi đáp tài liệu
-          </h3>
-
-          <div className="query-input-area">
-            <textarea
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Nhập câu hỏi của bạn..."
-              rows={3}
-              disabled={isQuerying}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && e.ctrlKey) {
-                  handleQuery();
-                }
-              }}
-            />
-            
-            <div className="query-options">
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={showContext}
-                  onChange={(e) => setShowContext(e.target.checked)}
-                />
-                Hiển thị context đã retrieve
-              </label>
-            </div>
-
-            <button
-              className="btn btn-primary btn-ask"
-              onClick={handleQuery}
-              disabled={!question.trim() || isQuerying}
-            >
-              {isQuerying ? (
-                <>
-                  <Loader2 size={16} className="spin" />
-                  Đang xử lý...
-                </>
-              ) : (
-                <>
-                  <Search size={16} />
-                  Ask (Ctrl+Enter)
-                </>
-              )}
-            </button>
-          </div>
-
-          {queryError && (
-            <div className="message error">
-              <AlertCircle size={16} />
-              {queryError}
-            </div>
-          )}
-        </div>
-
-        {/* Results Section */}
-        {queryResult && (
-          <div className="results-section">
-            <h3>Kết quả</h3>
-            
-            {/* Answer */}
-            <div className="answer-box">
-              <h4>Answer</h4>
-              <div className="answer-content">
-                {queryResult.answer}
-              </div>
-            </div>
-
-            {/* Sources */}
-            {queryResult.sources.length > 0 && (
-              <div className="sources-box">
-                <button
-                  className="sources-toggle"
-                  onClick={() => setShowSources(!showSources)}
-                >
-                  <h4>Sources ({queryResult.sources.length})</h4>
-                  {showSources ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                </button>
-                
-                {showSources && (
-                  <div className="sources-list">
-                    {queryResult.sources.map((source, idx) => (
-                      <div key={idx} className="source-item">
-                        <div className="source-header">
-                          <FileText size={14} />
-                          <span className="source-name">{source.filename || source.source}</span>
-                          <span className="source-page">Trang {source.page}</span>
-                        </div>
-                        <div className="source-snippet">
-                          {source.snippet}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Context (optional) */}
-            {showContext && queryResult.context && (
-              <div className="context-box">
-                <h4>Retrieved Context</h4>
-                <pre className="context-content">
-                  {queryResult.context}
-                </pre>
-              </div>
-            )}
-          </div>
-        )}
-        </>
-        )}
 
         {/* Uploaded Files List */}
         {uploadedFiles.length > 0 && (
@@ -2274,7 +2089,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           display: flex;
           align-items: center;
           gap: 16px;
-          padding: 20px 28px;
+          padding: 16px 24px;
           background: rgba(15, 23, 42, 0.85);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
@@ -2299,10 +2114,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           display: flex;
           align-items: center;
           justify-content: center;
-          width: 48px;
-          height: 48px;
+          width: 42px;
+          height: 42px;
           background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
-          border-radius: 14px;
+          border-radius: 12px;
           color: white;
           box-shadow:
             0 6px 20px -4px rgba(56, 189, 248, 0.5),
@@ -2334,12 +2149,12 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         }
 
         .rag-hero-text {
-          flex: 1;
+          flex-shrink: 0;
         }
 
         .rag-hero-text h2 {
           margin: 0;
-          font-size: 1.3rem;
+          font-size: 1.2rem;
           font-weight: 700;
           background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 40%, #7dd3fc 80%, #38bdf8 100%);
           background-clip: text;
@@ -2350,20 +2165,89 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
 
         .rag-hero-text p {
           margin: 2px 0 0 0;
-          font-size: 0.85rem;
+          font-size: 0.78rem;
           color: #94a3b8;
           font-weight: 400;
+        }
+
+        /* ===== HEADER CHIPS (provider + model) ===== */
+        .rag-header-chips {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-left: auto;
+          flex-shrink: 0;
+        }
+
+        .rag-chip {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 10px;
+          border-radius: 8px;
+          font-size: 0.78rem;
+          font-weight: 500;
+          white-space: nowrap;
+          transition: all 0.2s ease;
+        }
+
+        .rag-chip-provider {
+          background: rgba(139, 92, 246, 0.1);
+          border: 1px solid rgba(139, 92, 246, 0.25);
+          color: #c4b5fd;
+        }
+        .rag-chip-provider svg { color: #a78bfa; }
+
+        .rag-chip-model {
+          border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+        .rag-chip-model.connected {
+          background: rgba(52, 211, 153, 0.08);
+          border-color: rgba(52, 211, 153, 0.25);
+          color: #6ee7b7;
+        }
+        .rag-chip-model.disconnected {
+          background: rgba(248, 113, 113, 0.08);
+          border-color: rgba(248, 113, 113, 0.2);
+          color: #fca5a5;
+        }
+
+        .rag-chip-status-icon {
+          flex-shrink: 0;
+        }
+        .rag-chip-model.connected .rag-chip-status-icon { color: #34d399; }
+        .rag-chip-model.disconnected .rag-chip-status-icon { color: #f87171; }
+
+        .rag-chip-model-name {
+          font-family: 'Consolas', 'Monaco', monospace;
+          font-size: 0.75rem;
+          font-weight: 600;
+          color: #7dd3fc;
+        }
+
+        .rag-chip-text {
+          font-weight: 500;
+        }
+        .rag-chip-text.disconnected {
+          color: #fca5a5;
+        }
+
+        .rag-chip-divider {
+          width: 1px;
+          height: 18px;
+          background: rgba(56, 189, 248, 0.12);
+          flex-shrink: 0;
         }
 
         .btn-hero-refresh {
           display: flex;
           align-items: center;
           justify-content: center;
-          width: 40px;
-          height: 40px;
+          width: 34px;
+          height: 34px;
           background: rgba(22, 33, 55, 0.75);
           border: 1px solid rgba(56, 189, 248, 0.22);
-          border-radius: 10px;
+          border-radius: 8px;
           color: #64748b;
           cursor: pointer;
           transition: all 0.3s ease;
@@ -2408,70 +2292,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           background: rgba(56, 189, 248, 0.35);
         }
 
-        /* ===== STATUS BAR ===== */
-        .rag-status-bar {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          padding: 12px 20px;
-          background: rgba(22, 33, 55, 0.8);
-          backdrop-filter: blur(12px);
-          border: 1px solid rgba(56, 189, 248, 0.2);
-          border-radius: 14px;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
-        }
-
-        .rag-status-item {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 0.85rem;
-        }
-
-        .rag-status-item svg {
-          color: #64748b;
-          flex-shrink: 0;
-        }
-
-        .rag-status-item.llm-provider-item .provider-icon {
-          color: #a78bfa;
-        }
-
-        .rag-status-item.connected svg:first-child {
-          color: #34d399;
-        }
-
-        .rag-status-item.disconnected svg:first-child {
-          color: #f87171;
-        }
-
-        .rag-status-label {
-          font-weight: 600;
-          color: #cbd5e1;
-          font-size: 0.82rem;
-          white-space: nowrap;
-        }
-
-        .rag-status-value {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-        }
-
-        .rag-status-divider {
-          width: 1px;
-          height: 24px;
-          background: rgba(56, 189, 248, 0.15);
-          flex-shrink: 0;
-        }
+        /* ===== LEGACY STATUS (kept for message compat) ===== */
 
         .provider-dropdown-inline {
-          padding: 5px 24px 5px 8px;
+          padding: 3px 22px 3px 6px;
           border: 1px solid rgba(139, 92, 246, 0.35);
-          border-radius: 8px;
+          border-radius: 6px;
           background: rgba(22, 33, 55, 0.85);
           color: #e2e8f0;
-          font-size: 0.82rem;
+          font-size: 0.78rem;
           font-weight: 500;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -3185,7 +3014,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         }
 
         /* Query Section */
-        .query-section, .results-section, .files-section {
+        .files-section {
           background: rgba(22, 33, 55, 0.8);
           backdrop-filter: blur(12px);
           border: 1px solid rgba(56, 189, 248, 0.2);
@@ -3195,12 +3024,12 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           transition: all 0.3s ease;
         }
 
-        .query-section:hover, .results-section:hover, .files-section:hover {
+        .files-section:hover {
           box-shadow: 0 8px 32px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px rgba(56, 189, 248, 0.1);
           border-color: rgba(56, 189, 248, 0.35);
         }
 
-        .query-section h3, .results-section h3, .files-section h3 {
+        .files-section h3 {
           display: flex;
           align-items: center;
           gap: 10px;
@@ -3212,176 +3041,8 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           border-bottom: 1px solid rgba(56, 189, 248, 0.18);
         }
 
-        .query-section h3 svg, .results-section h3 svg, .files-section h3 svg {
+        .files-section h3 svg {
           color: #38bdf8;
-        }
-
-        .query-input-area textarea {
-          width: 100%;
-          padding: 14px;
-          border: 2px solid rgba(56, 189, 248, 0.22);
-          border-radius: 12px;
-          resize: vertical;
-          font-family: inherit;
-          font-size: 0.9rem;
-          color: #e2e8f0;
-          background: rgba(22, 33, 55, 0.7);
-          transition: all 0.2s ease;
-        }
-
-        .query-input-area textarea::placeholder {
-          color: #64748b;
-        }
-
-        .query-input-area textarea:focus {
-          outline: none;
-          border-color: #38bdf8;
-          background: rgba(15, 23, 42, 0.8);
-          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
-        }
-
-        .query-options {
-          margin: 14px 0;
-        }
-
-        .checkbox-label {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-size: 0.9rem;
-          color: #cbd5e1;
-          cursor: pointer;
-          font-weight: 500;
-        }
-
-        .checkbox-label input {
-          cursor: pointer;
-          width: 18px;
-          height: 18px;
-          accent-color: #38bdf8;
-        }
-
-        .btn-ask {
-          width: 100%;
-          justify-content: center;
-          padding: 14px;
-          font-size: 0.95rem;
-        }
-
-        /* Results */
-        .answer-box, .sources-box, .context-box {
-          background: rgba(22, 33, 55, 0.65);
-          border-radius: 12px;
-          padding: 20px;
-          margin-bottom: 16px;
-          border: 1px solid rgba(56, 189, 248, 0.18);
-          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-        }
-
-        .answer-box h4, .sources-box h4, .context-box h4 {
-          margin: 0 0 14px 0;
-          font-size: 0.95rem;
-          font-weight: 700;
-          color: #e2e8f0;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .answer-box h4::before {
-          content: '💬';
-        }
-
-        .sources-box h4::before {
-          content: '📚';
-        }
-
-        .context-box h4::before {
-          content: '📄';
-        }
-
-        .answer-content {
-          font-size: 0.95rem;
-          line-height: 1.7;
-          white-space: pre-wrap;
-          color: #e2e8f0;
-        }
-
-        .sources-toggle {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          width: 100%;
-          background: none;
-          border: none;
-          cursor: pointer;
-          padding: 0;
-          color: #94a3b8;
-        }
-
-        .sources-toggle h4 {
-          margin: 0;
-        }
-
-        .sources-list {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin-top: 12px;
-        }
-
-        .source-item {
-          background: rgba(22, 33, 55, 0.6);
-          border: 1px solid rgba(56, 189, 248, 0.15);
-          border-radius: 10px;
-          padding: 14px;
-          transition: all 0.2s ease;
-        }
-
-        .source-item:hover {
-          border-color: rgba(56, 189, 248, 0.35);
-          box-shadow: 0 2px 12px rgba(56, 189, 248, 0.1);
-          background: rgba(22, 33, 55, 0.75);
-        }
-
-        .source-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 10px;
-          font-size: 0.875rem;
-        }
-
-        .source-name {
-          font-weight: 600;
-          color: #e2e8f0;
-        }
-
-        .source-page {
-          margin-left: auto;
-          color: #94a3b8;
-          font-size: 0.8rem;
-          font-weight: 500;
-          background: rgba(100, 116, 139, 0.15);
-          padding: 2px 8px;
-          border-radius: 4px;
-        }
-
-        .source-snippet {
-          font-size: 0.875rem;
-          color: #cbd5e1;
-          line-height: 1.6;
-        }
-
-        .context-content {
-          font-size: 0.875rem;
-          line-height: 1.6;
-          max-height: 300px;
-          overflow-y: auto;
-          white-space: pre-wrap;
-          margin: 0;
-          font-family: inherit;
-          color: #cbd5e1;
         }
 
         /* Files List */
@@ -3436,50 +3097,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           to {
             transform: rotate(360deg);
           }
-        }
-
-        /* Tab Navigation */
-        .tab-navigation {
-          display: flex;
-          gap: 6px;
-          padding: 5px;
-          background: rgba(22, 33, 55, 0.8);
-          backdrop-filter: blur(12px);
-          border-radius: 14px;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(56, 189, 248, 0.06);
-          border: 1px solid rgba(56, 189, 248, 0.2);
-        }
-
-        .tab-btn {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 11px 24px;
-          background: transparent;
-          border: none;
-          border-radius: 10px;
-          font-size: 0.9rem;
-          font-weight: 600;
-          color: #64748b;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          flex: 1;
-          justify-content: center;
-        }
-
-        .tab-btn:hover {
-          background: rgba(56, 189, 248, 0.08);
-          color: #cbd5e1;
-        }
-
-        .tab-btn.active {
-          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
-          color: white;
-          box-shadow: 0 2px 12px rgba(56, 189, 248, 0.35);
-        }
-
-        .tab-btn.active svg {
-          color: white;
         }
 
         /* Quiz Section */

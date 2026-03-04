@@ -30,7 +30,7 @@ PANEL_LABELS: Dict[str, str] = {
     "chat": "Chat AI",
     "upload": "Upload",
     "grading": "Chấm điểm",
-    "document_rag": "RAG Tài Liệu",
+    "document_rag": "Tài Liệu",
     "canvas": "Canvas LMS",
     "canvas_quiz": "Tạo Canvas Quiz",
     "canvas_simulation": "Giả lập Quiz",

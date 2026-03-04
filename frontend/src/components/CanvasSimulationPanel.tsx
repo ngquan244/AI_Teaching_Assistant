@@ -395,11 +395,11 @@ const CanvasSimulationPanel: React.FC = () => {
                       </div>
                       <div className="csim-precheck-row">
                         <span>Loại quiz:</span>
-                        <span>{preCheck.quiz_type}</span>
+                        <span>{{ assignment: 'Bài kiểm tra', practice_quiz: 'Bài luyện tập', graded_survey: 'Khảo sát có điểm', survey: 'Khảo sát' }[preCheck.quiz_type] || preCheck.quiz_type}</span>
                       </div>
                       <div className="csim-precheck-row">
                         <span>Số lần được làm:</span>
-                        <span>{preCheck.allowed_attempts === -1 ? 'Unlimited' : preCheck.allowed_attempts}</span>
+                        <span>{preCheck.allowed_attempts === -1 ? 'Không giới hạn' : preCheck.allowed_attempts}</span>
                       </div>
                       {preCheck.access_code_required && (
                         <div className="csim-precheck-row warn">
@@ -599,7 +599,7 @@ const CanvasSimulationPanel: React.FC = () => {
                           <th>Email</th>
                           <th>Canvas UID</th>
                           <th>Trạng thái</th>
-                          <th>Course</th>
+                          <th>Khóa học</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -610,7 +610,7 @@ const CanvasSimulationPanel: React.FC = () => {
                             <td className="csim-mono">{s.email}</td>
                             <td className="csim-mono">{s.canvas_user_id}</td>
                             <td>
-                              <span className={`csim-badge ${s.status}`}>{s.status}</span>
+                              <span className={`csim-badge ${s.status}`}>{{ active: 'Hoạt động', enrolled: 'Đã đăng ký', completed: 'Hoàn thành', pending: 'Đang chờ', failed: 'Lỗi', partial: 'Một phần' }[s.status] || s.status}</span>
                             </td>
                             <td>{s.current_course_id ?? '—'}</td>
                             <td>
@@ -657,7 +657,7 @@ const CanvasSimulationPanel: React.FC = () => {
                       <tbody>
                         {history.map((r) => (
                           <tr key={r.id}>
-                            <td>Quiz #{r.quiz_id}</td>
+                            <td>{{ quiz_id: r.quiz_title || `Quiz #${r.quiz_id}` }['quiz_id']}</td>
                             <td>{r.attempt_number ?? '—'}</td>
                             <td>
                               {r.score != null ? (
@@ -665,7 +665,7 @@ const CanvasSimulationPanel: React.FC = () => {
                               ) : '—'}
                             </td>
                             <td>
-                              <span className={`csim-badge ${r.status}`}>{r.status}</span>
+                              <span className={`csim-badge ${r.status}`}>{{ complete: 'Hoàn thành', pending_review: 'Chờ chấm', untaken: 'Chưa làm', settings_only: 'Chỉ cài đặt' }[r.status] || r.status}</span>
                             </td>
                             <td className="csim-mono csim-small">
                               {new Date(r.started_at).toLocaleString('vi-VN')}
@@ -710,7 +710,7 @@ const CanvasSimulationPanel: React.FC = () => {
                         {auditLogs.map((log) => (
                           <tr key={log.id}>
                             <td>
-                              <span className="csim-badge action">{log.action}</span>
+                              <span className="csim-badge action">{{ enroll_student: 'Đăng ký SV', submit_quiz: 'Nộp bài', create_student: 'Tạo SV', delete_student: 'Xóa SV', unenroll_student: 'Hủy đăng ký' }[log.action] || log.action}</span>
                             </td>
                             <td className="csim-mono">{log.canvas_user_id ?? '—'}</td>
                             <td>{log.canvas_quiz_id ?? '—'}</td>
