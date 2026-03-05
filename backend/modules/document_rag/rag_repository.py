@@ -473,6 +473,22 @@ class SyncRAGCollectionRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    def get_by_filename(
+        session: Session,
+        filename: str,
+        user_id: uuid.UUID,
+        source: RAGSourceType = RAGSourceType.UPLOAD,
+    ) -> Optional[RAGCollection]:
+        """Look up a collection by filename + user + source."""
+        stmt = select(RAGCollection).where(
+            RAGCollection.filename == filename,
+            RAGCollection.user_id == user_id,
+            RAGCollection.source == source,
+        )
+        result = session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
     def get_all(
         session: Session,
         user_id: uuid.UUID,

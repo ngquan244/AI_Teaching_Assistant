@@ -48,6 +48,7 @@ import {
   getCanvasDocumentTopics,
   updateCanvasDocumentTopics,
   removeCanvasFileIndex,
+  CanvasPermissionError,
   type CanvasIndexedDocument,
 } from '../api/canvasRag';
 import {
@@ -202,6 +203,9 @@ const CanvasFilesPanel: React.FC = () => {
         setIndexedDocs(indexedRes.documents);
       }
     } catch (err) {
+      if (err instanceof CanvasPermissionError) {
+        setError('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
+      }
       console.error('Error loading indexed docs:', err);
     } finally {
       setIndexedLoading(false);
@@ -481,6 +485,9 @@ const CanvasFilesPanel: React.FC = () => {
         setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
       }
     } catch (err) {
+      if (err instanceof CanvasPermissionError) {
+        alert('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
+      }
       setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
     }
   };
@@ -541,6 +548,9 @@ const CanvasFilesPanel: React.FC = () => {
       setEditingTopicIndex(null);
       setShowEditTopicsModal(true);
     } catch (err) {
+      if (err instanceof CanvasPermissionError) {
+        alert('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
+      }
       console.error('Error loading topics:', err);
     }
   };
@@ -599,7 +609,11 @@ const CanvasFilesPanel: React.FC = () => {
       }
     } catch (error) {
       console.error('Error saving topics:', error);
-      alert('Lỗi khi lưu chủ đề.');
+      if (error instanceof CanvasPermissionError) {
+        alert('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
+      } else {
+        alert('Lỗi khi lưu chủ đề.');
+      }
     } finally {
       setIsSavingTopics(false);
     }

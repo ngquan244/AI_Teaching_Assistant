@@ -12,6 +12,58 @@ const API_BASE = '/api/canvas-rag';
 // Re-export clearCanvasTokenCache for convenience
 export { clearCanvasTokenCache as clearCanvasRagTokenCache };
 
+// ===== Error Types =====
+
+/**
+ * Thrown when the current Canvas token lacks access to a course.
+ * The UI should show a clear message rather than a generic error.
+ */
+export class CanvasPermissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CanvasPermissionError';
+  }
+}
+
+// ===== Helpers =====
+
+/**
+ * Build an axios config that includes Canvas permission headers.
+ * If the user has no Canvas token configured, the request is sent
+ * WITHOUT Canvas headers — the backend will deny access to
+ * course-scoped data (not fail-open).
+ */
+async function canvasConfig(
+  extra?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    const headers = await getCanvasHeaders();
+    return { ...extra, headers: { ...headers, ...(extra as any)?.headers } };
+  } catch {
+    // No Canvas token configured → send without headers.
+    // The backend will exclude course-scoped data appropriately.
+    return extra ?? {};
+  }
+}
+
+/**
+ * Intercept 403 from canvas-rag endpoints and throw CanvasPermissionError.
+ */
+function handlePermissionError(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    const resp = (error as any).response;
+    if (resp?.status === 403) {
+      const detail = resp?.data?.detail || 'Canvas token does not have access to this course.';
+      throw new CanvasPermissionError(detail);
+    }
+  }
+  throw error;
+}
+
 // ===== Types =====
 
 export interface CanvasDownloadRequest {
@@ -162,11 +214,17 @@ export async function indexCanvasFile(
   filename: string,
   courseId?: number
 ): Promise<CanvasIndexResponse> {
-  const response = await apiClient.post<CanvasIndexResponse>(
-    `${API_BASE}/index`,
-    { filename, course_id: courseId }
-  );
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<CanvasIndexResponse>(
+      `${API_BASE}/index`,
+      { filename, course_id: courseId },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
@@ -176,11 +234,17 @@ export async function extractCanvasTopics(
   filename: string,
   numTopics: number = 8
 ): Promise<CanvasTopicsResponse> {
-  const response = await apiClient.post<CanvasTopicsResponse>(
-    `${API_BASE}/extract-topics`,
-    { filename, num_topics: numTopics }
-  );
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<CanvasTopicsResponse>(
+      `${API_BASE}/extract-topics`,
+      { filename, num_topics: numTopics },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
@@ -189,10 +253,16 @@ export async function extractCanvasTopics(
 export async function getCanvasDocumentTopics(
   filename: string
 ): Promise<CanvasTopicsResponse> {
-  const response = await apiClient.get<CanvasTopicsResponse>(
-    `${API_BASE}/topics/${encodeURIComponent(filename)}`
-  );
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.get<CanvasTopicsResponse>(
+      `${API_BASE}/topics/${encodeURIComponent(filename)}`,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
@@ -202,25 +272,37 @@ export async function updateCanvasDocumentTopics(
   filename: string,
   topics: string[]
 ): Promise<{ success: boolean; message?: string }> {
-  const response = await apiClient.put(`${API_BASE}/topics`, {
-    filename,
-    topics,
-  });
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.put(
+      `${API_BASE}/topics`,
+      { filename, topics },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
  * List all indexed Canvas documents
  * Optionally filter by courseId
+ * Sends Canvas headers so backend can validate course access.
  */
 export async function listIndexedCanvasDocuments(courseId?: number): Promise<{
   success: boolean;
   documents: CanvasIndexedDocument[];
   count: number;
 }> {
-  const params = courseId ? { course_id: courseId } : {};
-  const response = await apiClient.get(`${API_BASE}/indexed`, { params });
-  return response.data;
+  try {
+    const params = courseId ? { course_id: courseId } : {};
+    const cfg = await canvasConfig({ params });
+    const response = await apiClient.get(`${API_BASE}/indexed`, cfg);
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
@@ -229,11 +311,17 @@ export async function listIndexedCanvasDocuments(courseId?: number): Promise<{
 export async function queryCanvasDocuments(
   request: CanvasQueryRequest
 ): Promise<CanvasQueryResponse> {
-  const response = await apiClient.post<CanvasQueryResponse>(
-    `${API_BASE}/query`,
-    request
-  );
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<CanvasQueryResponse>(
+      `${API_BASE}/query`,
+      request,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**
@@ -242,11 +330,17 @@ export async function queryCanvasDocuments(
 export async function generateCanvasQuiz(
   request: CanvasQuizRequest
 ): Promise<CanvasQuizResponse> {
-  const response = await apiClient.post<CanvasQuizResponse>(
-    `${API_BASE}/generate-quiz`,
-    request
-  );
-  return response.data;
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<CanvasQuizResponse>(
+      `${API_BASE}/generate-quiz`,
+      request,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
 }
 
 /**

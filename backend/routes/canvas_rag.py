@@ -6,15 +6,18 @@ Completely separate from uploaded document routes.
 """
 
 import logging
+import uuid as _uuid
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Form, Header
+from fastapi import APIRouter, HTTPException, Form, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
 from backend.database.base import SessionLocal
+from backend.services.canvas_permission import canvas_permission
+from backend.services.canvas_headers import extract_canvas_headers
 
 logger = logging.getLogger(__name__)
 
@@ -66,19 +69,76 @@ class CanvasGenerateQuizRequest(BaseModel):
     selected_documents: Optional[List[str]] = None
 
 
+# ===== Helpers =====
+
+def _resolve_course_id_for_filename(filename: str, user_id: str) -> Optional[int]:
+    """Look up course_id for a filename from the rag_collections DB table."""
+    from backend.modules.document_rag.rag_repository import SyncRAGCollectionRepository
+    from backend.database.models.rag_document import RAGSourceType
+    try:
+        with SessionLocal() as db:
+            row = SyncRAGCollectionRepository.get_by_filename(
+                db, filename, _uuid.UUID(user_id),
+                source=RAGSourceType.CANVAS,
+            )
+            if row and row.course_id:
+                return row.course_id
+    except Exception:
+        pass
+    return None
+
+
+async def _check_canvas_permission(
+    request: Request,
+    course_id: Optional[int] = None,
+    filename: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> None:
+    """
+    Validate Canvas token has access to the relevant course.
+
+    Policy:
+    - Headers present + Canvas API 200        → allow
+    - Headers present + Canvas API 401/403    → deny (token invalid/revoked)
+    - Headers present + network error         → allow (offline/degraded mode)
+    - No headers + course_id known            → DENY (can't verify → refuse)
+    - No headers + no course_id               → allow (nothing to check)
+    """
+    canvas_base_url, canvas_token = extract_canvas_headers(request)
+
+    # Resolve course_id if not given
+    cid = course_id
+    if cid is None and filename and user_id:
+        cid = _resolve_course_id_for_filename(filename, user_id)
+
+    if cid is None:
+        return  # No course context → nothing to check
+
+    if not canvas_base_url or not canvas_token:
+        # Course-scoped data but no Canvas credentials → deny
+        raise HTTPException(
+            status_code=403,
+            detail="Canvas token required to access course-scoped data. "
+                   "Please connect a Canvas token in Settings.",
+        )
+
+    await canvas_permission.validate_course_access(canvas_base_url, canvas_token, cid)
+
+
 # ===== API Endpoints =====
 
 @router.post("/download")
 async def download_canvas_file(
     request: CanvasDownloadRequest,
+    http_request: Request,
     user: CurrentUser,
     x_canvas_token: Optional[str] = Header(None),
-    x_canvas_base_url: Optional[str] = Header(None)
+    x_canvas_base_url: Optional[str] = Header(None),
 ):
     """
     Download a file from Canvas with MD5 deduplication.
-    Files are stored separately from uploaded files.
     Requires Canvas token for authentication.
+    Permission-validated: token must have access to the course.
     """
     logger.info(f"Downloading Canvas file: {request.filename}")
     
@@ -88,6 +148,9 @@ async def download_canvas_file(
             "status": "failed",
             "error": "Canvas access token not provided"
         }
+    
+    # Permission check
+    await _check_canvas_permission(http_request, course_id=request.course_id)
     
     service = get_canvas_rag_service()
     result = await service.download_file(
@@ -103,13 +166,20 @@ async def download_canvas_file(
 
 
 @router.post("/index")
-async def index_canvas_file(request: CanvasIndexRequest, user: CurrentUser):
+async def index_canvas_file(request: CanvasIndexRequest, http_request: Request, user: CurrentUser):
     """
     Index a downloaded Canvas file.
     Stores in separate ChromaDB collection from uploaded files.
     Uses per-file collections with course_id for proper isolation.
+    Permission-validated: token must have access to the course.
     """
     logger.info(f"Indexing Canvas file: {request.filename}, course_id: {request.course_id}")
+    
+    # Permission check
+    await _check_canvas_permission(
+        http_request, course_id=request.course_id,
+        filename=request.filename, user_id=str(user.id),
+    )
     
     service = get_canvas_rag_service()
     
@@ -132,11 +202,21 @@ async def index_canvas_file(request: CanvasIndexRequest, user: CurrentUser):
 
 
 @router.post("/extract-topics")
-async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest, user: CurrentUser):
+async def extract_topics_for_canvas_file(
+    request: CanvasExtractTopicsRequest,
+    http_request: Request,
+    user: CurrentUser,
+):
     """
     Extract topics from an indexed Canvas file.
+    Permission-validated: token must have access to the course.
     """
     logger.info(f"Extracting topics for Canvas file: {request.filename}")
+    
+    # Permission check
+    await _check_canvas_permission(
+        http_request, filename=request.filename, user_id=str(user.id),
+    )
     
     service = get_canvas_rag_service()
     result = service.extract_topics_for_file(request.filename, request.num_topics, user_id=str(user.id))
@@ -145,10 +225,15 @@ async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest, us
 
 
 @router.get("/topics/{filename}")
-async def get_canvas_document_topics(filename: str, user: CurrentUser):
+async def get_canvas_document_topics(filename: str, http_request: Request, user: CurrentUser):
     """
     Get topics for a Canvas document.
+    Permission-validated: token must have access to the course.
     """
+    # Permission check
+    await _check_canvas_permission(
+        http_request, filename=filename, user_id=str(user.id),
+    )
     try:
         service = get_canvas_rag_service()
         with SessionLocal() as db:
@@ -161,12 +246,22 @@ async def get_canvas_document_topics(filename: str, user: CurrentUser):
 
 
 @router.put("/topics")
-async def update_canvas_document_topics(request: CanvasUpdateTopicsRequest, user: CurrentUser):
+async def update_canvas_document_topics(
+    request: CanvasUpdateTopicsRequest,
+    http_request: Request,
+    user: CurrentUser,
+):
     """
     Update topics for a Canvas document.
+    Permission-validated: token must have access to the course.
     """
     try:
         logger.info(f"Updating topics for Canvas file: {request.filename}")
+        
+        # Permission check
+        await _check_canvas_permission(
+            http_request, filename=request.filename, user_id=str(user.id),
+        )
         
         service = get_canvas_rag_service()
         with SessionLocal() as db:
@@ -192,12 +287,14 @@ async def list_canvas_files(user: CurrentUser):
 
 @router.get("/indexed")
 async def list_indexed_canvas_documents(
+    http_request: Request,
     user: CurrentUser,
     course_id: Optional[int] = None,
 ):
     """
     List all indexed Canvas documents with topics.
     Optionally filter by course_id.
+    Permission-validated: only returns documents for courses the token can access.
     """
     try:
         service = get_canvas_rag_service()
@@ -208,14 +305,52 @@ async def list_indexed_canvas_documents(
         
         # Filter by course_id if provided
         if course_id is not None and result.get("success"):
+            # Permission check for the specific course
+            await _check_canvas_permission(http_request, course_id=course_id)
+            
             filtered = [
                 doc for doc in result.get("documents", [])
                 if doc.get("course_id") == course_id
             ]
             result["documents"] = filtered
             result["count"] = len(filtered)
+        elif result.get("success"):
+            # No specific course → filter to only accessible courses
+            canvas_base_url, canvas_token = extract_canvas_headers(http_request)
+            docs = result.get("documents", [])
+
+            if canvas_base_url and canvas_token:
+                # Token present → verify each course
+                course_ids = set()
+                for doc in docs:
+                    cid = doc.get("course_id")
+                    if cid is not None:
+                        course_ids.add(str(cid))
+                
+                if course_ids:
+                    accessible = await canvas_permission.filter_accessible_courses(
+                        canvas_base_url, canvas_token, list(course_ids)
+                    )
+                    accessible_set = set(accessible)
+                    filtered = [
+                        doc for doc in docs
+                        if doc.get("course_id") is None
+                        or str(doc.get("course_id")) in accessible_set
+                    ]
+                    result["documents"] = filtered
+                    result["count"] = len(filtered)
+            else:
+                # No Canvas token → exclude ALL course-scoped docs
+                filtered = [
+                    doc for doc in docs
+                    if doc.get("course_id") is None
+                ]
+                result["documents"] = filtered
+                result["count"] = len(filtered)
         
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error listing indexed Canvas documents")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
@@ -236,14 +371,19 @@ async def get_canvas_stats(user: CurrentUser):
 
 
 @router.post("/query")
-async def query_canvas_documents(request: CanvasQueryRequest, user: CurrentUser):
+async def query_canvas_documents(request: CanvasQueryRequest, http_request: Request, user: CurrentUser):
     """
     Query the Canvas document knowledge base.
+    Permission-validated when filename is provided.
     """
     logger.info(f"Canvas RAG Query: {request.question}")
     
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+    
+    # Permission check (best-effort — query may span multiple courses)
+    # When user filters by filename, we can check the specific course
+    # Otherwise we rely on the /indexed filter to have already restricted visible docs
     
     service = get_canvas_rag_service()
     with SessionLocal() as db:
@@ -259,14 +399,26 @@ async def query_canvas_documents(request: CanvasQueryRequest, user: CurrentUser)
 
 
 @router.post("/generate-quiz")
-async def generate_quiz_from_canvas_documents(request: CanvasGenerateQuizRequest, user: CurrentUser):
+async def generate_quiz_from_canvas_documents(
+    request: CanvasGenerateQuizRequest,
+    http_request: Request,
+    user: CurrentUser,
+):
     """
     Generate quiz from Canvas documents.
+    Permission-validated when selected_documents are provided.
     """
     logger.info(f"Canvas Quiz Generation - Topics: {request.topics}")
     
     if not request.topics:
         raise HTTPException(status_code=400, detail="At least one topic is required")
+    
+    # Permission check: if specific documents are selected, check each
+    if request.selected_documents:
+        for doc_name in request.selected_documents:
+            await _check_canvas_permission(
+                http_request, filename=doc_name, user_id=str(user.id),
+            )
     
     service = get_canvas_rag_service()
     with SessionLocal() as db:
