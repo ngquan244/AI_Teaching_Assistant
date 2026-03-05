@@ -514,8 +514,8 @@ async def generate_quiz_from_documents(request: GenerateQuizRequest, user: Curre
     if request.num_questions < 1:
         raise HTTPException(status_code=400, detail="Number of questions must be at least 1")
     
-    if request.num_questions > 30:
-        raise HTTPException(status_code=400, detail="Maximum 30 questions per request")
+    if request.num_questions > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 questions per request")
     
     try:
         rag_service = get_rag_service()
@@ -1111,8 +1111,8 @@ async def async_generate_quiz(
     if not topics_list:
         raise HTTPException(status_code=400, detail="At least one topic is required")
     
-    if request.num_questions < 1 or request.num_questions > 30:
-        raise HTTPException(status_code=400, detail="Number of questions must be 1-30")
+    if request.num_questions < 1 or request.num_questions > 50:
+        raise HTTPException(status_code=400, detail="Number of questions must be 1-50")
     
     try:
         job_service = JobService(db)

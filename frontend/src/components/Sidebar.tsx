@@ -18,6 +18,7 @@ interface TabItem {
 }
 
 const SIDEBAR_TABS: TabItem[] = [
+  { id: TABS.GUIDE, label: 'Hướng dẫn', icon: HelpCircle },
   { id: TABS.CHAT, label: 'Chat AI', icon: MessageSquare },
   { id: TABS.UPLOAD, label: 'Upload', icon: FileUp },
   { id: TABS.GRADING, label: 'Chấm điểm', icon: BarChart3 },
@@ -26,7 +27,6 @@ const SIDEBAR_TABS: TabItem[] = [
   { id: TABS.CANVAS_QUIZ, label: 'Tạo Canvas Quiz', icon: PenSquare },
   { id: TABS.CANVAS_SIMULATION, label: 'Giả lập Quiz', icon: PlayCircle },
   { id: TABS.CANVAS_RESULTS, label: 'Kết quả Canvas', icon: PieChart },
-  { id: TABS.GUIDE, label: 'Hướng dẫn', icon: HelpCircle },
   { id: TABS.SETTINGS, label: 'Cài đặt', icon: Settings },
 ];
 

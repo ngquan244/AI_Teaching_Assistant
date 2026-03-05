@@ -1288,7 +1288,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                     onChange={(e) => setNumQuestions(Number(e.target.value))}
                     disabled={isGeneratingQuiz}
                   >
-                    {[3, 5, 7, 10, 15, 20].map(n => (
+                    {[3, 5, 7, 10, 15, 20, 30, 40, 50].map(n => (
                       <option key={n} value={n}>{n} câu</option>
                     ))}
                   </select>

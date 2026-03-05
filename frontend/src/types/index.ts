@@ -119,7 +119,7 @@ export function pathToTab(path: string): TabType {
   // strip leading slash(es)
   const segment = path.replace(/^\/+/, '').split('/')[0] || '';
   const entry = Object.entries(TAB_PATHS).find(([, p]) => p === segment);
-  return (entry ? entry[0] : TABS.CHAT) as TabType;
+  return (entry ? entry[0] : TABS.GUIDE) as TabType;
 }
 
 /** Extract guide section from URL path (e.g. /guide/chat → 'chat') */
