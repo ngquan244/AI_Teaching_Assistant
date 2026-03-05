@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { useModelConfig } from '../context/ModelConfigContext';
@@ -13,7 +14,7 @@ import {
   EyeOff,
   CheckCircle,
   AlertTriangle,
-  ExternalLink,
+  BookOpen,
   Loader2,
   Edit2,
   X,
@@ -23,9 +24,11 @@ import PanelHelpButton from './PanelHelpButton';
 const DEFAULT_CANVAS_URL = 'https://lms.uet.vnu.edu.vn';
 
 const SettingsPanel: React.FC = () => {
+  const navigate = useNavigate();
   const { config, model, setModel, maxIterations, setMaxIterations } = useApp();
   const { showModelSelector, getEnabledModels } = useModelConfig();
-  const { canvasTokens, refreshProfile, isAuthenticated } = useAuth();
+  const { canvasTokens, refreshProfile, isAuthenticated, user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
 
   // Canvas settings state
   const [isEditMode, setIsEditMode] = useState(false);
@@ -334,15 +337,15 @@ const SettingsPanel: React.FC = () => {
                     </div>
                     <div className="field-hint">
                       <span>Generate from: Canvas → Account → Settings → New Access Token</span>
-                      <a
-                        href="https://community.canvaslms.com/t5/Admin-Guide/How-do-I-manage-API-access-tokens-as-an-admin/ta-p/89"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
                         className="help-link"
+                        onClick={() => navigate('/guide/settings')}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       >
-                        <ExternalLink size={12} />
-                        View Guide
-                      </a>
+                        <BookOpen size={12} />
+                        Xem hướng dẫn
+                      </button>
                     </div>
                   </div>
 
@@ -398,53 +401,55 @@ const SettingsPanel: React.FC = () => {
         )}
       </div>
 
-      {/* AI Model Section */}
-      <div className="settings-section">
-        <h3>
-          <Cpu size={20} />
-          Model AI
-        </h3>
+      {/* AI Model Section - Admin Only */}
+      {isAdmin && (
+        <div className="settings-section">
+          <h3>
+            <Cpu size={20} />
+            Model AI
+          </h3>
 
-        {/* Provider Badge */}
-        <div className="provider-badge-wrapper">
-          <span className={`provider-badge provider-${config?.llm_provider || 'ollama'}`}>
-            {config?.llm_provider === 'groq' ? '⚡ Groq Cloud' : '🖥️ Ollama Local'}
-          </span>
-          {config?.llm_provider === 'groq' && (
-            <span className="provider-hint">Xử lý nhanh</span>
-          )}
-        </div>
+          {/* Provider Badge */}
+          <div className="provider-badge-wrapper">
+            <span className={`provider-badge provider-${config?.llm_provider || 'ollama'}`}>
+              {config?.llm_provider === 'groq' ? '⚡ Groq Cloud' : '🖥️ Ollama Local'}
+            </span>
+            {config?.llm_provider === 'groq' && (
+              <span className="provider-hint">Xử lý nhanh</span>
+            )}
+          </div>
 
-        <div className="form-group">
-          <label>Chọn model:</label>
-          {showModelSelector(config?.llm_provider || 'ollama') ? (
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
-              {(getEnabledModels(config?.llm_provider || 'ollama').length > 0
-                ? getEnabledModels(config?.llm_provider || 'ollama')
-                : config?.available_models || []
-              ).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="provider-label-static">{model}</span>
-          )}
-        </div>
+          <div className="form-group">
+            <label>Chọn model:</label>
+            {showModelSelector(config?.llm_provider || 'ollama') ? (
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                {(getEnabledModels(config?.llm_provider || 'ollama').length > 0
+                  ? getEnabledModels(config?.llm_provider || 'ollama')
+                  : config?.available_models || []
+                ).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="provider-label-static">{model}</span>
+            )}
+          </div>
 
-        <div className="form-group">
-          <label>Độ sâu phân tích:</label>
-          <input
-            type="range"
-            min={5}
-            max={20}
-            value={maxIterations}
-            onChange={(e) => setMaxIterations(parseInt(e.target.value))}
-          />
-          <span className="range-value">{maxIterations}</span>
+          <div className="form-group">
+            <label>Độ sâu phân tích:</label>
+            <input
+              type="range"
+              min={5}
+              max={20}
+              value={maxIterations}
+              onChange={(e) => setMaxIterations(parseInt(e.target.value))}
+            />
+            <span className="range-value">{maxIterations}</span>
+          </div>
         </div>
-      </div>
+      )}
 
 
     </div>
