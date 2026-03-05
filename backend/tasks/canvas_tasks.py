@@ -306,6 +306,7 @@ def download_and_index(
             course_id=course_id,
             file_id=file_id,
             canvas_token=canvas_token,
+            user_id=user_id,
         ))
         
         if not download_result.get("success"):
@@ -314,9 +315,10 @@ def download_and_index(
         
         # Step 2: Index
         job_service.update_progress(job_uuid, 50, "Indexing document")
-        file_path = service.CANVAS_RAG_DIR / filename
+        user_dir = service._get_user_dir(user_id) if user_id else service.CANVAS_RAG_DIR
+        file_path = user_dir / filename
         
-        index_result = service.ingest_document(str(file_path))
+        index_result = service.ingest_document(str(file_path), user_id=user_id)
         
         # Combine results
         final_result = {

@@ -146,10 +146,11 @@ class CanvasRAGService:
     CANVAS_COLLECTION_NAME = "canvas_document_rag_collection"  # Legacy, deprecated
     
     def __init__(self):
-        # Ensure directories exist
+        # Ensure base directories exist
         self.CANVAS_RAG_DIR.mkdir(parents=True, exist_ok=True)
         self.CANVAS_CHROMA_DIR.mkdir(parents=True, exist_ok=True)
         
+        # Legacy shared registries (for migration only)
         self.md5_registry_file = self.CANVAS_RAG_DIR / ".md5_registry.json"
         self.indexed_files_registry = self.CANVAS_RAG_DIR / ".indexed_files.json"
         
@@ -221,22 +222,38 @@ class CanvasRAGService:
             cls._instance = CanvasRAGService()
         return cls._instance
     
+    # ===== Per-user directory helpers =====
+    
+    def _get_user_dir(self, user_id: str) -> Path:
+        """Get per-user Canvas RAG directory, creating if needed."""
+        user_dir = self.CANVAS_RAG_DIR / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir
+    
+    def _get_user_md5_registry_file(self, user_id: str) -> Path:
+        return self._get_user_dir(user_id) / ".md5_registry.json"
+    
+    def _get_user_indexed_registry_file(self, user_id: str) -> Path:
+        return self._get_user_dir(user_id) / ".indexed_files.json"
+    
     # ===== MD5 Deduplication =====
     
-    def _load_md5_registry(self) -> Dict[str, str]:
-        """Load MD5 registry for Canvas files"""
-        if self.md5_registry_file.exists():
+    def _load_md5_registry(self, user_id: Optional[str] = None) -> Dict[str, str]:
+        """Load MD5 registry for Canvas files (per-user if user_id provided)"""
+        registry_file = self._get_user_md5_registry_file(user_id) if user_id else self.md5_registry_file
+        if registry_file.exists():
             try:
-                with open(self.md5_registry_file, 'r') as f:
+                with open(registry_file, 'r') as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to load Canvas MD5 registry: {e}")
         return {}
     
-    def _save_md5_registry(self, registry: Dict[str, str]):
-        """Save MD5 registry for Canvas files"""
+    def _save_md5_registry(self, registry: Dict[str, str], user_id: Optional[str] = None):
+        """Save MD5 registry for Canvas files (per-user if user_id provided)"""
+        registry_file = self._get_user_md5_registry_file(user_id) if user_id else self.md5_registry_file
         try:
-            with open(self.md5_registry_file, 'w') as f:
+            with open(registry_file, 'w') as f:
                 json.dump(registry, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save Canvas MD5 registry: {e}")
@@ -244,27 +261,29 @@ class CanvasRAGService:
     def _compute_md5(self, content: bytes) -> str:
         return hashlib.md5(content).hexdigest()
     
-    def _check_duplicate(self, md5_hash: str) -> Optional[str]:
+    def _check_duplicate(self, md5_hash: str, user_id: Optional[str] = None) -> Optional[str]:
         """Check if file with same MD5 exists, return existing filename if so"""
-        registry = self._load_md5_registry()
+        registry = self._load_md5_registry(user_id)
         return registry.get(md5_hash)
     
     # ===== Indexed Files Registry =====
     
-    def _load_indexed_registry(self) -> Dict[str, Dict]:
-        """Load registry of indexed Canvas files"""
-        if self.indexed_files_registry.exists():
+    def _load_indexed_registry(self, user_id: Optional[str] = None) -> Dict[str, Dict]:
+        """Load registry of indexed Canvas files (per-user if user_id provided)"""
+        registry_file = self._get_user_indexed_registry_file(user_id) if user_id else self.indexed_files_registry
+        if registry_file.exists():
             try:
-                with open(self.indexed_files_registry, 'r') as f:
+                with open(registry_file, 'r') as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to load indexed files registry: {e}")
         return {}
     
-    def _save_indexed_registry(self, registry: Dict[str, Dict]):
-        """Save registry of indexed Canvas files"""
+    def _save_indexed_registry(self, registry: Dict[str, Dict], user_id: Optional[str] = None):
+        """Save registry of indexed Canvas files (per-user if user_id provided)"""
+        registry_file = self._get_user_indexed_registry_file(user_id) if user_id else self.indexed_files_registry
         try:
-            with open(self.indexed_files_registry, 'w') as f:
+            with open(registry_file, 'w') as f:
                 json.dump(registry, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save indexed files registry: {e}")
@@ -277,13 +296,18 @@ class CanvasRAGService:
         filename: str,
         course_id: int,
         file_id: int,
-        canvas_token: Optional[str] = None
+        canvas_token: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Download file from Canvas with MD5 deduplication.
         Returns status: saved, duplicate, or failed.
+        Files are stored in per-user subdirectories.
         """
         try:
+            # Determine target directory (per-user or legacy shared)
+            target_dir = self._get_user_dir(user_id) if user_id else self.CANVAS_RAG_DIR
+            
             # Build headers with Canvas token for authentication
             headers = {}
             if canvas_token:
@@ -297,8 +321,8 @@ class CanvasRAGService:
             # Compute MD5
             md5_hash = self._compute_md5(content)
             
-            # Check duplicate
-            existing = self._check_duplicate(md5_hash)
+            # Check duplicate (per-user)
+            existing = self._check_duplicate(md5_hash, user_id)
             if existing:
                 return {
                     "success": True,
@@ -315,20 +339,20 @@ class CanvasRAGService:
             if not safe_filename.lower().endswith('.pdf'):
                 safe_filename += '.pdf'
             
-            file_path = self.CANVAS_RAG_DIR / safe_filename
+            file_path = target_dir / safe_filename
             counter = 1
             base_name = file_path.stem
             while file_path.exists():
-                file_path = self.CANVAS_RAG_DIR / f"{base_name}_{counter}.pdf"
+                file_path = target_dir / f"{base_name}_{counter}.pdf"
                 counter += 1
             
             with open(file_path, 'wb') as f:
                 f.write(content)
             
-            # Update MD5 registry
-            registry = self._load_md5_registry()
+            # Update MD5 registry (per-user)
+            registry = self._load_md5_registry(user_id)
             registry[md5_hash] = file_path.name
-            self._save_md5_registry(registry)
+            self._save_md5_registry(registry, user_id)
             
             return {
                 "success": True,
@@ -459,8 +483,8 @@ class CanvasRAGService:
                 except Exception as e:
                     logger.warning(f"Failed to extract topics: {e}")
             
-            # Update indexed files registry
-            indexed_registry = self._load_indexed_registry()
+            # Update indexed files registry (per-user)
+            indexed_registry = self._load_indexed_registry(user_id)
             indexed_registry[file_hash] = {
                 "filename": filename,
                 "file_path": file_path,
@@ -470,7 +494,7 @@ class CanvasRAGService:
                 "chunks_added": added_count,
                 "topic_count": len(topics_extracted)
             }
-            self._save_indexed_registry(indexed_registry)
+            self._save_indexed_registry(indexed_registry, user_id)
             
             # ---- Persist to PostgreSQL when session available ----
             col_row = None
@@ -598,12 +622,12 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             logger.error(f"Error extracting topics: {e}")
             return []
     
-    def extract_topics_for_file(self, filename: str, num_topics: int = 10) -> Dict[str, Any]:
+    def extract_topics_for_file(self, filename: str, num_topics: int = 10, user_id: Optional[str] = None) -> Dict[str, Any]:
         """Extract topics for a specific file by filename."""
         self._ensure_initialized()
         
-        # Find file hash from indexed registry
-        indexed_registry = self._load_indexed_registry()
+        # Find file hash from indexed registry (per-user)
+        indexed_registry = self._load_indexed_registry(user_id)
         file_hash = None
         for hash_val, data in indexed_registry.items():
             if data.get("filename") == filename:
@@ -734,8 +758,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         documents = list(db_documents)
         seen_hashes = set(db_seen_hashes)
         
-        # Source 1: Get from indexed_files_registry (legacy)
-        indexed_registry = self._load_indexed_registry()
+        # Source 1: Get from indexed_files_registry (per-user)
+        indexed_registry = self._load_indexed_registry(user_id)
         for file_hash, data in indexed_registry.items():
             if file_hash in seen_hashes:
                 continue
@@ -779,13 +803,13 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             "count": len(documents)
         }
     
-    def list_downloaded_files(self) -> Dict[str, Any]:
-        """List all downloaded Canvas files."""
+    def list_downloaded_files(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """List downloaded Canvas files for a specific user."""
         self._ensure_initialized()
         
         try:
             files = []
-            indexed_registry = self._load_indexed_registry()
+            indexed_registry = self._load_indexed_registry(user_id)
             
             # Also get indexed files from collection_manager
             collection_indexed_files = set()
@@ -795,7 +819,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             except Exception as e:
                 logger.warning(f"Could not get collection manager files: {e}")
             
-            for file_path in self.CANVAS_RAG_DIR.glob("*.pdf"):
+            # Scope to per-user directory
+            target_dir = self._get_user_dir(user_id) if user_id else self.CANVAS_RAG_DIR
+            
+            for file_path in target_dir.glob("*.pdf"):
                 stat = file_path.stat()
                 
                 # Check if indexed from both sources
@@ -826,13 +853,13 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 "files": []
             }
     
-    def get_index_stats(self) -> Dict[str, Any]:
-        """Get Canvas index statistics."""
+    def get_index_stats(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get Canvas index statistics for a specific user."""
         self._ensure_initialized()
         
         try:
             stats = self._vector_store.get_collection_stats()
-            indexed_registry = self._load_indexed_registry()
+            indexed_registry = self._load_indexed_registry(user_id)
             
             return {
                 "total_documents": len(indexed_registry),
@@ -948,15 +975,15 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 "error": str(e)
             }
     
-    def remove_index(self, filename: str) -> Dict[str, Any]:
+    def remove_index(self, filename: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """Remove index for a Canvas file (keep the file itself)."""
         self._ensure_initialized()
         
         try:
             hash_to_remove = None
             
-            # Source 1: Find file hash in indexed_files_registry
-            indexed_registry = self._load_indexed_registry()
+            # Source 1: Find file hash in indexed_files_registry (per-user)
+            indexed_registry = self._load_indexed_registry(user_id)
             for hash_val, data in indexed_registry.items():
                 if data.get("filename") == filename:
                     hash_to_remove = hash_val
@@ -996,10 +1023,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             except Exception as e:
                 logger.warning(f"Could not delete from vector store: {e}")
             
-            # Remove from indexed registry
+            # Remove from indexed registry (per-user)
             if hash_to_remove in indexed_registry:
                 del indexed_registry[hash_to_remove]
-                self._save_indexed_registry(indexed_registry)
+                self._save_indexed_registry(indexed_registry, user_id)
             
             # Remove topics
             self._topic_storage.remove_document(hash_to_remove)
@@ -1015,17 +1042,19 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 "error": str(e)
             }
     
-    def delete_file(self, filename: str) -> Dict[str, Any]:
-        """Delete a Canvas file and its index data."""
+    def delete_file(self, filename: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Delete a Canvas file and its index data (scoped to user)."""
         try:
-            file_path = self.CANVAS_RAG_DIR / filename
+            # Scope to per-user directory
+            target_dir = self._get_user_dir(user_id) if user_id else self.CANVAS_RAG_DIR
+            file_path = target_dir / filename
             
             # Delete physical file
             if file_path.exists():
                 file_path.unlink()
             
-            # Remove from MD5 registry
-            registry = self._load_md5_registry()
+            # Remove from MD5 registry (per-user)
+            registry = self._load_md5_registry(user_id)
             hash_to_remove = None
             for hash_val, fname in registry.items():
                 if fname == filename:
@@ -1033,10 +1062,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     break
             if hash_to_remove:
                 del registry[hash_to_remove]
-                self._save_md5_registry(registry)
+                self._save_md5_registry(registry, user_id)
             
-            # Remove from indexed registry
-            indexed_registry = self._load_indexed_registry()
+            # Remove from indexed registry (per-user)
+            indexed_registry = self._load_indexed_registry(user_id)
             hash_to_remove = None
             for hash_val, data in indexed_registry.items():
                 if data.get("filename") == filename:
@@ -1044,7 +1073,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     break
             if hash_to_remove:
                 del indexed_registry[hash_to_remove]
-                self._save_indexed_registry(indexed_registry)
+                self._save_indexed_registry(indexed_registry, user_id)
                 
                 # Remove topics
                 self._topic_storage.remove_document(hash_to_remove)

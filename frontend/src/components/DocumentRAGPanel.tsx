@@ -1264,7 +1264,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                     type="button" 
                     className="btn-select-topics"
                     onClick={openTopicModal}
-                    disabled={indexedDocuments.length === 0}
+                    disabled={indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0}
                   >
                     <BookOpen size={18} />
                     <span>Chọn chủ đề từ tài liệu</span>
@@ -1272,10 +1272,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   </button>
                 )}
                 
-                {indexedDocuments.length === 0 && (
+                {indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0 && (
                   <p className="no-docs-hint">
                     <Info size={14} />
-                    Chưa có tài liệu. Hãy upload tài liệu trước.
+                    Chưa có tài liệu. Hãy upload tài liệu hoặc tải từ Canvas LMS.
                   </p>
                 )}
               </div>
@@ -1323,7 +1323,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               <button
                 className="btn btn-primary btn-generate"
                 onClick={handleGenerateQuiz}
-                disabled={selectedTopics.length === 0 || isGeneratingQuiz || (indexStats?.total_documents ?? 0) === 0}
+                disabled={selectedTopics.length === 0 || isGeneratingQuiz || (indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0)}
               >
                 {isGeneratingQuiz ? (
                   <>
@@ -1338,10 +1338,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 )}
               </button>
 
-              {(indexStats?.total_documents ?? 0) === 0 && (
+              {indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0 && (
                 <div className="message info">
                   <Info size={16} />
-                  Vui lòng upload và index tài liệu PDF trước khi tạo quiz.
+                  Vui lòng upload và index tài liệu PDF hoặc tải từ Canvas LMS trước khi tạo quiz.
                 </div>
               )}
 

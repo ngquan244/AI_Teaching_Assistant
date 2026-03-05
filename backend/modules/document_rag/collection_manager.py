@@ -176,14 +176,10 @@ class CollectionRegistry:
             logger.error(f"Could not save collection registry: {e}")
     
     def get(self, file_hash: str, user_id: Optional[str] = None) -> Optional[CollectionMetadata]:
-        """Get collection metadata by file hash (optionally scoped to user)."""
+        """Get collection metadata by file hash (scoped to user when provided)."""
         with self._lock:
             key = self._make_key(file_hash, user_id)
-            result = self._registry.get(key)
-            if result is None and user_id:
-                # Fallback: try legacy key (no user_id) for backward compat
-                result = self._registry.get(file_hash)
-            return result
+            return self._registry.get(key)
     
     def register(
         self,
@@ -234,35 +230,27 @@ class CollectionRegistry:
             return sum(1 for meta in self._registry.values() if meta.file_hash == file_hash)
     
     def is_indexed(self, file_hash: str, user_id: Optional[str] = None) -> bool:
-        """Check if a file is already indexed (optionally for a specific user)."""
+        """Check if a file is already indexed (scoped to user when provided)."""
         with self._lock:
             key = self._make_key(file_hash, user_id)
             meta = self._registry.get(key)
-            if meta is not None:
-                return meta.is_indexed
-            # Fallback: check legacy key
-            if user_id:
-                meta = self._registry.get(file_hash)
-                return meta is not None and meta.is_indexed
-            return False
+            return meta is not None and meta.is_indexed
     
     def get_collection_name(self, file_hash: str, user_id: Optional[str] = None) -> Optional[str]:
         """Get collection name for a file hash."""
         with self._lock:
             key = self._make_key(file_hash, user_id)
             meta = self._registry.get(key)
-            if meta is None and user_id:
-                meta = self._registry.get(file_hash)
             return meta.collection_name if meta else None
     
     def get_all(self, user_id: Optional[str] = None) -> List[CollectionMetadata]:
-        """Get all registered collections, optionally filtered by user."""
+        """Get all registered collections, filtered by user when provided."""
         with self._lock:
             if user_id is None:
                 return list(self._registry.values())
             return [
                 meta for meta in self._registry.values()
-                if meta.user_id == user_id or meta.user_id is None  # include legacy entries
+                if meta.user_id == user_id
             ]
     
     def get_by_user(self, user_id: str) -> List[CollectionMetadata]:
@@ -274,12 +262,12 @@ class CollectionRegistry:
             ]
     
     def get_by_filenames(self, filenames: List[str], user_id: Optional[str] = None) -> List[CollectionMetadata]:
-        """Get collections for specific filenames, optionally scoped to user."""
+        """Get collections for specific filenames, scoped to user when provided."""
         with self._lock:
             return [
                 meta for meta in self._registry.values()
                 if meta.filename in filenames
-                and (user_id is None or meta.user_id == user_id or meta.user_id is None)
+                and (user_id is None or meta.user_id == user_id)
             ]
     
     def get_by_course_id(self, course_id: int) -> List[CollectionMetadata]:

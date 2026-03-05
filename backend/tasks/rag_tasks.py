@@ -362,7 +362,7 @@ def canvas_extract_topics(
         job_service.start_job(job_uuid, "Extracting topics from Canvas file")
         
         service = _get_canvas_rag_service()
-        result = service.extract_topics_for_file(filename, num_topics)
+        result = service.extract_topics_for_file(filename, num_topics, user_id=user_id)
         
         job_service.complete_job(job_uuid, result)
         return result

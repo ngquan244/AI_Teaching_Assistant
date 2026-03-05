@@ -173,6 +173,21 @@ def get_user_rag_dir(user_id: Union[str, UUID]) -> Path:
     return ensure_directory(path)
 
 
+def get_user_canvas_rag_dir(user_id: Union[str, UUID]) -> Path:
+    """
+    Get and ensure the per-user Canvas RAG directory exists.
+
+    Args:
+        user_id: User UUID (str or UUID)
+
+    Returns:
+        Path to the user's Canvas RAG directory
+    """
+    from backend.core.config import settings
+    path = settings.get_user_canvas_rag_dir(str(user_id))
+    return ensure_directory(path)
+
+
 def cleanup_user_workspace(user_id: Union[str, UUID]) -> int:
     """
     Delete all files in a user's workspace (filled + results).

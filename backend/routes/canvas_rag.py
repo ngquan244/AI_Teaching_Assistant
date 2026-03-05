@@ -95,7 +95,8 @@ async def download_canvas_file(
         filename=request.filename,
         course_id=request.course_id,
         file_id=request.file_id,
-        canvas_token=x_canvas_token
+        canvas_token=x_canvas_token,
+        user_id=str(user.id)
     )
     
     return result
@@ -112,8 +113,9 @@ async def index_canvas_file(request: CanvasIndexRequest, user: CurrentUser):
     
     service = get_canvas_rag_service()
     
-    # Find the file path
-    file_path = service.CANVAS_RAG_DIR / request.filename
+    # Find the file path in per-user directory
+    user_dir = service._get_user_dir(str(user.id))
+    file_path = user_dir / request.filename
     
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.filename}")
@@ -137,7 +139,7 @@ async def extract_topics_for_canvas_file(request: CanvasExtractTopicsRequest, us
     logger.info(f"Extracting topics for Canvas file: {request.filename}")
     
     service = get_canvas_rag_service()
-    result = service.extract_topics_for_file(request.filename, request.num_topics)
+    result = service.extract_topics_for_file(request.filename, request.num_topics, user_id=str(user.id))
     
     return result
 
@@ -185,7 +187,7 @@ async def list_canvas_files(user: CurrentUser):
     List all downloaded Canvas files.
     """
     service = get_canvas_rag_service()
-    return service.list_downloaded_files()
+    return service.list_downloaded_files(user_id=str(user.id))
 
 
 @router.get("/indexed")
@@ -210,7 +212,7 @@ async def get_canvas_stats(user: CurrentUser):
     Get Canvas index statistics.
     """
     service = get_canvas_rag_service()
-    stats = service.get_index_stats()
+    stats = service.get_index_stats(user_id=str(user.id))
     
     return {
         "success": True,
@@ -288,7 +290,7 @@ async def delete_canvas_file(filename: str, user: CurrentUser):
     logger.info(f"Deleting Canvas file: {filename}")
     
     service = get_canvas_rag_service()
-    result = service.delete_file(filename)
+    result = service.delete_file(filename, user_id=str(user.id))
     
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete file"))
@@ -304,7 +306,7 @@ async def remove_canvas_file_index(filename: str, user: CurrentUser):
     logger.info(f"Removing index for Canvas file: {filename}")
     
     service = get_canvas_rag_service()
-    result = service.remove_index(filename)
+    result = service.remove_index(filename, user_id=str(user.id))
     
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("error", "Failed to remove index"))

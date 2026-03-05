@@ -112,9 +112,6 @@ class TopicStorage:
         with self._lock:
             if key in self._topics:
                 return self._topics[key].get("topics", [])
-            # Fallback: try legacy key (no user_id)
-            if user_id and file_hash in self._topics:
-                return self._topics[file_hash].get("topics", [])
         return None
     
     def get_topics_by_filename(
@@ -133,7 +130,7 @@ class TopicStorage:
         for key, data in self._topics.items():
             if data.get("filename") == filename:
                 entry_user = data.get("user_id")
-                if user_id is None or entry_user == user_id or entry_user is None:
+                if user_id is None or entry_user == user_id:
                     return data.get("topics", [])
         return None
     
@@ -141,11 +138,7 @@ class TopicStorage:
         """Check if topics exist for a document."""
         key = self._make_key(file_hash, user_id)
         with self._lock:
-            if key in self._topics:
-                return True
-            if user_id and file_hash in self._topics:
-                return True
-            return False
+            return key in self._topics
     
     def get_all_documents(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -158,7 +151,7 @@ class TopicStorage:
         with self._lock:
             for key, data in self._topics.items():
                 entry_user = data.get("user_id")
-                if user_id is not None and entry_user is not None and entry_user != user_id:
+                if user_id is not None and entry_user != user_id:
                     continue
                 # Extract file_hash from composite key
                 if ":" in key:
@@ -214,7 +207,7 @@ class TopicStorage:
             for key, data in self._topics.items():
                 if data.get("filename") == filename:
                     entry_user = data.get("user_id")
-                    if user_id is None or entry_user == user_id or entry_user is None:
+                    if user_id is None or entry_user == user_id:
                         self._topics[key]["topics"] = topics
                         self._topics[key]["updated_at"] = datetime.now().isoformat()
                         self._save()

@@ -224,6 +224,10 @@ class Settings(BaseSettings):
     def get_user_rag_upload_dir(self, user_id: str) -> Path:
         """Get per-user directory for RAG document uploads."""
         return self.DATA_DIR / "rag_uploads" / user_id
+
+    def get_user_canvas_rag_dir(self, user_id: str) -> Path:
+        """Get per-user directory for Canvas RAG file downloads."""
+        return self.DATA_DIR / "canvas_rag_uploads" / user_id
     
     @model_validator(mode='after')
     def validate_secrets(self) -> 'Settings':
