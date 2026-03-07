@@ -10,7 +10,7 @@ import logging
 import uuid as _uuid
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Form, Header, Request
+from fastapi import APIRouter, HTTPException, Form, Header, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -310,6 +310,8 @@ async def list_indexed_canvas_documents(
     http_request: Request,
     user: CurrentUser,
     course_id: Optional[int] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 ):
     """
     List all indexed Canvas documents with topics.
@@ -372,6 +374,17 @@ async def list_indexed_canvas_documents(
                 ]
                 result["documents"] = filtered
                 result["count"] = len(filtered)
+        
+        # Paginate after permission filtering
+        docs = result.get("documents", [])
+        total = len(docs)
+        offset = (page - 1) * page_size
+        result["documents"] = docs[offset:offset + page_size]
+        result["total"] = total
+        result["page"] = page
+        result["page_size"] = page_size
+        result["pages"] = (total + page_size - 1) // page_size if total else 1
+        result.pop("count", None)
         
         return result
     except HTTPException:

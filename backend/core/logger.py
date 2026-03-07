@@ -81,11 +81,13 @@ _NOISY_LOGGERS = [
     "uvicorn.access", "uvicorn.error",
     "huggingface_hub", "transformers",
     "langchain", "langchain_core", "langchain_community",
-    "sqlalchemy.engine",
+    "sqlalchemy.engine", "sqlalchemy.engine.Engine", "sqlalchemy.pool",
     "sentence_transformers",
 ]
 for _name in _NOISY_LOGGERS:
-    logging.getLogger(_name).setLevel(logging.WARNING)
+    _lg = logging.getLogger(_name)
+    _lg.setLevel(logging.WARNING)
+    _lg.propagate = False
 
 
 # ── Named loggers ────────────────────────────────────────────────────

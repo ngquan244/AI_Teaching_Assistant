@@ -19,7 +19,7 @@ class Base(DeclarativeBase):
 # Synchronous engine (for Alembic migrations)
 engine = create_engine(
     settings.DATABASE_URL_SYNC,
-    echo=settings.DEBUG,
+    echo=False,
     pool_pre_ping=True,
 )
 
@@ -34,7 +34,7 @@ SessionLocal = sessionmaker(
 # Async engine (for FastAPI endpoints)
 async_engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=False,
     poolclass=NullPool,  # Disable connection pooling for async
 )
 

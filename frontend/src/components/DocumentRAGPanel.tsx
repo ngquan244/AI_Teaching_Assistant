@@ -177,6 +177,12 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const [indexStats, setIndexStats] = useState<RAGIndexStats | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<RAGUploadedFile[]>([]);
+  const [uploadedPage, setUploadedPage] = useState(1);
+  const [uploadedPages, setUploadedPages] = useState(1);
+  const [uploadedTotal, setUploadedTotal] = useState(0);
+  const [indexedPage, setIndexedPage] = useState(1);
+  const [indexedPages, setIndexedPages] = useState(1);
+  const [indexedTotal, setIndexedTotal] = useState(0);
   
   // Messages
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -247,7 +253,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     // Always try to load - don't require Canvas configuration
     // since documents may already be indexed locally
     try {
-      const response = await listIndexedCanvasDocuments();
+      const response = await listIndexedCanvasDocuments(undefined, 1, 100);
       console.log('Canvas indexed documents response:', response);
       if (response.success && response.documents) {
         const docs: IndexedDocument[] = response.documents.map(d => ({
@@ -312,11 +318,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   };
 
   // Load indexed documents with topics
-  const loadIndexedDocuments = async () => {
+  const loadIndexedDocuments = async (page?: number) => {
     try {
-      const response = await listIndexedDocuments();
+      const p = page ?? indexedPage;
+      const response = await listIndexedDocuments(p);
       if (response.success && response.documents) {
         setIndexedDocuments(response.documents);
+        setIndexedPage(response.page);
+        setIndexedPages(response.pages);
+        setIndexedTotal(response.total);
       }
     } catch (error) {
       console.error('Error loading indexed documents:', error);
@@ -348,11 +358,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     }
   };
 
-  const loadUploadedFiles = async () => {
+  const loadUploadedFiles = async (page?: number) => {
     try {
-      const response = await listUploadedFiles();
+      const p = page ?? uploadedPage;
+      const response = await listUploadedFiles(p);
       if (response.success) {
         setUploadedFiles(response.files);
+        setUploadedPage(response.page);
+        setUploadedPages(response.pages);
+        setUploadedTotal(response.total);
       }
     } catch (error) {
       console.error('Error loading files:', error);
@@ -769,10 +783,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       }
     }
 
-    // Reload stats and indexed documents
+    // Reload stats and indexed documents (reset to page 1)
     await loadIndexStats();
-    await loadUploadedFiles();
-    await loadIndexedDocuments();
+    await loadUploadedFiles(1);
+    await loadIndexedDocuments(1);
     
     // Clear upload topics cache to reflect new indexed documents
     if (successCount > 0) {
@@ -1320,7 +1334,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                     type="button" 
                     className="btn-select-topics"
                     onClick={openTopicModal}
-                    disabled={indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0}
+                    disabled={indexedTotal === 0 && canvasIndexedDocuments.length === 0}
                   >
                     <BookOpen size={18} />
                     <span>Chọn chủ đề từ tài liệu</span>
@@ -1328,7 +1342,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   </button>
                 )}
                 
-                {indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0 && (
+                {indexedTotal === 0 && canvasIndexedDocuments.length === 0 && (
                   <p className="no-docs-hint">
                     <Info size={14} />
                     Chưa có tài liệu. Hãy upload tài liệu hoặc tải từ Canvas LMS.
@@ -1379,7 +1393,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               <button
                 className="btn btn-primary btn-generate"
                 onClick={handleGenerateQuiz}
-                disabled={selectedTopics.length === 0 || isGeneratingQuiz || (indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0)}
+                disabled={selectedTopics.length === 0 || isGeneratingQuiz || (indexedTotal === 0 && canvasIndexedDocuments.length === 0)}
               >
                 {isGeneratingQuiz ? (
                   <>
@@ -1394,7 +1408,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 )}
               </button>
 
-              {indexedDocuments.length === 0 && canvasIndexedDocuments.length === 0 && (
+              {indexedTotal === 0 && canvasIndexedDocuments.length === 0 && (
                 <div className="message info">
                   <Info size={16} />
                   Vui lòng upload và index tài liệu PDF hoặc tải từ Canvas LMS trước khi tạo quiz.
@@ -1447,11 +1461,11 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           </div>
 
         {/* Uploaded Files List */}
-        {uploadedFiles.length > 0 && (
+        {(uploadedFiles.length > 0 || uploadedTotal > 0) && (
           <div className="files-section">
             <h3>
               <FileIcon size={18} />
-              Files đã upload
+              Files đã upload ({uploadedTotal})
             </h3>
             <div className="files-list">
               {uploadedFiles.map((file, idx) => (
@@ -1462,6 +1476,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 </div>
               ))}
             </div>
+            {uploadedPages > 1 && (
+              <div className="pagination-controls">
+                <button disabled={uploadedPage <= 1} onClick={() => { setUploadedPage(p => p - 1); loadUploadedFiles(uploadedPage - 1); }}>Trước</button>
+                <span>Trang {uploadedPage} / {uploadedPages}</span>
+                <button disabled={uploadedPage >= uploadedPages} onClick={() => { setUploadedPage(p => p + 1); loadUploadedFiles(uploadedPage + 1); }}>Sau</button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1494,7 +1515,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               >
                 <Upload size={16} />
                 File tải lên
-                <span className="source-count">{indexedDocuments.length}</span>
+                <span className="source-count">{indexedTotal}</span>
               </button>
               <button
                 className={`source-tab ${topicSource === 'canvas' ? 'active' : ''}`}
@@ -1632,6 +1653,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   );
                 })}
               </div>
+
+              {/* Pagination controls for indexed documents in modal */}
+              {topicSource === 'upload' && indexedPages > 1 && (
+                <div className="pagination-controls">
+                  <button disabled={indexedPage <= 1} onClick={() => loadIndexedDocuments(indexedPage - 1)}>Trước</button>
+                  <span>Trang {indexedPage} / {indexedPages}</span>
+                  <button disabled={indexedPage >= indexedPages} onClick={() => loadIndexedDocuments(indexedPage + 1)}>Sau</button>
+                </div>
+              )}
             </div>
             
             <div className="modal-footer">
@@ -3139,6 +3169,41 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           font-size: 0.8rem;
           color: #94a3b8;
           font-weight: 500;
+        }
+
+        .pagination-controls {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          margin-top: 12px;
+          padding: 8px 0;
+        }
+
+        .pagination-controls button {
+          padding: 6px 14px;
+          border-radius: 8px;
+          border: 1px solid rgba(56, 189, 248, 0.2);
+          background: rgba(22, 33, 55, 0.6);
+          color: #e2e8f0;
+          font-size: 0.85rem;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .pagination-controls button:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.15);
+          border-color: rgba(56, 189, 248, 0.4);
+        }
+
+        .pagination-controls button:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+
+        .pagination-controls span {
+          font-size: 0.85rem;
+          color: #94a3b8;
         }
 
         /* Animations */

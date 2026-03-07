@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, File, UploadFile, HTTPException, Form
+from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -432,9 +432,13 @@ def get_rag_config(user: CurrentUser):
 
 
 @router.get("/uploaded-files")
-def list_uploaded_files(user: CurrentUser):
+def list_uploaded_files(
+    user: CurrentUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+):
     """
-    List all uploaded PDF files for the current user.
+    List uploaded PDF files for the current user (paginated).
     """
     try:
         user_upload_dir = get_user_rag_dir(str(user.id))
@@ -447,10 +451,19 @@ def list_uploaded_files(user: CurrentUser):
                 "modified": stat.st_mtime
             })
         
+        # Sort newest first, then paginate
+        files.sort(key=lambda f: f["modified"], reverse=True)
+        total = len(files)
+        offset = (page - 1) * page_size
+        files = files[offset:offset + page_size]
+        
         return {
             "success": True,
             "files": files,
-            "count": len(files)
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size if total else 1,
         }
         
     except Exception as e:
@@ -799,9 +812,13 @@ def update_document_topics(filename: str, request: UpdateTopicsRequest, user: Cu
 
 
 @router.get("/indexed-documents")
-def list_indexed_documents(user: CurrentUser):
+def list_indexed_documents(
+    user: CurrentUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+):
     """
-    List all indexed documents with their topic counts.
+    List indexed documents with their topic counts (paginated).
     """
     try:
         rag_service = get_rag_service()
@@ -815,16 +832,24 @@ def list_indexed_documents(user: CurrentUser):
         formatted_docs = []
         for doc in documents:
             formatted_docs.append({
-                "filename": doc.get("filename", "unknown"),  # Use actual filename
+                "filename": doc.get("filename", "unknown"),
                 "original_filename": doc.get("filename", "unknown"),
                 "topic_count": doc.get("topic_count", 0),
                 "indexed_at": doc.get("extracted_at", "")
             })
         
+        # Paginate
+        total = len(formatted_docs)
+        offset = (page - 1) * page_size
+        formatted_docs = formatted_docs[offset:offset + page_size]
+        
         return {
             "success": True,
             "documents": formatted_docs,
-            "count": len(formatted_docs)
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size if total else 1,
         }
         
     except Exception as e:

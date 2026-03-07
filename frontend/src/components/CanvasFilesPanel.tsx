@@ -156,6 +156,8 @@ const CanvasFilesPanel: React.FC = () => {
   // Pagination state
   const [remoteCurrentPage, setRemoteCurrentPage] = useState(1);
   const [indexedCurrentPage, setIndexedCurrentPage] = useState(1);
+  const [indexedTotalPages, setIndexedTotalPages] = useState(1);
+  const [indexedTotal, setIndexedTotal] = useState(0);
   const ITEMS_PER_PAGE = 5;
 
   // Edit topics modal state
@@ -190,17 +192,17 @@ const CanvasFilesPanel: React.FC = () => {
     setRemoteCurrentPage(1);
   }, [remoteFiles.length]);
 
-  useEffect(() => {
-    setIndexedCurrentPage(1);
-  }, [indexedDocs.length]);
-
   // Load indexed documents (works independently of Canvas API)
-  const loadIndexedDocs = async (courseId?: number) => {
+  const loadIndexedDocs = async (courseId?: number, page?: number) => {
     setIndexedLoading(true);
     try {
-      const indexedRes = await listIndexedCanvasDocuments(courseId);
+      const p = page ?? indexedCurrentPage;
+      const indexedRes = await listIndexedCanvasDocuments(courseId, p, ITEMS_PER_PAGE);
       if (indexedRes.success) {
         setIndexedDocs(indexedRes.documents);
+        setIndexedCurrentPage(indexedRes.page);
+        setIndexedTotalPages(indexedRes.pages);
+        setIndexedTotal(indexedRes.total);
       }
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
@@ -223,7 +225,7 @@ const CanvasFilesPanel: React.FC = () => {
       // Fetch remote files and indexed docs in parallel
       const [remoteResponse, indexedRes] = await Promise.all([
         canvasApi.fetchCourseFiles(courseId),
-        listIndexedCanvasDocuments(courseId),
+        listIndexedCanvasDocuments(courseId, 1, ITEMS_PER_PAGE),
       ]);
 
       if (!remoteResponse.success) {
@@ -245,6 +247,9 @@ const CanvasFilesPanel: React.FC = () => {
       // Update indexed docs
       if (indexedRes.success) {
         setIndexedDocs(indexedRes.documents);
+        setIndexedCurrentPage(indexedRes.page);
+        setIndexedTotalPages(indexedRes.pages);
+        setIndexedTotal(indexedRes.total);
       }
       
       // Check status for each remote file against indexed docs
@@ -399,7 +404,7 @@ const CanvasFilesPanel: React.FC = () => {
       if (indexResult.success) {
         updateFileStatus(file.id, { status: 'indexed' });
         // Refresh indexed docs to show updated status
-        await loadIndexedDocs(selectedCourse?.id);
+        await loadIndexedDocs(selectedCourse?.id, 1);
         // Dispatch event to notify DocumentRAGPanel to refresh topics
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       } else if (indexResult.already_indexed) {
@@ -462,7 +467,7 @@ const CanvasFilesPanel: React.FC = () => {
     setIsDownloading(false);
     
     // Refresh indexed docs
-    loadIndexedDocs(selectedCourse?.id);
+    loadIndexedDocs(selectedCourse?.id, 1);
   };
 
   // === File action handlers (shared by remote rows + indexed section) ===
@@ -479,7 +484,7 @@ const CanvasFilesPanel: React.FC = () => {
           newMap.delete(filename);
           return newMap;
         });
-        await loadIndexedDocs(selectedCourse?.id);
+        await loadIndexedDocs(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       } else {
         setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
@@ -500,7 +505,7 @@ const CanvasFilesPanel: React.FC = () => {
     try {
       const result = await removeCanvasFileIndex(filename);
       if (result.success) {
-        await loadIndexedDocs(selectedCourse?.id);
+        await loadIndexedDocs(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
     } catch (err) {
@@ -530,7 +535,7 @@ const CanvasFilesPanel: React.FC = () => {
           newMap.delete(file.id);
           return newMap;
         });
-        await loadIndexedDocs(selectedCourse?.id);
+        await loadIndexedDocs(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
     } catch (err) {
@@ -602,7 +607,7 @@ const CanvasFilesPanel: React.FC = () => {
       
       if (response.success) {
         closeEditTopicsModal();
-        await loadIndexedDocs(selectedCourse?.id);
+        await loadIndexedDocs(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       } else {
         alert('Không thể lưu chủ đề. Vui lòng thử lại.');
@@ -1029,7 +1034,7 @@ const CanvasFilesPanel: React.FC = () => {
           <h3>
             <Database size={18} />
             Tài liệu đã Index
-            <span className="indexed-count-badge">{indexedDocs.length}</span>
+            <span className="indexed-count-badge">{indexedTotal}</span>
           </h3>
           <div className="section-actions">
             <button
@@ -1055,10 +1060,6 @@ const CanvasFilesPanel: React.FC = () => {
             )}
 
             {!indexedLoading && (() => {
-              const totalPages = Math.max(1, Math.ceil(indexedDocs.length / ITEMS_PER_PAGE));
-              const startIndex = (indexedCurrentPage - 1) * ITEMS_PER_PAGE;
-              const paginatedDocs = indexedDocs.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-
               return (
                 <>
                   <div className="files-list">
@@ -1072,8 +1073,8 @@ const CanvasFilesPanel: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {paginatedDocs.length > 0 ? (
-                          paginatedDocs.map((doc) => {
+                        {indexedDocs.length > 0 ? (
+                          indexedDocs.map((doc) => {
                             const actionState = fileActionStates.get(doc.filename);
                             return (
                               <tr key={doc.file_hash}>
@@ -1139,21 +1140,21 @@ const CanvasFilesPanel: React.FC = () => {
                   </div>
 
                   {/* Pagination */}
-                  {indexedDocs.length > ITEMS_PER_PAGE && (
+                  {indexedTotalPages > 1 && (
                     <div className="pagination">
                       <button
                         className="pagination-btn"
-                        onClick={() => setIndexedCurrentPage(p => Math.max(1, p - 1))}
-                        disabled={indexedCurrentPage === 1}
+                        onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage - 1)}
+                        disabled={indexedCurrentPage <= 1}
                       >
                         <ChevronLeft size={16} />
                       </button>
                       <div className="pagination-pages">
-                        {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                        {Array.from({ length: indexedTotalPages }, (_, i) => i + 1).map(page => (
                           <button
                             key={page}
                             className={`pagination-page ${page === indexedCurrentPage ? 'active' : ''}`}
-                            onClick={() => setIndexedCurrentPage(page)}
+                            onClick={() => loadIndexedDocs(selectedCourse?.id, page)}
                           >
                             {page}
                           </button>
@@ -1161,13 +1162,13 @@ const CanvasFilesPanel: React.FC = () => {
                       </div>
                       <button
                         className="pagination-btn"
-                        onClick={() => setIndexedCurrentPage(p => Math.min(totalPages, p + 1))}
-                        disabled={indexedCurrentPage === totalPages}
+                        onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage + 1)}
+                        disabled={indexedCurrentPage >= indexedTotalPages}
                       >
                         <ChevronRight size={16} />
                       </button>
                       <span className="pagination-info">
-                        {`${startIndex + 1}-${Math.min(startIndex + ITEMS_PER_PAGE, indexedDocs.length)} / ${indexedDocs.length}`}
+                        {`${(indexedCurrentPage - 1) * ITEMS_PER_PAGE + 1}-${Math.min(indexedCurrentPage * ITEMS_PER_PAGE, indexedTotal)} / ${indexedTotal}`}
                       </span>
                     </div>
                   )}

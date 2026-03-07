@@ -57,7 +57,10 @@ export interface RAGUploadedFile {
 export interface RAGFilesResponse {
   success: boolean;
   files: RAGUploadedFile[];
-  count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
 }
 
 export interface OllamaStatus {
@@ -274,10 +277,12 @@ export const getRAGConfig = async (): Promise<{ success: boolean; config: RAGCon
 };
 
 /**
- * List uploaded files
+ * List uploaded files (paginated)
  */
-export const listUploadedFiles = async (): Promise<RAGFilesResponse> => {
-  const response = await apiClient.get<RAGFilesResponse>('/api/document-rag/uploaded-files');
+export const listUploadedFiles = async (page = 1, pageSize = 10): Promise<RAGFilesResponse> => {
+  const response = await apiClient.get<RAGFilesResponse>('/api/document-rag/uploaded-files', {
+    params: { page, page_size: pageSize },
+  });
   return response.data;
 };
 
@@ -378,9 +383,9 @@ export const getMultipleDocumentTopics = async (filenames: string[]): Promise<{
 };
 
 /**
- * List all indexed documents with their topic counts
+ * List all indexed documents with their topic counts (paginated)
  */
-export const listIndexedDocuments = async (): Promise<{
+export const listIndexedDocuments = async (page = 1, pageSize = 10): Promise<{
   success: boolean;
   documents: Array<{
     filename: string;
@@ -388,9 +393,14 @@ export const listIndexedDocuments = async (): Promise<{
     topic_count: number;
     indexed_at: string;
   }>;
-  count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
 }> => {
-  const response = await apiClient.get('/api/document-rag/indexed-documents');
+  const response = await apiClient.get('/api/document-rag/indexed-documents', {
+    params: { page, page_size: pageSize },
+  });
   return response.data;
 };
 

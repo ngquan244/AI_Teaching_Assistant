@@ -286,17 +286,21 @@ export async function updateCanvasDocumentTopics(
 }
 
 /**
- * List all indexed Canvas documents
+ * List indexed Canvas documents (paginated)
  * Optionally filter by courseId
  * Sends Canvas headers so backend can validate course access.
  */
-export async function listIndexedCanvasDocuments(courseId?: number): Promise<{
+export async function listIndexedCanvasDocuments(courseId?: number, page = 1, pageSize = 10): Promise<{
   success: boolean;
   documents: CanvasIndexedDocument[];
-  count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
 }> {
   try {
-    const params = courseId ? { course_id: courseId } : {};
+    const params: Record<string, unknown> = { page, page_size: pageSize };
+    if (courseId) params.course_id = courseId;
     const cfg = await canvasConfig({ params });
     const response = await apiClient.get(`${API_BASE}/indexed`, cfg);
     return response.data;
