@@ -92,7 +92,7 @@ def _job_to_out(job) -> JobOut:
         error_message=job.error_message,
         created_at=job.created_at.isoformat() if job.created_at else None,
         started_at=job.started_at.isoformat() if job.started_at else None,
-        finished_at=job.finished_at.isoformat() if job.finished_at else None,
+        finished_at=job.completed_at.isoformat() if job.completed_at else None,
     )
 
 
@@ -121,7 +121,7 @@ async def get_job(
     Returns current status, progress, and result (if completed).
     """
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -203,7 +203,7 @@ async def cancel_job(
     Revokes the Celery task if it hasn't started yet.
     """
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -239,7 +239,7 @@ async def get_job_events(
     from backend.database.models.job import JobEvent
     
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -276,7 +276,7 @@ async def stream_job_events(
     import json
     
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -290,7 +290,7 @@ async def stream_job_events(
         
         for _ in range(max_polls):
             # Refresh job from DB
-            job = await job_service.get_job(job_id)
+            job = await job_service.get_by_id(job_id)
             if not job:
                 yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
                 break
@@ -348,7 +348,7 @@ async def retry_job(
     Creates a new job with the same parameters and queues it.
     """
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -372,17 +372,17 @@ async def retry_job(
     from backend import tasks
     
     task_map = {
-        JobType.INGEST_DOCUMENT: tasks.ingest_document,
-        JobType.BUILD_INDEX: tasks.build_index,
-        JobType.RAG_QUERY: tasks.query_documents,
-        JobType.EXTRACT_TOPICS: tasks.extract_topics,
-        JobType.GENERATE_QUIZ: tasks.generate_quiz,
-        JobType.CANVAS_FILE_DOWNLOAD: tasks.download_file,
-        JobType.CANVAS_FILE_UPLOAD: tasks.download_files_batch,
-        JobType.CANVAS_QTI_IMPORT: tasks.import_qti,
-        JobType.GRADE_BATCH: tasks.grade_batch,
-        JobType.GRADE_SINGLE: tasks.grade_single,
-        JobType.GENERATE_REPORT: tasks.generate_report,
+        JobType.INGEST_DOCUMENT: tasks.rag_tasks.ingest_document,
+        JobType.BUILD_INDEX: tasks.rag_tasks.build_index,
+        JobType.RAG_QUERY: tasks.rag_tasks.query_documents,
+        JobType.EXTRACT_TOPICS: tasks.rag_tasks.extract_topics,
+        JobType.GENERATE_QUIZ: tasks.llm_tasks.generate_quiz,
+        JobType.CANVAS_FILE_DOWNLOAD: tasks.canvas_tasks.download_file,
+        JobType.CANVAS_FILE_UPLOAD: tasks.canvas_tasks.download_files_batch,
+        JobType.CANVAS_QTI_IMPORT: tasks.canvas_tasks.import_qti,
+        JobType.GRADE_BATCH: tasks.grading_tasks.grade_batch,
+        JobType.GRADE_SINGLE: tasks.grading_tasks.grade_single,
+        JobType.GENERATE_REPORT: tasks.grading_tasks.generate_report,
     }
     
     task_func = task_map.get(job.job_type)
@@ -393,13 +393,15 @@ async def retry_job(
         )
     
     # Apply task
-    result = task_func.apply_async(
+    from backend.celery_app import apply_async_nonblocking
+    result = await apply_async_nonblocking(
+        task_func,
         args=[str(new_job.id)],
         kwargs=job.payload_json or {},
     )
     
     # Update with Celery task ID
-    await job_service.update_celery_task_id(new_job.id, result.id)
+    await job_service.set_celery_task_id(new_job.id, result.id)
     
     return RetryResponse(
         success=True,
@@ -423,7 +425,7 @@ async def delete_job(
     from backend.database.models.job import Job, JobEvent
     
     job_service = JobService(db)
-    job = await job_service.get_job(job_id)
+    job = await job_service.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

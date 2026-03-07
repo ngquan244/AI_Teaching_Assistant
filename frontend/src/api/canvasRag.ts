@@ -366,6 +366,49 @@ export async function removeCanvasFileIndex(
   return response.data;
 }
 
+// ===== Async (Celery) API Functions =====
+
+import type { AsyncJobResponse } from './jobs';
+
+/**
+ * Generate quiz from Canvas documents asynchronously via Celery.
+ */
+export async function asyncCanvasGenerateQuiz(
+  request: CanvasQuizRequest,
+): Promise<AsyncJobResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<AsyncJobResponse>(
+      `${API_BASE}/async/generate-quiz`,
+      request,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
+}
+
+/**
+ * Index a downloaded Canvas file asynchronously via Celery.
+ */
+export async function asyncIndexCanvasFile(
+  filename: string,
+  courseId?: number,
+): Promise<AsyncJobResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<AsyncJobResponse>(
+      `${API_BASE}/async/index`,
+      { filename, course_id: courseId },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
+}
+
 export const canvasRagApi = {
   downloadCanvasFile,
   indexCanvasFile,
@@ -377,6 +420,8 @@ export const canvasRagApi = {
   generateCanvasQuiz,
   resetCanvasIndex,
   removeCanvasFileIndex,
+  asyncCanvasGenerateQuiz,
+  asyncIndexCanvasFile,
 };
 
 export default canvasRagApi;

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from backend.auth.dependencies import CurrentUser, AdminUser
 from backend.modules.document_rag import RAGService
 from backend.core.config import settings
+from backend.core.logger import quiz_logger
 from backend.utils import get_user_rag_dir
 from backend.database.base import SessionLocal
 
@@ -141,14 +142,17 @@ def upload_document(user: CurrentUser, file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
 
 
-@router.post("/build-index", response_model=IngestResponse)
+@router.post("/build-index", response_model=IngestResponse, deprecated=True)
 def build_index(user: CurrentUser, filename: str = Form(...)):
     """
     Build/update the vector index for an uploaded document.
     
+    **DEPRECATED**: Use POST /async/build-index instead.
+
     Args:
         filename: Name of the uploaded file to index
     """
+    logger.warning("DEPRECATED sync endpoint /build-index called — migrate to /async/build-index")
     logger.info(f"Building index for: {filename} (user={user.id})")
     
     user_upload_dir = get_user_rag_dir(str(user.id))
@@ -178,13 +182,14 @@ def build_index(user: CurrentUser, filename: str = Form(...)):
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
 
 
-@router.post("/upload-and-index", response_model=IngestResponse)
+@router.post("/upload-and-index", response_model=IngestResponse, deprecated=True)
 def upload_and_index(user: CurrentUser, file: UploadFile = File(...)):
     """
     Upload and immediately index a PDF document.
     
-    Combines upload and build-index in one operation.
+    **DEPRECATED**: Use POST /async/upload-and-index instead.
     """
+    logger.warning("DEPRECATED sync endpoint /upload-and-index called — migrate to /async/upload-and-index")
     logger.info(f"Upload and index: {file.filename} (user={user.id})")
     
     # Validate file type
@@ -483,11 +488,13 @@ def delete_uploaded_file(filename: str, user: CurrentUser):
 # QUIZ GENERATION ENDPOINTS
 # ============================================================================
 
-@router.post("/generate-quiz", response_model=GenerateQuizResponse)
+@router.post("/generate-quiz", response_model=GenerateQuizResponse, deprecated=True)
 def generate_quiz_from_documents(request: GenerateQuizRequest, user: CurrentUser):
     """
     Generate quiz questions from indexed documents using RAG.
     
+    **DEPRECATED**: Use POST /async/generate-quiz instead.
+
     This endpoint:
     1. Retrieves relevant context from indexed documents based on topic(s)
     2. Uses LLM (Ollama) to generate multiple choice questions
@@ -501,6 +508,7 @@ def generate_quiz_from_documents(request: GenerateQuizRequest, user: CurrentUser
     Returns:
         Generated quiz questions with answers
     """
+    logger.warning("DEPRECATED sync endpoint /generate-quiz called — migrate to /async/generate-quiz")
     # Handle both single topic and multiple topics
     topics_list = []
     if request.topics and len(request.topics) > 0:
@@ -605,17 +613,20 @@ class LLMProviderResponse(BaseModel):
     connection: Optional[dict] = None
 
 
-@router.get("/extract-topics")
+@router.get("/extract-topics", deprecated=True)
 def extract_topics_from_documents(user: CurrentUser):
     """
     Extract suggested topics from indexed documents.
     
+    **DEPRECATED**: Use POST /async/extract-topics instead.
+
     This uses LLM to analyze document content and suggest topics
     that can be used for quiz generation.
     
     Returns:
         List of suggested topics with descriptions
     """
+    logger.warning("DEPRECATED sync endpoint /extract-topics called — migrate to /async/extract-topics")
     logger.info("Extracting topics from documents")
     
     try:
@@ -935,6 +946,7 @@ from backend.database import get_async_session
 from backend.services.job_service import JobService
 from backend.database.models.job import JobType
 from backend import tasks
+from backend.celery_app import apply_async_nonblocking
 
 
 class AsyncJobResponse(BaseModel):
@@ -966,21 +978,25 @@ async def async_build_index(
         job_service = JobService(db)
         
         # Create job with idempotency
-        job = await job_service.get_or_create_job(
+        job, _created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.BUILD_INDEX,
             payload={"filename": filename, "file_path": str(file_path)},
             idempotency_key=f"build_index:{user.id}:{filename}",
         )
         
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+        
         # Queue task
-        result = tasks.build_index.apply_async(
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.build_index,
             args=[str(job.id), str(file_path)],
             kwargs={"user_id": str(user.id)},
         )
         
         # Update with Celery task ID
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -1025,13 +1041,17 @@ async def async_upload_and_index(
             payload={"filename": file.filename, "file_path": str(file_path)},
         )
         
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+        
         # Queue task
-        result = tasks.ingest_document.apply_async(
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.ingest_document,
             args=[str(job.id), str(file_path)],
             kwargs={"user_id": str(user.id)},
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -1073,12 +1093,16 @@ async def async_query_documents(
             },
         )
         
-        result = tasks.query_documents.apply_async(
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+        
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.query_documents,
             args=[str(job.id), request.question],
             kwargs={"k": request.k, "return_context": request.return_context, "user_id": str(user.id)},
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -1128,6 +1152,7 @@ async def async_generate_quiz(
             "selected_documents": request.selected_documents,
             "user_id": str(user.id),
         }
+        quiz_logger.info(f"Route async_generate_quiz: topics={topics_list}, selected_documents={request.selected_documents!r}, user={user.id}")
         
         job = await job_service.create_job(
             user_id=user.id,
@@ -1135,12 +1160,16 @@ async def async_generate_quiz(
             payload=payload,
         )
         
-        result = tasks.generate_quiz.apply_async(
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+        
+        result = await apply_async_nonblocking(
+            tasks.llm_tasks.generate_quiz,
             args=[str(job.id)],
             kwargs=payload,
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -1174,12 +1203,16 @@ async def async_extract_topics(
             payload={},
         )
         
-        result = tasks.extract_topics.apply_async(
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+        
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.extract_topics,
             args=[str(job.id)],
             kwargs={"user_id": str(user.id)},
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,

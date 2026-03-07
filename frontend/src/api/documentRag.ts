@@ -422,3 +422,58 @@ export const checkLLMStatus = async (): Promise<OllamaStatus> => {
   const response = await apiClient.get<OllamaStatus>('/api/document-rag/llm-status');
   return response.data;
 };
+
+// ===== Async (Celery) API Functions =====
+
+import type { AsyncJobResponse } from './jobs';
+
+/**
+ * Upload and index a document asynchronously via Celery.
+ * Returns immediately with a job_id — poll /api/jobs/{job_id} for result.
+ */
+export const asyncUploadAndIndex = async (file: File): Promise<AsyncJobResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await apiClient.post<AsyncJobResponse>(
+    '/api/document-rag/async/upload-and-index',
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
+  return response.data;
+};
+
+/**
+ * Generate quiz asynchronously via Celery.
+ */
+export const asyncGenerateQuiz = async (request: GenerateQuizRequest): Promise<AsyncJobResponse> => {
+  const response = await apiClient.post<AsyncJobResponse>(
+    '/api/document-rag/async/generate-quiz',
+    request,
+  );
+  return response.data;
+};
+
+/**
+ * Build index asynchronously via Celery.
+ */
+export const asyncBuildIndex = async (filename: string): Promise<AsyncJobResponse> => {
+  const formData = new FormData();
+  formData.append('filename', filename);
+
+  const response = await apiClient.post<AsyncJobResponse>(
+    '/api/document-rag/async/build-index',
+    formData,
+  );
+  return response.data;
+};
+
+/**
+ * Extract topics asynchronously via Celery.
+ */
+export const asyncExtractTopics = async (): Promise<AsyncJobResponse> => {
+  const response = await apiClient.post<AsyncJobResponse>(
+    '/api/document-rag/async/extract-topics',
+  );
+  return response.data;
+};

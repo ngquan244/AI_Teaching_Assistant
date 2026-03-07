@@ -12,7 +12,6 @@ Workers should be started with:
     celery -A backend.celery_app worker -Q canvas -c 2 --loglevel=info
     celery -A backend.celery_app worker -Q misc -c 4 --loglevel=info
 """
-import os
 import logging
 from celery import Celery
 from celery.signals import (
@@ -23,25 +22,9 @@ from celery.signals import (
 )
 from kombu import Queue, Exchange
 
+from backend.core.config import settings
+
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# Configuration from Environment
-# =============================================================================
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", f"{REDIS_URL}/0")
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", f"{REDIS_URL}/1")
-
-# Rate limits from environment
-LLM_RATE_LIMIT = os.getenv("LLM_RATE_LIMIT", "10/m")  # 10 requests per minute
-CANVAS_RATE_LIMIT = os.getenv("CANVAS_RATE_LIMIT", "30/m")  # 30 requests per minute
-
-# Worker concurrency defaults
-WORKER_CONCURRENCY_RAG = int(os.getenv("WORKER_CONCURRENCY_RAG", "4"))
-WORKER_CONCURRENCY_LLM = int(os.getenv("WORKER_CONCURRENCY_LLM", "2"))
-WORKER_CONCURRENCY_CANVAS = int(os.getenv("WORKER_CONCURRENCY_CANVAS", "2"))
-WORKER_CONCURRENCY_MISC = int(os.getenv("WORKER_CONCURRENCY_MISC", "4"))
 
 # =============================================================================
 # Queue Definitions
@@ -81,8 +64,8 @@ CELERY_ROUTES = {
 
 celery_app = Celery(
     "grader",
-    broker=CELERY_BROKER_URL,
-    backend=CELERY_RESULT_BACKEND,
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND,
     include=[
         "backend.tasks.rag_tasks",
         "backend.tasks.llm_tasks",
@@ -142,6 +125,10 @@ celery_app.conf.update(
     
     # Beat scheduler (for periodic tasks if needed)
     beat_schedule={},
+    
+    # Eager mode: run tasks inline without broker (for development without Redis)
+    task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
+    task_eager_propagates=settings.CELERY_TASK_ALWAYS_EAGER,
 )
 
 # =============================================================================
@@ -204,7 +191,7 @@ class RateLimitedLLMTask(BaseTaskWithRetry):
     Task for LLM operations with rate limiting.
     """
     abstract = True
-    rate_limit = LLM_RATE_LIMIT
+    rate_limit = settings.LLM_RATE_LIMIT
 
 
 class RateLimitedCanvasTask(BaseTaskWithRetry):
@@ -212,7 +199,7 @@ class RateLimitedCanvasTask(BaseTaskWithRetry):
     Task for Canvas API operations with rate limiting.
     """
     abstract = True
-    rate_limit = CANVAS_RATE_LIMIT
+    rate_limit = settings.CANVAS_RATE_LIMIT
     
     # Canvas-specific retry for transient errors
     autoretry_for = (Exception,)
@@ -265,6 +252,23 @@ def task_failure_handler(sender, task_id, exception, args, kwargs, traceback, ei
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+async def apply_async_nonblocking(task, args=None, kwargs=None, **options):
+    """
+    Call task.apply_async() without blocking the event loop.
+
+    In eager mode (CELERY_TASK_ALWAYS_EAGER=true), apply_async() runs the task
+    synchronously inline which blocks the entire FastAPI/uvicorn event loop.
+    This helper offloads it to a thread so the endpoint returns immediately.
+
+    In production (eager=False), apply_async() just enqueues to Redis and
+    returns instantly, so the thread overhead is negligible.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        task.apply_async, args=args, kwargs=kwargs, **options
+    )
+
 
 def get_task_info(task_id: str) -> dict:
     """

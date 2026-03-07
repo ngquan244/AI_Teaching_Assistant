@@ -5,12 +5,14 @@ Celery tasks for LLM-intensive operations like quiz generation, chat, and topic 
 These tasks run in the 'llm' queue with rate limiting.
 """
 import logging
+import time
 import uuid
 from typing import Optional, Dict, Any, List
 
 from celery import shared_task
 
 from backend.celery_app import RateLimitedLLMTask
+from backend.core.logger import quiz_logger
 from backend.services.job_service import get_sync_job_service
 from backend.database.base import SessionLocal
 
@@ -66,8 +68,12 @@ def generate_quiz(
     job_service, db_session = get_sync_job_service()
     job_uuid = uuid.UUID(job_id)
     
+    t0 = time.time()
+    n_selected = len(selected_documents) if selected_documents else 0
+    
     try:
         job_service.start_job(job_uuid, "Retrieving context")
+        quiz_logger.info(f"Task received: job={job_id}, topics={topics}, selected_documents={selected_documents}, user_id={user_id}, source={source}")
         
         # Get appropriate RAG service
         if source == "canvas":
@@ -81,8 +87,7 @@ def generate_quiz(
         # Generate quiz
         with SessionLocal() as rag_db:
             result = rag_service.generate_quiz(
-                topics=topics if len(topics) > 1 else None,
-                topic=topics[0] if len(topics) == 1 else None,
+                topics=topics,
                 num_questions=num_questions,
                 difficulty=difficulty,
                 language=language,
@@ -92,17 +97,29 @@ def generate_quiz(
                 db_session=rag_db,
             )
         
+        duration = round(time.time() - t0, 1)
+        n_resolved = result.get("_resolved_hashes", "?")
+        
         job_service.update_progress(job_uuid, 90, "Formatting results")
         
         if result.get("success"):
+            n_questions = len(result.get("questions", []))
+            logger.info(f"[QUIZ] success questions={n_questions} duration={duration}s selected_docs={n_selected} resolved_hashes={n_resolved}")
+            result.pop("_resolved_hashes", None)
             job_service.complete_job(job_uuid, result)
         else:
-            job_service.fail_job(job_uuid, result.get("error", "Quiz generation failed"))
+            error_msg = result.get("error") or result.get("message") or "Quiz generation failed"
+            logger.error(f"[QUIZ] failed duration={duration}s selected_docs={n_selected} resolved_hashes={n_resolved} error=\"{error_msg}\"")
+            quiz_logger.error(f"Quiz failed: {error_msg}, result_keys={list(result.keys())}")
+            result.pop("_resolved_hashes", None)
+            job_service.fail_job(job_uuid, error_msg)
         
         return result
         
     except Exception as e:
-        logger.exception(f"Error in generate_quiz task: {e}")
+        duration = round(time.time() - t0, 1)
+        logger.error(f"[QUIZ] exception duration={duration}s selected_docs={n_selected} error=\"{e}\"")
+        quiz_logger.exception(f"Exception in generate_quiz task: {e}")
         job_service.fail_job(job_uuid, str(e))
         raise
     finally:

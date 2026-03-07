@@ -278,6 +278,7 @@ from backend.database import get_async_session
 from backend.services.job_service import JobService
 from backend.database.models.job import JobType
 from backend import tasks
+from backend.celery_app import apply_async_nonblocking
 
 
 class AsyncJobResponse(PydanticBaseModel):
@@ -317,8 +318,12 @@ async def async_download_single_file(
                 "course_id": request.course_id,
             },
         )
-        
-        result = tasks.download_file.apply_async(
+
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.canvas_tasks.download_file,
             args=[str(job.id)],
             kwargs={
                 "file_id": request.file_id,
@@ -328,7 +333,7 @@ async def async_download_single_file(
             },
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -372,12 +377,16 @@ async def async_download_batch(
             job_type=JobType.CANVAS_FILE_DOWNLOAD,
             payload={"course_id": request.course_id, "files": files_data},
         )
-        
-        result = tasks.download_files_batch.apply_async(
+
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.canvas_tasks.download_files_batch,
             args=[str(job.id), request.course_id, files_data],
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,
@@ -430,8 +439,12 @@ async def async_import_qti_bank(
                 "filename": request.filename or "qti_import.zip",
             },
         )
-        
-        result = tasks.import_qti.apply_async(
+
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.canvas_tasks.import_qti,
             args=[str(job.id)],
             kwargs={
                 "token": token,
@@ -443,7 +456,7 @@ async def async_import_qti_bank(
             },
         )
         
-        await job_service.update_celery_task_id(job.id, result.id)
+        await job_service.set_celery_task_id(job.id, result.id)
         
         return AsyncJobResponse(
             success=True,

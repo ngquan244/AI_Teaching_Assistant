@@ -502,6 +502,24 @@ class SyncRAGCollectionRepository:
         return list(result.scalars().all())
 
     @staticmethod
+    def get_by_filenames(
+        session: Session,
+        filenames: List[str],
+        user_id: uuid.UUID,
+        source: Optional[RAGSourceType] = None,
+    ) -> List[RAGCollection]:
+        """Get collections matching specific filenames."""
+        conditions = [
+            RAGCollection.user_id == user_id,
+            RAGCollection.filename.in_(filenames),
+        ]
+        if source is not None:
+            conditions.append(RAGCollection.source == source)
+        stmt = select(RAGCollection).where(*conditions)
+        result = session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
     def is_indexed(
         session: Session,
         file_hash: str,

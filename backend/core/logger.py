@@ -66,6 +66,12 @@ grading_logger = setup_logger(
     f'grading_{datetime.now().strftime("%Y%m%d")}.log'
 )
 
+# Quiz debug logger — detailed trace to file, summary to console
+quiz_logger = setup_logger(
+    'quiz_debug',
+    f'quiz_debug_{datetime.now().strftime("%Y%m%d")}.log'
+)
+
 # Default logger for general use
 logger = setup_logger(
     'app',

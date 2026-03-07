@@ -12,6 +12,7 @@ from langchain_core.documents import Document
 
 from .config import rag_config
 from .vectorstore import ChromaVectorStore
+from backend.core.logger import quiz_logger
 
 if TYPE_CHECKING:
     from .collection_manager import PerFileCollectionManager
@@ -236,7 +237,7 @@ class MultiCollectionRetriever:
         Returns:
             List of file hashes to query
         """
-        if target_file_hashes:
+        if target_file_hashes is not None:
             return target_file_hashes
         
         # Return all indexed files for the user
@@ -272,7 +273,16 @@ class MultiCollectionRetriever:
             logger.warning("No files to query - index is empty")
             return []
         
-        logger.info(f"Retrieving from {len(resolved_hashes)} collections, k={k}, user={user_id}")
+        # Map hashes to filenames for debug — detail to file
+        # Try user-scoped first, fall back to all entries (canvas has user_id=null)
+        hash_to_name = {}
+        for meta in self.collection_manager.registry.get_all(user_id=user_id):
+            hash_to_name[meta.file_hash] = meta.filename
+        if not hash_to_name:
+            for meta in self.collection_manager.registry.get_all():
+                hash_to_name[meta.file_hash] = meta.filename
+        hash_info = [(h[:8], hash_to_name.get(h, '?')) for h in resolved_hashes]
+        quiz_logger.info(f"Retrieving from {len(resolved_hashes)} collections: {hash_info}, k={k}, target_file_hashes_was={'None' if target_file_hashes is None else f'list[{len(target_file_hashes)}]'}")
         
         all_documents = []
         

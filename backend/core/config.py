@@ -93,6 +93,9 @@ class Settings(BaseSettings):
         """Celery result backend URL (Redis DB 1)."""
         return f"{self.REDIS_URL}/1"
     
+    # Celery eager mode (run tasks synchronously — no Redis/workers needed)
+    CELERY_TASK_ALWAYS_EAGER: bool = False
+    
     # Rate limits
     LLM_RATE_LIMIT: str = "10/m"  # 10 requests per minute for LLM tasks
     CANVAS_RATE_LIMIT: str = "30/m"  # 30 requests per minute for Canvas API

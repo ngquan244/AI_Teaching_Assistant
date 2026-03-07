@@ -36,6 +36,7 @@ from .quiz_generator import QuizGenerator
 from .llm_providers import BaseLLM, LLMFactory
 from .rag_repository import SyncRAGCollectionRepository
 from backend.database.models.rag_document import RAGSourceType
+from backend.core.logger import quiz_logger
 
 logger = logging.getLogger(__name__)
 
@@ -911,8 +912,38 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             }
         
         logger.info(f"Generating Canvas quiz: topics={topics}, num_questions={num_questions}")
+        quiz_logger.info(f"canvas generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
         
         try:
+            # Resolve target file hashes from selected_documents
+            # Canvas collections are registered WITHOUT user_id (user_id=null),
+            # so we must NOT filter by user_id in registry lookups.
+            target_hashes = None
+            if selected_documents:
+                target_hashes = []
+                if db_session and user_id:
+                    try:
+                        rows = SyncRAGCollectionRepository.get_by_filenames(
+                            db_session, selected_documents, _uuid.UUID(user_id),
+                            source=RAGSourceType.CANVAS,
+                        )
+                        target_hashes = [r.file_hash for r in rows]
+                        quiz_logger.info(f"Canvas DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
+                    except Exception as e:
+                        logger.warning(f"Canvas DB get_by_filenames failed: {e}")
+                        quiz_logger.warning(f"Canvas DB get_by_filenames failed: {e}")
+                        db_session.rollback()
+                # Fallback to in-memory registry (no user_id filter — canvas entries have user_id=null)
+                if not target_hashes:
+                    matching = self._collection_manager.registry.get_by_filenames(selected_documents)
+                    target_hashes = [m.file_hash for m in matching]
+                    quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
+                quiz_logger.info(f"Canvas resolved {len(target_hashes)} hashes from {len(selected_documents)} docs: {selected_documents} -> {[h[:8] for h in target_hashes]}")
+            else:
+                quiz_logger.warning(f"canvas selected_documents is None/empty ({selected_documents!r}) — will query ALL collections!")
+
+            n_resolved = len(target_hashes) if target_hashes is not None else 'all'
+
             # If multiple topics, use the multi-topic method
             if len(topics) > 1:
                 result = self._quiz_generator.generate_quiz_multi_topics(
@@ -920,7 +951,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     num_questions=num_questions,
                     difficulty=difficulty,
                     language=language,
-                    k=k
+                    k=k,
+                    target_file_hashes=target_hashes,
+                    user_id=user_id
                 )
             else:
                 # Single topic
@@ -929,9 +962,12 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     num_questions=num_questions,
                     difficulty=difficulty,
                     language=language,
-                    k=k
+                    k=k,
+                    target_file_hashes=target_hashes,
+                    user_id=user_id
                 )
             
+            result["_resolved_hashes"] = n_resolved
             return result
             
         except Exception as e:

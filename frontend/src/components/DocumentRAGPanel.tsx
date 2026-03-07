@@ -43,18 +43,18 @@ const generateRAGStars = (count: number) =>
     size: `${1.5 + Math.random() * 1.5}px`,
   }));
 import {
-  uploadAndIndexDocument,
   getRAGStats,
   resetRAGIndex,
   checkOllamaStatus,
   listUploadedFiles,
-  generateQuiz,
   exportQuizToQTI,
   getDocumentTopics,
   updateDocumentTopics,
   listIndexedDocuments,
   getLLMProviderInfo,
   setLLMProvider,
+  asyncUploadAndIndex,
+  asyncGenerateQuiz,
   type RAGSource,
   type RAGIndexStats,
   type RAGUploadedFile,
@@ -63,11 +63,14 @@ import {
   type TopicSuggestion,
   type LLMProviderInfo,
 } from '../api/documentRag';
+import { getJob, TERMINAL_STATUSES, type JobOut } from '../api/jobs';
+import { useAsyncJob } from '../hooks/useAsyncJob';
+import JobProgressModal from './JobProgressModal';
 import {
   listIndexedCanvasDocuments,
   getCanvasDocumentTopics,
   updateCanvasDocumentTopics,
-  generateCanvasQuiz,
+  asyncCanvasGenerateQuiz,
 } from '../api/canvasRag';
 import CanvasImportModal from './CanvasImportModal';
 import { useModelConfig } from '../context/ModelConfigContext';
@@ -109,6 +112,9 @@ interface DocumentRAGPanelProps {
 const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas }) => {
   // Decorative stars
   const ragStars = useMemo(() => generateRAGStars(24), []);
+
+  // Async job hook for quiz generation
+  const quizJob = useAsyncJob({ storageKey: 'quizJob' });
 
   // State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -195,6 +201,31 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     loadCanvasIndexedDocuments();
     loadLLMProviderInfo();
   }, []);
+
+  // Handle quiz job completion — extract result into component state
+  useEffect(() => {
+    const job = quizJob.job;
+    if (!job) return;
+
+    if (job.status === 'SUCCEEDED' && job.result) {
+      const r = job.result as { success?: boolean; questions?: QuizQuestion[]; error?: string };
+      if (r.success && r.questions && r.questions.length > 0) {
+        setGeneratedQuiz(r.questions);
+        setShowQuizModal(true);
+      } else {
+        setQuizError(r.error || 'Không thể tạo quiz. Hãy thử lại với chủ đề khác.');
+      }
+      setIsGeneratingQuiz(false);
+      quizJob.reset();
+    } else if (job.status === 'FAILED') {
+      setQuizError(job.error_message || 'Lỗi khi tạo quiz.');
+      setIsGeneratingQuiz(false);
+      quizJob.reset();
+    } else if (job.status === 'CANCELED') {
+      setIsGeneratingQuiz(false);
+      quizJob.reset();
+    }
+  }, [quizJob.job?.status]);
 
   // Listen for canvas topics updates from CanvasFilesPanel
   useEffect(() => {
@@ -642,7 +673,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     let alreadyIndexedCount = 0;
     let errorCount = 0;
 
-    // Process files sequentially
+    // Process files sequentially via async Celery jobs
     for (let i = 0; i < selectedFiles.length; i++) {
       const fileItem = selectedFiles[i];
       
@@ -655,31 +686,63 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       ));
 
       try {
-        const response = await uploadAndIndexDocument(fileItem.file);
-        
-        if (response.success) {
-          if (response.already_indexed) {
-            alreadyIndexedCount++;
-            setSelectedFiles(prev => prev.map((f, idx) => 
-              idx === i ? { 
-                ...f, 
-                status: 'already_indexed' as FileUploadStatus,
-                message: 'Đã có trong cơ sở dữ liệu',
-                details: { filename: response.filename }
-              } : f
-            ));
+        // Submit async job (file is saved immediately, indexing queued)
+        const asyncResp = await asyncUploadAndIndex(fileItem.file);
+        const jobId = asyncResp.job_id;
+
+        // Poll until job completes
+        let jobResult: JobOut | null = null;
+        while (true) {
+          const j = await getJob(jobId);
+          if (TERMINAL_STATUSES.includes(j.status)) {
+            jobResult = j;
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        if (jobResult.status === 'SUCCEEDED' && jobResult.result) {
+          const result = jobResult.result as {
+            success?: boolean;
+            already_indexed?: boolean;
+            filename?: string;
+            pages_loaded?: number;
+            chunks_added?: number;
+            error?: string;
+          };
+          if (result.success) {
+            if (result.already_indexed) {
+              alreadyIndexedCount++;
+              setSelectedFiles(prev => prev.map((f, idx) => 
+                idx === i ? { 
+                  ...f, 
+                  status: 'already_indexed' as FileUploadStatus,
+                  message: 'Đã có trong cơ sở dữ liệu',
+                  details: { filename: result.filename }
+                } : f
+              ));
+            } else {
+              successCount++;
+              setSelectedFiles(prev => prev.map((f, idx) => 
+                idx === i ? { 
+                  ...f, 
+                  status: 'success' as FileUploadStatus,
+                  message: `${result.pages_loaded} trang, ${result.chunks_added} phần nội dung`,
+                  details: {
+                    filename: result.filename,
+                    pages_loaded: result.pages_loaded,
+                    chunks_added: result.chunks_added
+                  }
+                } : f
+              ));
+            }
           } else {
-            successCount++;
+            errorCount++;
             setSelectedFiles(prev => prev.map((f, idx) => 
               idx === i ? { 
                 ...f, 
-                status: 'success' as FileUploadStatus,
-                message: `${response.pages_loaded} trang, ${response.chunks_added} phần nội dung`,
-                details: {
-                  filename: response.filename,
-                  pages_loaded: response.pages_loaded,
-                  chunks_added: response.chunks_added
-                }
+                status: 'error' as FileUploadStatus,
+                message: result.error || 'Lỗi không xác định'
               } : f
             ));
           }
@@ -689,7 +752,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
             idx === i ? { 
               ...f, 
               status: 'error' as FileUploadStatus,
-              message: response.error || 'Lỗi không xác định'
+              message: jobResult.error_message || 'Lỗi không xác định'
             } : f
           ));
         }
@@ -703,11 +766,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
             message: 'Lỗi kết nối server'
           } : f
         ));
-      }
-      
-      // Small delay between files
-      if (i < selectedFiles.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
 
@@ -796,34 +854,32 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     setEditingQuestionIndex(null);
     setEditingQuestion(null);
 
-    try {
-      // Use appropriate API based on topic source
-      const response = topicSource === 'canvas'
-        ? await generateCanvasQuiz({
-            topics: topicsList,
-            num_questions: numQuestions,
-            difficulty: quizDifficulty,
-            language: quizLanguage,
-            selected_documents: selectedDocuments.length > 0 ? selectedDocuments : undefined,
-          })
-        : await generateQuiz({
-            topics: topicsList,
-            num_questions: numQuestions,
-            difficulty: quizDifficulty,
-            language: quizLanguage,
-            selected_documents: selectedDocuments.length > 0 ? selectedDocuments : undefined,
-          });
+    // Derive selected_documents from topics' source documents (not from ticked checkboxes)
+    const docsFromTopics = selectedTopics.length > 0
+      ? [...new Set(selectedTopics.map(t => t.documentFilename))]
+      : undefined;
 
-      if (response.success && response.questions.length > 0) {
-        setGeneratedQuiz(response.questions as QuizQuestion[]);
-        setShowQuizModal(true); // Auto open quiz modal
+    const quizRequest = {
+      topics: topicsList,
+      num_questions: numQuestions,
+      difficulty: quizDifficulty,
+      language: quizLanguage,
+      selected_documents: docsFromTopics,
+    };
+
+    try {
+      if (topicSource === 'canvas') {
+        // Canvas quiz — async via Celery
+        await quizJob.startJob(() => asyncCanvasGenerateQuiz(quizRequest));
+        // Result handled by useEffect on quizJob.job.status
       } else {
-        setQuizError(response.error || 'Không thể tạo quiz. Hãy thử lại với chủ đề khác.');
+        // Document RAG quiz — async via Celery
+        await quizJob.startJob(() => asyncGenerateQuiz(quizRequest));
+        // Result handled by useEffect on quizJob.job.status
       }
     } catch (error) {
       console.error('Quiz generation error:', error);
       setQuizError('Lỗi khi tạo quiz. Hãy kiểm tra hệ thống AI đang hoạt động và có tài liệu đã được xử lý.');
-    } finally {
       setIsGeneratingQuiz(false);
     }
   };
@@ -5300,6 +5356,16 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           margin-bottom: 12px;
         }
       `}</style>
+
+      {/* Quiz generation progress modal */}
+      <JobProgressModal
+        job={quizJob.job}
+        visible={quizJob.showProgress}
+        title="Đang tạo quiz..."
+        queuedWarning={quizJob.queuedWarning}
+        onCancel={quizJob.cancel}
+        onClose={quizJob.reset}
+      />
     </div>
   );
 };

@@ -418,7 +418,7 @@ def query_canvas_documents(request: CanvasQueryRequest, user: CurrentUser):
     return result
 
 
-@router.post("/generate-quiz")
+@router.post("/generate-quiz", deprecated=True)
 async def generate_quiz_from_canvas_documents(
     request: CanvasGenerateQuizRequest,
     http_request: Request,
@@ -426,8 +426,11 @@ async def generate_quiz_from_canvas_documents(
 ):
     """
     Generate quiz from Canvas documents.
+
+    **DEPRECATED**: Use POST /async/generate-quiz instead.
     Permission-validated when selected_documents are provided.
     """
+    logger.warning("DEPRECATED sync endpoint /generate-quiz called — migrate to /async/generate-quiz")
     logger.info(f"Canvas Quiz Generation - Topics: {request.topics}")
     
     if not request.topics:
@@ -508,3 +511,158 @@ def remove_canvas_file_index(filename: str, user: CurrentUser):
         raise HTTPException(status_code=404, detail=result.get("error", "Failed to remove index"))
     
     return result
+
+
+# ============================================================================
+# ASYNC JOB ENDPOINTS
+# ============================================================================
+# Return immediately with a job_id.
+# The actual work runs in background via Celery.
+# Poll GET /api/jobs/{job_id} for status.
+
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+from backend.database import get_async_session
+from backend.services.job_service import JobService
+from backend.database.models.job import JobType
+from backend import tasks
+from backend.celery_app import apply_async_nonblocking
+
+
+class AsyncJobResponse(BaseModel):
+    """Response for async job endpoints."""
+    success: bool
+    job_id: str
+    message: str
+    status_url: str
+    stream_url: str
+
+
+@router.post("/async/generate-quiz", response_model=AsyncJobResponse)
+async def async_canvas_generate_quiz(
+    request: CanvasGenerateQuizRequest,
+    http_request: Request,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Generate quiz from Canvas documents asynchronously (non-blocking).
+
+    Quiz generation can take 10-60+ seconds with LLM. Returns immediately.
+    Permission-validated when selected_documents are provided.
+    """
+    if not request.topics:
+        raise HTTPException(status_code=400, detail="At least one topic is required")
+
+    # Permission check for selected documents
+    if request.selected_documents:
+        for doc_name in request.selected_documents:
+            await _check_canvas_permission(
+                http_request, filename=doc_name, user_id=str(user.id),
+            )
+
+    try:
+        job_service = JobService(db)
+
+        payload = {
+            "topics": request.topics,
+            "num_questions": request.num_questions,
+            "difficulty": request.difficulty,
+            "language": request.language,
+            "selected_documents": request.selected_documents,
+            "user_id": str(user.id),
+            "source": "canvas",
+        }
+
+        job = await job_service.create_job(
+            user_id=user.id,
+            job_type=JobType.GENERATE_QUIZ,
+            payload=payload,
+        )
+
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.llm_tasks.generate_quiz,
+            args=[str(job.id)],
+            kwargs=payload,
+        )
+
+        await job_service.set_celery_task_id(job.id, result.id)
+
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Canvas quiz generation queued for topics: {', '.join(request.topics)}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+
+    except Exception as e:
+        logger.exception("Error queueing canvas quiz generation")
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
+
+
+@router.post("/async/index", response_model=AsyncJobResponse)
+async def async_index_canvas_file(
+    request: CanvasIndexRequest,
+    http_request: Request,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Index a downloaded Canvas file asynchronously (non-blocking).
+
+    Returns a job_id immediately. Poll /api/jobs/{job_id} for status.
+    Permission-validated: token must have access to the course.
+    """
+    # Permission check
+    await _check_canvas_permission(
+        http_request, course_id=request.course_id,
+        filename=request.filename, user_id=str(user.id),
+    )
+
+    service = get_canvas_rag_service()
+    user_dir = service._get_user_dir(str(user.id))
+    file_path = user_dir / request.filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {request.filename}")
+
+    try:
+        job_service = JobService(db)
+
+        job = await job_service.create_job(
+            user_id=user.id,
+            job_type=JobType.CANVAS_INDEX_FILE,
+            payload={
+                "filename": request.filename,
+                "course_id": request.course_id,
+                "file_path": str(file_path),
+            },
+        )
+
+        # Commit so the task can see the Job row (critical for eager mode)
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.ingest_document,
+            args=[str(job.id), str(file_path)],
+            kwargs={"user_id": str(user.id)},
+        )
+
+        await job_service.set_celery_task_id(job.id, result.id)
+
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Indexing queued for {request.filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+
+    except Exception as e:
+        logger.exception("Error queueing canvas index job")
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")

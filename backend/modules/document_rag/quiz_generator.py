@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from .config import rag_config
 from .retriever import DocumentRetriever
 from .llm_providers import BaseLLM, LLMFactory
+from backend.core.logger import quiz_logger
 
 logger = logging.getLogger(__name__)
 

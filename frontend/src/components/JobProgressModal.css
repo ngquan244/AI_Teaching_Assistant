@@ -1,0 +1,100 @@
+/* ── JobProgressModal styles ── */
+
+.job-progress-modal {
+  max-width: 460px;
+}
+
+.job-progress-modal .modal-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Progress bar track */
+.job-progress-track {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-secondary, #2a2a2a);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.job-progress-fill {
+  height: 100%;
+  background: var(--primary, #646cff);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.job-progress-fill.success {
+  background: var(--success, #22c55e);
+}
+
+.job-progress-fill.error {
+  background: var(--danger, #ef4444);
+}
+
+/* Info row under bar */
+.job-progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.job-progress-step {
+  color: var(--text-secondary, #a0a0a0);
+}
+
+.job-progress-pct {
+  color: var(--text-primary, #e0e0e0);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Queued warning */
+.job-queued-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #eab308;
+}
+
+/* Success inline */
+.job-success-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  color: var(--success, #22c55e);
+  font-size: 0.9rem;
+}
+
+/* Error details inside .modal-error (already defined globally) */
+.modal-error .error-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.modal-error .error-message {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  word-break: break-word;
+}
+
+/* Spinner animation (reuse if not already defined) */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}

@@ -38,6 +38,7 @@ from .rag_repository import (
 )
 from .llm_providers import BaseLLM, LLMFactory, LLMProvider
 from backend.database.models.rag_document import RAGSourceType
+from backend.core.logger import quiz_logger
 
 logger = logging.getLogger(__name__)
 
@@ -728,6 +729,7 @@ class RAGService:
             }
         
         logger.info(f"Generating quiz: topics={topic_list}, num_questions={num_questions}, difficulty={difficulty}")
+        quiz_logger.info(f"generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
         
         # Validate num_questions
         num_questions = max(1, min(30, num_questions))
@@ -752,14 +754,23 @@ class RAGService:
                             db_session, selected_documents, uuid.UUID(user_id),
                         )
                         target_hashes = [r.file_hash for r in rows]
+                        quiz_logger.info(f"DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
                     except Exception as e:
                         logger.warning(f"DB get_by_filenames failed in generate_quiz: {e}")
+                        quiz_logger.warning(f"DB get_by_filenames failed: {e}")
                         db_session.rollback()
-                # Merge with legacy
+                # Fallback to in-memory registry
                 if not target_hashes:
-                    for meta in self._collection_manager.registry.get_all(user_id=user_id):
+                    all_registry = self._collection_manager.registry.get_all(user_id=user_id)
+                    quiz_logger.info(f"DB returned 0 rows, falling back to registry ({len(all_registry)} entries): {[(m.filename, m.file_hash[:8]) for m in all_registry]}")
+                    for meta in all_registry:
                         if meta.filename in selected_documents:
                             target_hashes.append(meta.file_hash)
+                quiz_logger.info(f"Resolved {len(target_hashes)} hashes from {len(selected_documents)} selected_documents: {selected_documents} -> {[h[:8] for h in target_hashes]}")
+            else:
+                quiz_logger.warning(f"selected_documents is None/empty ({selected_documents!r}) — will query ALL collections!")
+            
+            n_resolved = len(target_hashes) if target_hashes is not None else 'all'
             
             # If multiple topics, use the new multi-topic method
             if len(topic_list) > 1:
@@ -784,6 +795,8 @@ class RAGService:
                     user_id=user_id
                 )
             
+            # Attach hash count for task-level summary logging
+            result["_resolved_hashes"] = n_resolved
             return result
             
         except Exception as e:
