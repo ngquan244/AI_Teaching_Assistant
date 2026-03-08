@@ -21,25 +21,26 @@ class BaseAPIException(HTTPException):
 class NotFoundException(BaseAPIException):
     """Resource not found"""
     
-    def __init__(self, resource: str, identifier: str = None):
-        detail = f"{resource} không tìm thấy"
-        if identifier:
-            detail = f"{resource} '{identifier}' không tìm thấy"
+    def __init__(self, detail: str = None, resource: str = None, identifier: str = None, error_code: str = "NOT_FOUND"):
+        if detail is None:
+            detail = f"{resource} không tìm thấy" if resource else "Không tìm thấy tài nguyên"
+            if identifier:
+                detail = f"{resource} '{identifier}' không tìm thấy"
         super().__init__(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=detail,
-            error_code="NOT_FOUND"
+            error_code=error_code
         )
 
 
 class UnauthorizedException(BaseAPIException):
     """Unauthorized access"""
     
-    def __init__(self, message: str = "Bạn không có quyền truy cập"):
+    def __init__(self, detail: str = "Bạn không có quyền truy cập", error_code: str = "UNAUTHORIZED"):
         super().__init__(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=message,
-            error_code="UNAUTHORIZED"
+            detail=detail,
+            error_code=error_code
         )
 
 
@@ -60,11 +61,11 @@ class ForbiddenException(BaseAPIException):
 class BadRequestException(BaseAPIException):
     """Bad request - invalid input"""
     
-    def __init__(self, message: str):
+    def __init__(self, detail: str, error_code: str = "BAD_REQUEST"):
         super().__init__(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=message,
-            error_code="BAD_REQUEST"
+            detail=detail,
+            error_code=error_code
         )
 
 

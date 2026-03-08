@@ -3,10 +3,8 @@
 Teaching Assistant Grader - Backend Module
 """
 
-from .config import settings, get_role, set_role
+from .core.config import settings
 
 __all__ = [
     "settings",
-    "get_role", 
-    "set_role",
 ]

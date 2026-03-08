@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { gradingApi } from '../api/grading';
 import { BarChart3, Play, FileSpreadsheet, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import PanelHelpButton from './PanelHelpButton';
 import type { GradingResponse, GradingResult } from '../types';
 
 const GradingPanel: React.FC = () => {
@@ -61,15 +62,18 @@ const GradingPanel: React.FC = () => {
 
   return (
     <div className="grading-panel">
-      <h2>
-        <BarChart3 size={24} />
-        Chấm điểm & Tổng hợp kết quả
-      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2>
+          <BarChart3 size={24} />
+          Chấm điểm & Tổng hợp kết quả
+        </h2>
+        <PanelHelpButton panelKey="grading" />
+      </div>
 
       {/* Execute Grading Section */}
       <div className="grading-section">
         <h3>Chấm điểm bài thi</h3>
-        <p>Chấm điểm các bài thi trong thư mục kaggle/Filled-temp/</p>
+        <p>Chấm điểm các bài thi đã upload</p>
         <button
           className="btn-primary btn-large"
           onClick={executeGrading}

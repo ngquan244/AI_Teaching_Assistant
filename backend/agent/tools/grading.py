@@ -11,9 +11,10 @@ from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 import pyodbc
 
-from .base import check_role, get_role, format_permission_error, logger
-from ...config import settings
+from .base import logger
+from ...core.config import settings
 from ...grader import create_processor, ExamProcessor
+from ...utils import get_user_upload_dir, get_user_result_path
 
 __all__ = ["GradingTool", "GradingInput", "get_grading_tool"]
 
@@ -26,27 +27,24 @@ class GradingInput(BaseModel):
     )
 
 
-# Global processor instance for singleton pattern
-_processor: Optional[ExamProcessor] = None
-
-
-def get_grader_processor() -> ExamProcessor:
+def _create_processor_for_user(user_id: Optional[str] = None) -> ExamProcessor:
     """
-    Get or create the exam processor singleton.
+    Create an ExamProcessor with per-user output path.
+    Falls back to legacy global path if no user_id.
+    """
+    kaggle_dir = settings.PROJECT_ROOT / "kaggle"
     
-    Returns:
-        ExamProcessor instance
-    """
-    global _processor
-    if _processor is None:
-        kaggle_dir = settings.PROJECT_ROOT / "kaggle"
-        _processor = create_processor(
-            template_path=str(kaggle_dir / "Template" / "temp.jpg"),
-            student_json_path=str(kaggle_dir / "Input Materials" / "student_coords.json"),
-            answer_json_path=str(kaggle_dir / "Input Materials" / "answer.json"),
-            output_path=str(settings.PROJECT_ROOT / "final_result.json")
-        )
-    return _processor
+    if user_id:
+        output_path = str(get_user_result_path(user_id))
+    else:
+        output_path = str(settings.PROJECT_ROOT / "final_result.json")
+    
+    return create_processor(
+        template_path=str(kaggle_dir / "Template" / "temp.jpg"),
+        student_json_path=str(kaggle_dir / "Input Materials" / "student_coords.json"),
+        answer_json_path=str(kaggle_dir / "Input Materials" / "answer.json"),
+        output_path=output_path
+    )
 
 
 class GradingTool(BaseTool):
@@ -86,6 +84,7 @@ class GradingTool(BaseTool):
     5. KHÔNG giải thích cách tính điểm
     """
     args_schema: Type[BaseModel] = GradingInput
+    user_id: Optional[str] = None
     
     def _run(self, notebook_name: str = "grading-timing-mark.ipynb") -> str:
         """
@@ -98,14 +97,6 @@ class GradingTool(BaseTool):
             JSON string with grading results or error
         """
         try:
-            # Check permission
-            if not check_role("teacher"):
-                return json.dumps(
-                    format_permission_error("teacher"),
-                    ensure_ascii=False, 
-                    indent=2
-                )
-
             # Update JSON from database
             try:
                 self._update_json_from_db()
@@ -118,20 +109,25 @@ class GradingTool(BaseTool):
 
             logger.info("Starting grading using Python module")
             
-            kaggle_dir = settings.PROJECT_ROOT / "kaggle"
-            filled_dir = kaggle_dir / "Filled-temp"
-            output_path = settings.PROJECT_ROOT / "final_result.json"
+            # Determine paths based on user context
+            if self.user_id:
+                filled_dir = get_user_upload_dir(self.user_id)
+                output_path = get_user_result_path(self.user_id)
+            else:
+                kaggle_dir = settings.PROJECT_ROOT / "kaggle"
+                filled_dir = kaggle_dir / "Filled-temp"
+                output_path = settings.PROJECT_ROOT / "final_result.json"
             
             # Check if images exist
             if not filled_dir.exists():
                 return json.dumps({
-                    "error": f"Thư mục Filled-temp không tồn tại: {filled_dir}",
-                    "hint": "Vui lòng upload ảnh bài thi vào thư mục Filled-temp/"
+                    "error": f"Thư mục upload không tồn tại: {filled_dir}",
+                    "hint": "Vui lòng upload ảnh bài thi trước khi chấm điểm"
                 }, ensure_ascii=False, indent=2)
             
             # Get or create processor
             try:
-                processor = get_grader_processor()
+                processor = _create_processor_for_user(self.user_id)
             except FileNotFoundError as e:
                 return json.dumps({
                     "error": f"Không thể khởi tạo processor: {str(e)}",
@@ -385,17 +381,20 @@ class GradingTool(BaseTool):
         conn.close()
 
 
-def get_grading_tool() -> GradingTool:
+def get_grading_tool(user_id: Optional[str] = None) -> GradingTool:
     """
     Factory function to create grading tool.
+    
+    Args:
+        user_id: Optional user ID for per-user workspace isolation
     
     Returns:
         GradingTool instance
     """
-    return GradingTool()
+    return GradingTool(user_id=user_id)
 
 
 # Alias for backward compatibility
-def get_notebook_tool() -> GradingTool:
+def get_notebook_tool(user_id: Optional[str] = None) -> GradingTool:
     """Alias for get_grading_tool for backward compatibility"""
-    return get_grading_tool()
+    return get_grading_tool(user_id=user_id)

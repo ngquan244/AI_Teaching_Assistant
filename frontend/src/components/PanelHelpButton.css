@@ -1,0 +1,27 @@
+/* ── PanelHelpButton ────────────────────────────────────────────────── */
+.panel-help-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  background: rgba(129, 140, 248, 0.18);
+  color: #a5b4fc;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.panel-help-btn:hover {
+  background: rgba(129, 140, 248, 0.30);
+  border-color: rgba(165, 180, 252, 0.65);
+  color: #c7d2fe;
+}
+
+.panel-help-btn:active {
+  transform: scale(0.95);
+}

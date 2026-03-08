@@ -63,7 +63,6 @@ logs/
 kaggle/Filled-temp/
 kaggle/Template/
 exports/
-quiz-gen/generated_quizzes/
 
 # === Testing ===
 .coverage
@@ -85,6 +84,8 @@ Desktop.ini
 # === Secrets ===
 .env
 .env.local
+.env.production
+!.env.production.example
 .env.*.local
 *.pem
 *.key
@@ -99,3 +100,18 @@ Desktop.ini
 .cache/
 test_output/
 output/
+docs/
+data/rag_uploads/
+data/chroma/
+data/canvas_downloads/
+data/canvas_rag_uploads/
+data/user_workspaces/
+final_result.json
+test_fresh.json
+test_result.json
+test_new.json
+backend/agent/test_agent_gating.py
+kaggle/output.ipynb
+tests/test_document_rag.py
+README_document_rag.md
+

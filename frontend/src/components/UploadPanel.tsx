@@ -1,14 +1,12 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, lazy, Suspense } from 'react';
 import { uploadApi } from '../api/upload';
-import { Upload, Image, FileText, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { Upload, ImageIcon, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import PanelHelpButton from './PanelHelpButton';
 
 const UploadPanel: React.FC = () => {
   const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [uploadingImages, setUploadingImages] = useState(false);
-  const [uploadingPdf, setUploadingPdf] = useState(false);
   const [imageResult, setImageResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [pdfResult, setPdfResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const handleImageDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -24,13 +22,6 @@ const UploadPanel: React.FC = () => {
       const files = Array.from(e.target.files);
       setImageFiles((prev) => [...prev, ...files]);
       setImageResult(null);
-    }
-  };
-
-  const handlePdfSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setPdfFile(e.target.files[0]);
-      setPdfResult(null);
     }
   };
 
@@ -53,145 +44,104 @@ const UploadPanel: React.FC = () => {
     }
   };
 
-  const uploadPdf = async () => {
-    if (!pdfFile) return;
-    
-    setUploadingPdf(true);
-    try {
-      const result = await uploadApi.uploadPdf(pdfFile);
-      setPdfResult({ success: result.success, message: result.message });
-      if (result.success) {
-        setPdfFile(null);
-      }
-    } catch (error) {
-      setPdfResult({ success: false, message: 'Lỗi khi upload PDF' });
-    } finally {
-      setUploadingPdf(false);
-    }
-  };
-
   const removeImage = (index: number) => {
     setImageFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
-    <div className="upload-panel">
-      <h2>Upload Files</h2>
+    <div style={{ maxWidth: 800, color: '#f8fafc' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+        <h2 style={{ fontSize: '1.5rem', margin: 0 }}>Upload Files</h2>
+        <PanelHelpButton panelKey="upload" />
+      </div>
 
-      {/* Image Upload Section */}
-      <div className="upload-section">
-        <h3>
-          <Image size={20} />
+      <div style={{ background: '#1e293b', border: '1px solid #475569', padding: '1.5rem', borderRadius: 12, marginBottom: '1.5rem' }}>
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.1rem', marginBottom: '0.5rem' }}>
+          <ImageIcon size={20} />
           Upload ảnh bài thi
         </h3>
-        <p className="upload-hint">Ảnh sẽ được lưu vào thư mục kaggle/Filled-temp/</p>
+        <p style={{ color: '#64748b', fontSize: '0.875rem', marginBottom: '1rem' }}>
+          Ảnh sẽ được lưu vào workspace riêng của bạn
+        </p>
 
         <div
-          className="drop-zone"
           onDrop={handleImageDrop}
           onDragOver={(e) => e.preventDefault()}
+          style={{
+            border: '2px dashed #6366f1',
+            borderRadius: 12,
+            padding: '2.5rem 2rem',
+            textAlign: 'center',
+            cursor: 'pointer',
+            position: 'relative',
+            background: 'rgba(99, 102, 241, 0.08)',
+          }}
         >
-          <Upload size={40} />
-          <p>Kéo thả ảnh vào đây hoặc click để chọn</p>
+          <Upload size={40} style={{ color: '#94a3b8' }} />
+          <p style={{ color: '#94a3b8', margin: 0 }}>Kéo thả ảnh vào đây hoặc click để chọn</p>
           <input
             type="file"
             accept="image/*"
             multiple
             onChange={handleImageSelect}
+            style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
           />
         </div>
 
         {imageFiles.length > 0 && (
-          <div className="file-list">
-            <h4>Đã chọn {imageFiles.length} ảnh:</h4>
-            <ul>
+          <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #334155' }}>
+            <h4 style={{ fontSize: '0.9rem', color: '#94a3b8', marginBottom: '0.75rem' }}>
+              Đã chọn {imageFiles.length} ảnh:
+            </h4>
+            <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
               {imageFiles.map((file, index) => (
-                <li key={index}>
+                <li key={index} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: '#1e293b', borderRadius: '0.5rem' }}>
                   <span>{file.name}</span>
-                  <button onClick={() => removeImage(index)}>
+                  <button onClick={() => removeImage(index)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '1rem' }}>
                     <XCircle size={16} />
                   </button>
                 </li>
               ))}
             </ul>
             <button
-              className="btn-primary"
               onClick={uploadImages}
               disabled={uploadingImages}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.75rem 1.5rem',
+                background: '#6366f1',
+                border: 'none',
+                borderRadius: 12,
+                color: 'white',
+                fontSize: '0.95rem',
+                fontWeight: 500,
+                cursor: uploadingImages ? 'not-allowed' : 'pointer',
+                opacity: uploadingImages ? 0.6 : 1,
+              }}
             >
               {uploadingImages ? (
-                <>
-                  <Loader2 className="spin" size={18} />
-                  Đang upload...
-                </>
+                <><Loader2 className="spin" size={18} /> Đang upload...</>
               ) : (
-                <>
-                  <Upload size={18} />
-                  Upload {imageFiles.length} ảnh
-                </>
+                <><Upload size={18} /> Upload {imageFiles.length} ảnh</>
               )}
             </button>
           </div>
         )}
 
         {imageResult && (
-          <div className={`result-message ${imageResult.success ? 'success' : 'error'}`}>
-            {imageResult.success ? <CheckCircle size={18} /> : <XCircle size={18} />}
-            {imageResult.message}
-          </div>
-        )}
-      </div>
-
-      {/* PDF Upload Section */}
-      <div className="upload-section">
-        <h3>
-          <FileText size={20} />
-          Upload PDF đề thi
-        </h3>
-        <p className="upload-hint">PDF sẽ được sử dụng để tạo quiz</p>
-
-        <div className="drop-zone">
-          <Upload size={40} />
-          <p>Chọn file PDF đề thi</p>
-          <input type="file" accept=".pdf" onChange={handlePdfSelect} />
-        </div>
-
-        {pdfFile && (
-          <div className="file-list">
-            <h4>Đã chọn:</h4>
-            <ul>
-              <li>
-                <FileText size={16} />
-                <span>{pdfFile.name}</span>
-                <button onClick={() => setPdfFile(null)}>
-                  <XCircle size={16} />
-                </button>
-              </li>
-            </ul>
-            <button
-              className="btn-primary"
-              onClick={uploadPdf}
-              disabled={uploadingPdf}
-            >
-              {uploadingPdf ? (
-                <>
-                  <Loader2 className="spin" size={18} />
-                  Đang upload...
-                </>
-              ) : (
-                <>
-                  <Upload size={18} />
-                  Upload PDF
-                </>
-              )}
-            </button>
-          </div>
-        )}
-
-        {pdfResult && (
-          <div className={`result-message ${pdfResult.success ? 'success' : 'error'}`}>
-            {pdfResult.success ? <CheckCircle size={18} /> : <XCircle size={18} />}
-            {pdfResult.message}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            padding: '0.875rem 1rem',
+            borderRadius: 12,
+            marginTop: '1rem',
+            background: imageResult.success ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+            color: imageResult.success ? '#22c55e' : '#ef4444',
+          }}>
+            {imageResult.success ? <CheckCircle size={18} /> : <XCircle size={18} />} {imageResult.message}
           </div>
         )}
       </div>

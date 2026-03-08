@@ -1,29 +1,17 @@
 import apiClient from './client';
-import type { ConfigResponse, Role } from '../types';
+import type { ConfigResponse } from '../types';
+
+export interface ProviderSwitchResponse {
+  success: boolean;
+  provider: string;
+  default_model: string;
+  available_models: string[];
+  message: string;
+}
 
 export const configApi = {
   getConfig: async (): Promise<ConfigResponse> => {
     const response = await apiClient.get<ConfigResponse>('/api/config/');
-    return response.data;
-  },
-
-  getRole: async (): Promise<{ role: string }> => {
-    const response = await apiClient.get('/api/config/role');
-    return response.data;
-  },
-
-  setRole: async (role: Role): Promise<{ success: boolean; role: string; message: string }> => {
-    const response = await apiClient.post('/api/config/role', { role });
-    return response.data;
-  },
-
-  switchRole: async (): Promise<{
-    success: boolean;
-    previous_role: string;
-    current_role: string;
-    message: string;
-  }> => {
-    const response = await apiClient.post('/api/config/switch-role');
     return response.data;
   },
 
@@ -41,6 +29,13 @@ export const configApi = {
     const response = await apiClient.post('/api/config/model', {
       model,
       max_iterations: maxIterations,
+    });
+    return response.data;
+  },
+
+  switchProvider: async (provider: string): Promise<ProviderSwitchResponse> => {
+    const response = await apiClient.post<ProviderSwitchResponse>('/api/config/provider', {
+      provider,
     });
     return response.data;
   },

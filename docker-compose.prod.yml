@@ -1,0 +1,250 @@
+# =============================================================================
+# Docker Compose Production Overrides
+# =============================================================================
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# First-time SSL setup:
+#   1. Set PRODUCTION_DOMAIN in .env
+#   2. Point DNS to your server
+#   3. Start with HTTP-only nginx first to get certs:
+#      cp docker/nginx/nginx.dev.conf docker/nginx/nginx.conf.tmp
+#      docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   4. Run certbot:
+#      docker-compose -f docker-compose.yml -f docker-compose.prod.yml \
+#        run --rm certbot certonly --webroot -w /var/www/certbot \
+#        -d ${PRODUCTION_DOMAIN} --agree-tos -m admin@${PRODUCTION_DOMAIN}
+#   5. Restore HTTPS nginx config and restart:
+#      docker-compose -f docker-compose.yml -f docker-compose.prod.yml restart nginx
+# =============================================================================
+
+services:
+  postgres:
+    # Don't expose ports directly in production (use internal network)
+    ports: []
+    
+    # Stricter resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '1'
+    
+    # Enhanced logging for production
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+
+  redis:
+    # Don't expose ports directly in production
+    ports: []
+    
+    # Production memory settings
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+
+  # ===========================================================================
+  # Nginx Reverse Proxy + TLS Termination
+  # ===========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: grader_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PRODUCTION_DOMAIN=${PRODUCTION_DOMAIN}
+    volumes:
+      # Nginx template — envsubst replaces ${PRODUCTION_DOMAIN} at startup
+      - ./docker/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      # Let's Encrypt certificates + webroot
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+      # Frontend production build (mount your built files here)
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - grader_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ===========================================================================
+  # Certbot — Let's Encrypt certificate management
+  # ===========================================================================
+  certbot:
+    image: certbot/certbot
+    container_name: grader_certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    # Only run on-demand: docker-compose run --rm certbot renew
+    profiles:
+      - ssl
+
+  # ===========================================================================
+  # FastAPI Backend Application
+  # ===========================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_backend
+    restart: unless-stopped
+    
+    environment:
+      - ENVIRONMENT=production
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_REFRESH_SECRET_KEY=${JWT_REFRESH_SECRET_KEY}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - CORS_ORIGINS=["https://${PRODUCTION_DOMAIN}"]
+      - SIGNUP_MODE=${SIGNUP_MODE:-invite}
+      - SIGNUP_INVITE_CODE=${SIGNUP_INVITE_CODE}
+      - INVITE_SECRET=${INVITE_SECRET}
+      - LLM_PROVIDER=groq
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_FALLBACK_TO_OLLAMA=false
+      - RUN_MIGRATIONS=true
+    
+    # Backend is NOT exposed externally — nginx proxies to it
+    ports: []
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    
+    networks:
+      - grader_network
+
+  # ===========================================================================
+  # Celery Workers — Production overrides
+  # ===========================================================================
+  worker-rag:
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - LLM_PROVIDER=groq
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_FALLBACK_TO_OLLAMA=false
+
+  worker-llm:
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - LLM_PROVIDER=groq
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_FALLBACK_TO_OLLAMA=false
+      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10}
+
+  worker-canvas:
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - LLM_PROVIDER=groq
+      - GROQ_FALLBACK_TO_OLLAMA=false
+      - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50}
+
+  worker-misc:
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - LLM_PROVIDER=groq
+      - GROQ_FALLBACK_TO_OLLAMA=false
+
+  # Flower — internal only, access via SSH tunnel: ssh -L 5555:localhost:5555 root@VPS
+  flower:
+    command: celery -A backend.celery_app flower --port=5555 --broker=redis://:${REDIS_PASSWORD}@redis:6379/0
+    ports: []
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD}
+
+  # ===========================================================================
+  # Frontend Build — one-shot service to produce frontend/dist
+  # ===========================================================================
+  frontend-build:
+    image: node:20-alpine
+    container_name: grader_frontend_build
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm ci && npm run build"
+    profiles:
+      - build
+
+volumes:
+  certbot_certs:
+    driver: local
+    name: grader_certbot_certs
+  certbot_webroot:
+    driver: local
+    name: grader_certbot_webroot

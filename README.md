@@ -66,45 +66,6 @@ npm run dev
 - **API Docs**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
-##  Project Structure
-
-```
-Grader/
-├── backend/                 # FastAPI Backend
-│   ├── main.py              # Application entry point
-│   ├── config.py            # Settings and configuration
-│   ├── schemas.py           # Pydantic models
-│   ├── core/                # Core utilities
-│   │   ├── constants.py     # Enums and constants
-│   │   └── exceptions.py    # Custom exceptions
-│   ├── services/            # Business logic layer
-│   │   ├── agent_service.py
-│   │   ├── quiz_service.py
-│   │   ├── file_service.py
-│   │   └── grading_service.py
-│   ├── routes/              # API endpoints
-│   │   ├── chat.py
-│   │   ├── upload.py
-│   │   ├── quiz.py
-│   │   ├── grading.py
-│   │   └── config.py
-│   └── utils/               # Helper functions
-│       └── helpers.py
-├── frontend/                # React Frontend
-│   ├── src/
-│   │   ├── App.tsx
-│   │   ├── api/             # API client
-│   │   ├── components/      # React components
-│   │   ├── context/         # React context
-│   │   └── types/           # TypeScript types
-│   └── package.json
-├── src/                     # Core AI modules
-│   ├── agent_graph.py       # LangGraph agent
-│   ├── tools.py             # Agent tools
-│   └── notebook_tool.py     # Notebook execution
-├── quiz-gen/                # Quiz generation module
-├── kaggle/                  # Grading notebooks
-└── requirements.txt
 ```
 
 ##  API Endpoints

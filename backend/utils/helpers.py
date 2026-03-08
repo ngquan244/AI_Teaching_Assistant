@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Union
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -119,3 +120,102 @@ def evaluate_score(score: float) -> str:
     elif score >= ScoreThresholds.PASS:
         return ScoreEvaluation.PASS.value
     return ScoreEvaluation.FAIL.value
+
+
+# =============================================================================
+# Per-user workspace helpers
+# =============================================================================
+
+def get_user_upload_dir(user_id: Union[str, UUID]) -> Path:
+    """
+    Get and ensure the per-user upload directory exists.
+    
+    Args:
+        user_id: User UUID (str or UUID)
+        
+    Returns:
+        Path to the user's filled images directory
+    """
+    from backend.core.config import settings
+    path = settings.get_user_filled_dir(str(user_id))
+    return ensure_directory(path)
+
+
+def get_user_result_path(user_id: Union[str, UUID]) -> Path:
+    """
+    Get the per-user grading result JSON file path.
+    Ensures the parent directory exists.
+    
+    Args:
+        user_id: User UUID (str or UUID)
+        
+    Returns:
+        Path to the user's result.json
+    """
+    from backend.core.config import settings
+    path = settings.get_user_result_file(str(user_id))
+    ensure_directory(path.parent)
+    return path
+
+
+def get_user_rag_dir(user_id: Union[str, UUID]) -> Path:
+    """
+    Get and ensure the per-user RAG upload directory exists.
+
+    Args:
+        user_id: User UUID (str or UUID)
+
+    Returns:
+        Path to the user's RAG upload directory
+    """
+    from backend.core.config import settings
+    path = settings.get_user_rag_upload_dir(str(user_id))
+    return ensure_directory(path)
+
+
+def get_user_canvas_rag_dir(user_id: Union[str, UUID]) -> Path:
+    """
+    Get and ensure the per-user Canvas RAG directory exists.
+
+    Args:
+        user_id: User UUID (str or UUID)
+
+    Returns:
+        Path to the user's Canvas RAG directory
+    """
+    from backend.core.config import settings
+    path = settings.get_user_canvas_rag_dir(str(user_id))
+    return ensure_directory(path)
+
+
+def cleanup_user_workspace(user_id: Union[str, UUID]) -> int:
+    """
+    Delete all files in a user's workspace (filled + results).
+    
+    Args:
+        user_id: User UUID (str or UUID)
+        
+    Returns:
+        Total number of files deleted
+    """
+    from backend.core.config import settings
+    count = 0
+    workspace = settings.USER_WORKSPACES_DIR / str(user_id)
+    if workspace.exists():
+        for item in workspace.rglob("*"):
+            if item.is_file():
+                item.unlink()
+                count += 1
+        # Remove empty directories
+        for item in sorted(workspace.rglob("*"), reverse=True):
+            if item.is_dir():
+                try:
+                    item.rmdir()
+                except OSError:
+                    pass
+        try:
+            workspace.rmdir()
+        except OSError:
+            pass
+    logger.info(f"Cleaned up workspace for user {user_id}: {count} files deleted")
+    return count

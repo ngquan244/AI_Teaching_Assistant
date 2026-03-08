@@ -1,0 +1,8 @@
+{
+  "tools": {
+    "execute_notebook": false,
+    "summarize_exam_results": false,
+    "document_query": false,
+    "user_guide": true
+  }
+}

@@ -10,51 +10,41 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
+from backend.auth.dependencies import CurrentUser
 from backend.schemas import GradingRequest, GradingResponse, GradingResult, GradingSummary
 from backend.services import grading_service
-from backend.config import settings, get_role
-from backend.core import ForbiddenException, Role
+from backend.core.config import settings
 from backend.grader import create_processor, ExamProcessor
+from backend.utils import get_user_upload_dir, get_user_result_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Global processor instance (initialized lazily)
-_processor: Optional[ExamProcessor] = None
 
-
-def get_processor() -> ExamProcessor:
-    """Get or create the exam processor singleton"""
-    global _processor
-    if _processor is None:
-        kaggle_dir = settings.PROJECT_ROOT / "kaggle"
-        _processor = create_processor(
-            template_path=str(kaggle_dir / "Template" / "temp.jpg"),
-            student_json_path=str(kaggle_dir / "Input Materials" / "student_coords.json"),
-            answer_json_path=str(kaggle_dir / "Input Materials" / "answer.json"),
-            output_path=str(settings.PROJECT_ROOT / "final_result.json")
-        )
-    return _processor
-
-
-def require_teacher():
-    """Require teacher role for protected operations"""
-    role = get_role()
-    if (role or "").upper() != Role.TEACHER.value:
-        raise ForbiddenException(Role.TEACHER.value.lower(), role)
+def _create_processor_for_user(user_id: str) -> ExamProcessor:
+    """Create an ExamProcessor with per-user output path."""
+    kaggle_dir = settings.PROJECT_ROOT / "kaggle"
+    output_path = str(get_user_result_path(user_id))
+    return create_processor(
+        template_path=str(kaggle_dir / "Template" / "temp.jpg"),
+        student_json_path=str(kaggle_dir / "Input Materials" / "student_coords.json"),
+        answer_json_path=str(kaggle_dir / "Input Materials" / "answer.json"),
+        output_path=output_path
+    )
 
 
 @router.post("/execute")
-async def execute_grading():
-    """Execute grading on all images in Filled-temp folder"""
+async def execute_grading(user: CurrentUser):
+    """Execute grading on all images in user's upload folder"""
     try:
-        processor = get_processor()
-        kaggle_dir = settings.PROJECT_ROOT / "kaggle"
-        filled_dir = kaggle_dir / "Filled-temp"
+        user_id = str(user.id)
+        processor = _create_processor_for_user(user_id)
+        filled_dir = get_user_upload_dir(user_id)
+        output_path = str(get_user_result_path(user_id))
         
         summary = processor.process_and_save(
             filled_dir, 
-            str(settings.PROJECT_ROOT / "final_result.json")
+            output_path
         )
         
         return {
@@ -66,11 +56,11 @@ async def execute_grading():
         }
     except Exception as e:
         logger.exception("Grading execution failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
 
 
 @router.post("/grade-single")
-async def grade_single_image(file: UploadFile = File(...)):
+async def grade_single_image(user: CurrentUser, file: UploadFile = File(...)):
     """Grade a single uploaded exam image"""
     try:
         # Read image
@@ -81,8 +71,9 @@ async def grade_single_image(file: UploadFile = File(...)):
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image file")
         
-        # Process
-        processor = get_processor()
+        # Process with per-user processor
+        user_id = str(user.id)
+        processor = _create_processor_for_user(user_id)
         result = processor.process_image(img, file.filename or "uploaded")
         
         return {
@@ -93,13 +84,12 @@ async def grade_single_image(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.exception("Single image grading failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
 
 
 @router.post("/summary", response_model=GradingResponse)
-async def summarize_exam_results(request: GradingRequest):
+async def summarize_exam_results(request: GradingRequest, user: CurrentUser):
     """Summarize exam results by exam code"""
-    require_teacher()
     
     # Get results from database
     data = grading_service.get_results_by_exam_code(request.exam_code)
@@ -135,9 +125,9 @@ async def summarize_exam_results(request: GradingRequest):
 
 
 @router.get("/results")
-async def get_all_results():
-    """Get all grading results from JSON file"""
-    results = grading_service.get_results_from_json()
+async def get_all_results(user: CurrentUser):
+    """Get all grading results from user's JSON file"""
+    results = grading_service.get_results_from_json(user_id=str(user.id))
     
     if not results:
         return {

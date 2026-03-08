@@ -1,0 +1,99 @@
+"""
+Seed Admin User Script
+======================
+Creates the first ADMIN user in the database.
+Run: python -m backend.scripts.seed_admin
+"""
+import asyncio
+import secrets
+import string
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from backend.database import AsyncSessionLocal, User, UserRole, UserStatus
+from backend.core.security import hash_password
+from sqlalchemy import select
+
+
+DEFAULT_ADMIN_EMAIL = "admin@grader.local"
+DEFAULT_ADMIN_NAME = "System Admin"
+
+
+def _generate_secure_password(length: int = 16) -> str:
+    """Generate a cryptographically secure random password."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
+    # Ensure at least one of each required category
+    password = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%&*"),
+    ]
+    password += [secrets.choice(alphabet) for _ in range(length - 4)]
+    secrets.SystemRandom().shuffle(password)
+    return "".join(password)
+
+
+async def seed_admin(
+    email: str = DEFAULT_ADMIN_EMAIL,
+    name: str = DEFAULT_ADMIN_NAME,
+    password: str | None = None,
+):
+    """Create admin user if not exists."""
+    # Generate secure random password if none provided
+    if password is None:
+        password = _generate_secure_password()
+    async with AsyncSessionLocal() as db:
+        # Check if admin already exists
+        result = await db.execute(
+            select(User).where(User.email == email.lower().strip())
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            if existing.role == UserRole.ADMIN:
+                print(f"✓ Admin user already exists: {email}")
+                return
+            else:
+                # Promote to admin
+                existing.role = UserRole.ADMIN
+                await db.commit()
+                print(f"✓ User {email} promoted to ADMIN")
+                return
+
+        # Create new admin
+        admin = User(
+            email=email.lower().strip(),
+            name=name.strip(),
+            password_hash=hash_password(password),
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE,
+        )
+        db.add(admin)
+        await db.commit()
+
+        print(f"✓ Admin user created successfully!")
+        print(f"  Email:    {email}")
+        print(f"  Password: {password}")
+        print(f"  Role:     ADMIN")
+        print(f"\n  ⚠️  Change this password after first login!")
+
+
+async def main():
+    """Entry point with optional CLI args."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Seed admin user")
+    parser.add_argument("--email", default=DEFAULT_ADMIN_EMAIL, help="Admin email")
+    parser.add_argument("--name", default=DEFAULT_ADMIN_NAME, help="Admin name")
+    parser.add_argument("--password", default=None, help="Admin password (auto-generated if omitted)")
+    args = parser.parse_args()
+
+    await seed_admin(email=args.email, name=args.name, password=args.password)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

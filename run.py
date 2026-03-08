@@ -8,7 +8,7 @@ Usage:
 Examples:
     python run.py                    # Start with defaults
     python run.py --reload           # Start with auto-reload
-    python run.py --port 8080        # Start on custom port
+    python run.py --port 8000        # Start on custom port
 """
 import argparse
 import uvicorn
@@ -20,8 +20,8 @@ def main():
     )
     parser.add_argument(
         "--host", 
-        default="127.0.0.1", 
-        help="Host to bind (default: 127.0.0.1)"
+        default="0.0.0.0", 
+        help="Host to bind (default: 0.0.0.0)"
     )
     parser.add_argument(
         "--port", 

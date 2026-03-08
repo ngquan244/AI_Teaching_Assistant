@@ -14,8 +14,8 @@ from openpyxl.styles import Font
 import pyodbc
 import yagmail
 
-from .base import check_role, get_role, format_permission_error, logger
-from ...config import settings
+from .base import logger
+from ...core.config import settings
 
 __all__ = ["ExamResultSummaryTool", "ExamSummaryInput"]
 
@@ -70,14 +70,6 @@ class ExamResultSummaryTool(BaseTool):
             JSON string with summary data or error
         """
         try:
-            # Check permission
-            if not check_role("teacher"):
-                return json.dumps(
-                    format_permission_error("teacher"),
-                    ensure_ascii=False, 
-                    indent=2
-                )
-            
             logger.info(f"Summarizing results for exam_code={exam_code}")
 
             # Query database

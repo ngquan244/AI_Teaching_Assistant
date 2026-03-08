@@ -1,6 +1,14 @@
 export { default as Sidebar } from './Sidebar';
 export { default as ChatPanel } from './ChatPanel';
 export { default as UploadPanel } from './UploadPanel';
-export { default as QuizPanel } from './QuizPanel';
 export { default as GradingPanel } from './GradingPanel';
 export { default as SettingsPanel } from './SettingsPanel';
+export { default as DocumentRAGPanel } from './DocumentRAGPanel';
+export { default as CanvasFilesPanel } from './CanvasFilesPanel';
+export { default as QuizBuilderPanel } from './QuizBuilderPanel';
+export { default as CanvasCourseModal } from './CanvasCourseModal';
+export { default as CanvasImportModal } from './CanvasImportModal';
+export { default as GuidePanel } from './GuidePanel';
+export { default as CanvasSimulationPanel } from './CanvasSimulationPanel';
+export { default as CanvasResultsPanel } from './CanvasResultsPanel';
+export { default as UserMenu } from './UserMenu';

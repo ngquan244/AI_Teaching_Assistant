@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from backend.config import settings
+from backend.core.config import settings
 from backend.core import ForbiddenException, NotFoundException, DatabaseException
 from backend.utils import ensure_directory, evaluate_score
 
@@ -44,15 +44,16 @@ class GradingService:
     
     def __init__(self):
         self.exports_dir = settings.EXPORTS_DIR
-        self.results_file = settings.PROJECT_ROOT / "final_result.json"
         ensure_directory(self.exports_dir)
     
-    def get_results_from_json(self) -> List[Dict[str, Any]]:
-        """Get grading results from JSON file"""
-        if not self.results_file.exists():
+    def get_results_from_json(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get grading results from user's JSON file"""
+        from backend.utils import get_user_result_path
+        results_file = get_user_result_path(user_id)
+        if not results_file.exists():
             return []
         
-        with open(self.results_file, 'r', encoding='utf-8') as f:
+        with open(results_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     
     def get_results_by_exam_code(self, exam_code: str) -> Dict[str, Any]:

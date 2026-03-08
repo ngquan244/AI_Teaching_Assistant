@@ -1,17 +1,17 @@
-import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { configApi } from '../api/config';
-import type { Role, ConfigResponse, ChatMessage, ToolUsage } from '../types';
+import type { ConfigResponse, ChatMessage, ToolUsage } from '../types';
 
 interface AppContextType {
-  role: Role;
-  setRole: (role: Role) => Promise<void>;
-  switchRole: () => Promise<void>;
   config: ConfigResponse | null;
   loading: boolean;
   model: string;
   setModel: (model: string) => void;
   maxIterations: number;
   setMaxIterations: (n: number) => void;
+  // Provider switching
+  switchingProvider: boolean;
+  switchProvider: (provider: string) => Promise<void>;
   // Chat state - persisted across tab switches
   chatMessages: ChatMessage[];
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -23,11 +23,11 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [role, setRoleState] = useState<Role>('STUDENT');
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [model, setModel] = useState('llama3.1:latest');
+  const [model, setModel] = useState('llama-3.3-70b-versatile');
   const [maxIterations, setMaxIterations] = useState(10);
+  const [switchingProvider, setSwitchingProvider] = useState(false);
   
   // Chat state - persisted across tab switches
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -46,7 +46,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const data = await configApi.getConfig();
       setConfig(data);
-      setRoleState(data.role as Role);
       setModel(data.default_model);
       setMaxIterations(data.max_iterations);
     } catch (error) {
@@ -56,38 +55,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const setRole = async (newRole: Role) => {
+  const switchProvider = useCallback(async (provider: string) => {
+    setSwitchingProvider(true);
     try {
-      await configApi.setRole(newRole);
-      setRoleState(newRole);
+      const res = await configApi.switchProvider(provider);
+      // Update config with new provider info
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              llm_provider: res.provider,
+              available_models: res.available_models,
+              default_model: res.default_model,
+            }
+          : prev
+      );
+      // Reset model to default for the new provider
+      setModel(res.default_model);
     } catch (error) {
-      console.error('Failed to set role:', error);
+      console.error('Failed to switch provider:', error);
       throw error;
+    } finally {
+      setSwitchingProvider(false);
     }
-  };
-
-  const switchRole = async () => {
-    try {
-      const result = await configApi.switchRole();
-      setRoleState(result.current_role as Role);
-    } catch (error) {
-      console.error('Failed to switch role:', error);
-      throw error;
-    }
-  };
+  }, []);
 
   return (
     <AppContext.Provider
       value={{
-        role,
-        setRole,
-        switchRole,
         config,
         loading,
         model,
         setModel,
         maxIterations,
         setMaxIterations,
+        switchingProvider,
+        switchProvider,
         chatMessages,
         setChatMessages,
         chatToolsUsed,

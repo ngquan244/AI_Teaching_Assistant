@@ -1,16 +1,26 @@
 """
 ReAct Agent implementation using LangGraph
 With Router/Gating to prevent unnecessary tool calls
+Supports Ollama (local) and Groq (cloud) LLM providers
 """
 import json
+import logging
 import re
 from typing import TypedDict, Annotated, Sequence, Literal, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
 from .tools import get_all_tools
+from backend.services.tool_config_service import (
+    ALL_TOOLS as ALL_KNOWN_TOOLS,
+    TOOL_LABELS as TOOL_LABEL_MAP,
+    get_enabled_tools,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
@@ -60,16 +70,6 @@ class ReActAgent:
         re.IGNORECASE
     )
     
-    QUIZ_GEN_PATTERNS = re.compile(
-        r'(tạo\s*quiz|create\s*quiz|generate\s*quiz|làm\s*quiz|sinh\s*quiz|tạo\s*đề|tạo\s*bài\s*kiểm\s*tra)',
-        re.IGNORECASE
-    )
-    
-    CALCULATOR_PATTERNS = re.compile(
-        r'(\d+\s*[\+\-\*\/\%\^]\s*\d+|tính|calculate|compute)\s*[\d\+\-\*\/\(\)\.\s]+',
-        re.IGNORECASE
-    )
-    
     # Web search: "cập nhật/update" ONLY with news/online context
     WEB_SEARCH_PATTERNS = re.compile(
         r'(tin\s*tức|news|mới\s*nhất|latest|hôm\s*nay|today|tuần\s*này|this\s*week|search\s*online|tìm\s*trên\s*mạng|(cập\s*nhật|update).*(tin|news|mới|online|mạng)|(tin|news|mới|online|mạng).*(cập\s*nhật|update))',
@@ -82,39 +82,121 @@ class ReActAgent:
         re.IGNORECASE
     )
     
+    # Document RAG query patterns - asking about uploaded documents
+    DOCUMENT_QUERY_PATTERNS = re.compile(
+        r'(tóm\s*tắt|nội\s*dung|tài\s*liệu|document|upload).*(gì|nào|về|chính|chủ\s*đề)|'
+        r'(hỏi|hỏi\s*đáp|query|search|tìm).*(tài\s*liệu|document|pdf|file)|'
+        r'(tài\s*liệu|document|pdf|file).*(nói|viết|đề\s*cập|chứa|chương|phần)|'
+        r'(trong|theo)\s*(tài\s*liệu|document|pdf|file)|'
+        r'(summarize|tóm\s*tắt)\s*(tài\s*liệu|document|nội\s*dung|content)',
+        re.IGNORECASE
+    )
+    
+    # User guide / help patterns
+    GUIDE_PATTERNS = re.compile(
+        r'(hướng\s*dẫn|cách\s*(sử\s*dụng|dùng|dụng|upload|tải|chấm|tạo)|trợ\s*giúp|giúp\s*tôi|help\s*me|how\s*to|guide|tutorial|làm\s*sao|làm\s*thế\s*nào)',
+        re.IGNORECASE
+    )
+    
     def __init__(
         self,
         model_name: str = "llama3.1:latest",
         max_iterations: int = 10,
         temperature: float = 0.3,  
-        max_history: int = 5 
+        max_history: int = 5,
+        provider: str = "groq",
+        groq_api_key: Optional[str] = None,
+        groq_base_url: str = "https://api.groq.com/openai/v1",
+        ollama_base_url: str = "http://localhost:11434",
+        groq_fallback_to_ollama: bool = False,
+        ollama_fallback_model: str = "llama3.1:latest",
+        user_id: Optional[str] = None,
     ):
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.MAX_HISTORY = max_history
+        self.provider = provider.lower()
+        self.groq_fallback_to_ollama = groq_fallback_to_ollama
+        self.user_id = user_id
         
-        # Initialize LLM - TWO SEPARATE PATHS
-        # Path 1: Plain LLM without tools (for greetings, general knowledge, fallback)
-        self.llm_plain = ChatOllama(
-            model=model_name,
+        # Create LLM instances based on provider
+        self.llm_plain = self._create_llm(
+            provider=self.provider,
+            model_name=model_name,
             temperature=temperature,
+            groq_api_key=groq_api_key,
+            groq_base_url=groq_base_url,
+            ollama_base_url=ollama_base_url,
+            groq_fallback_to_ollama=groq_fallback_to_ollama,
+            ollama_fallback_model=ollama_fallback_model,
         )
         
-        # Path 2: LLM with tools bound (only for explicit tool requests)
-        self.llm = ChatOllama(
-            model=model_name,
+        self.llm = self._create_llm(
+            provider=self.provider,
+            model_name=model_name,
             temperature=temperature,
+            groq_api_key=groq_api_key,
+            groq_base_url=groq_base_url,
+            ollama_base_url=ollama_base_url,
+            groq_fallback_to_ollama=groq_fallback_to_ollama,
+            ollama_fallback_model=ollama_fallback_model,
         )
         
-        # Get tools
-        self.tools = get_all_tools()
+        # Get tools with per-user context
+        self.tools = get_all_tools(user_id=user_id)
         
         # Bind tools to LLM - ONLY used in allow_tools path
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         
         # Build graph
         self.graph = self._build_graph()
+    
+    @staticmethod
+    def _create_llm(
+        provider: str,
+        model_name: str,
+        temperature: float,
+        groq_api_key: Optional[str] = None,
+        groq_base_url: str = "https://api.groq.com/openai/v1",
+        ollama_base_url: str = "http://localhost:11434",
+        groq_fallback_to_ollama: bool = True,
+        ollama_fallback_model: str = "llama3.1:latest",
+    ) -> BaseChatModel:
+        """
+        Create LLM instance based on provider.
+        Supports 'ollama' (local) and 'groq' (cloud via OpenAI-compatible API).
+        """
+        if provider == "groq":
+            if not groq_api_key:
+                raise ValueError(
+                    "GROQ_API_KEY is required when using Groq provider. "
+                    "Set it in your .env file."
+                )
+            try:
+                from langchain_openai import ChatOpenAI
+            except ImportError:
+                raise ImportError(
+                    "langchain-openai is required for Groq provider. "
+                    "Install it with: pip install langchain-openai"
+                )
+            
+            logger.info(f"Creating Groq LLM: model={model_name}, base_url={groq_base_url}")
+            return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                api_key=groq_api_key,
+                base_url=groq_base_url,
+                max_tokens=4096,
+            )
+        else:
+            # Default: Ollama (local)
+            logger.info(f"Creating Ollama LLM: model={model_name}, base_url={ollama_base_url}")
+            return ChatOllama(
+                model=model_name,
+                temperature=temperature,
+                base_url=ollama_base_url,
+            )
     
     def _classify_input(self, user_input: str) -> str:
         """
@@ -146,9 +228,6 @@ class ReActAgent:
         
         # Short messages without explicit tool triggers -> no tools
         if char_count <= 15 or word_count <= 3:
-            # Unless it's a clear calculation
-            if self.CALCULATOR_PATTERNS.search(text):
-                return "allow_tools"
             return "no_tools"
         
         # Just mentioning "tool" or "tools" is NOT enough to trigger tools
@@ -160,17 +239,19 @@ class ReActAgent:
         if self.GRADE_EXAM_PATTERNS.search(text):
             return "allow_tools"
         
-        if self.QUIZ_GEN_PATTERNS.search(text):
-            return "allow_tools"
-        
-        if self.CALCULATOR_PATTERNS.search(text):
-            return "allow_tools"
-        
         if self.WEB_SEARCH_PATTERNS.search(text):
             return "allow_tools"
         
         # Report/summary patterns - may need tool if data exists
         if self.REPORT_PATTERNS.search(text):
+            return "allow_tools"
+        
+        # Document RAG query patterns
+        if self.DOCUMENT_QUERY_PATTERNS.search(text):
+            return "allow_tools"
+        
+        # User guide / help patterns
+        if self.GUIDE_PATTERNS.search(text):
             return "allow_tools"
         
         # 3. Default: answer with plain LLM (no tools)
@@ -195,32 +276,73 @@ Important:
 - If asked about data/results that you don't have, ask the user to provide the data or specify the file/source.
 """
         
+        # Build disabled tools notice
+        disabled_tools_notice = self._get_disabled_tools_notice()
+        
         if allow_tools:
             tool_descriptions = "\n".join([
                 f"- {tool.name}: {tool.description}"
                 for tool in self.tools
             ])
             
-            return base_prompt + f"""
+            # Build dynamic tool usage rules (only for enabled tools)
+            enabled_names = {t.name for t in self.tools}
+            tool_rules = []
+            if "execute_notebook" in enabled_names:
+                tool_rules.append('- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"')
+            if "web_search" in enabled_names:
+                tool_rules.append('- web_search → ONLY for current events, news, or up-to-date information')
+            if "document_query" in enabled_names:
+                tool_rules.append('- document_query → When user asks about uploaded documents content: "tóm tắt tài liệu", "tài liệu nói gì về...", "nội dung chính"')
+            if "user_guide" in enabled_names:
+                tool_rules.append('- user_guide → When user asks for help/guidance: "hướng dẫn", "cách sử dụng", "làm sao", "help". ALWAYS include the clickable link [Hướng dẫn](/guide) in your response so they can view the full guide.')
+            tool_rules_str = "\n".join(tool_rules)
+            
+            prompt = base_prompt + f"""
 You have access to the following tools:
 {tool_descriptions}
 
 Tool usage rules:
-- execute_notebook → ONLY when user explicitly asks to "grade exam", "check answers", "chấm bài", "chấm điểm"
-- quiz_generator → ONLY when user explicitly asks to "create quiz", "tạo quiz", "tạo đề"
-- calculator → ONLY for explicit numeric calculations (e.g., 123 * 456 + 789)
-- web_search → ONLY for current events, news, or up-to-date information
+{tool_rules_str}
 
 When using tools:
 - Extract and display full information from results
 - Format output clearly
 - If a tool returns an error, explain the issue and answer from your knowledge if possible
 """
+            if disabled_tools_notice:
+                prompt += disabled_tools_notice
+            return prompt
         else:
-            return base_prompt + """
+            no_tools_prompt = base_prompt + """
 Answer the user's question directly from your knowledge. Do NOT mention or try to use any tools.
 """
+            if disabled_tools_notice:
+                no_tools_prompt += disabled_tools_notice
+            return no_tools_prompt
     
+    def _get_disabled_tools_notice(self) -> str:
+        """Build a notice about admin-disabled tools so agent can inform users."""
+        try:
+            enabled = get_enabled_tools()
+            disabled = [t for t in ALL_KNOWN_TOOLS if t not in enabled]
+            if not disabled:
+                return ""
+            disabled_labels = [TOOL_LABEL_MAP.get(t, t) for t in disabled]
+            disabled_str = ", ".join(disabled_labels)
+            return f"""
+IMPORTANT — Disabled features:
+The following features have been TEMPORARILY DISABLED by the administrator: {disabled_str}.
+If a user asks about EXACTLY one of these disabled features listed above, politely inform them:
+"Tính năng [tên tính năng] hiện đang tạm thời bị khóa bởi quản trị viên. Vui lòng liên hệ admin để được hỗ trợ."
+ONLY use this response for the EXACT features listed above. Do NOT apply this to any other request.
+For example, if a user asks about "tạo quiz" or quiz generation, that is NOT a disabled feature — it is available in the RAG Tài Liệu panel. Guide them there instead.
+Never pretend you can do something that is disabled. Be honest and helpful.
+"""
+        except Exception as e:
+            logger.warning("Could not build disabled tools notice: %s", e)
+            return ""
+
     def _summarize_history(self, history_messages: list[BaseMessage]) -> SystemMessage:
         """
         Summarize long history into a SystemMessage to reduce tool priming.
@@ -244,7 +366,7 @@ Answer the user's question directly from your knowledge. Do NOT mention or try t
                 try:
                     data = json.loads(content) if isinstance(content, str) else content
                     # Check if this was a successful tool call
-                    has_result = any(k in data for k in ("result", "results", "data", "output", "content", "quiz", "answer", "html_file"))
+                    has_result = any(k in data for k in ("result", "results", "data", "output", "content", "answer"))
                     is_ok = data.get("ok") is True or data.get("success") is True
                     is_fatal = data.get("fatal") is True or data.get("ok") is False
                     
@@ -258,7 +380,7 @@ Answer the user's question directly from your knowledge. Do NOT mention or try t
                 continue  # Don't add raw ToolMessage to summary
             
             # Remove tool names from content to reduce priming
-            cleaned = re.sub(r'\b(execute_notebook|quiz_generator|calculator|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\b(execute_notebook|web_search|tool|tools)\b', '[action]', content, flags=re.IGNORECASE)
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             summary_parts.append(f"{role}: {cleaned[:100]}...")  # Truncate long messages
         
@@ -357,7 +479,7 @@ Answer the user's question directly from your knowledge. Do NOT mention or try t
                     return "fallback_no_tools"
                 
                 # Case 3: Has result/data -> SUCCESS even with warnings
-                has_result = any(k in data for k in ("result", "results", "data", "output", "content", "quiz", "answer", "html_file"))
+                has_result = any(k in data for k in ("result", "results", "data", "output", "content", "answer"))
                 if has_result:
                     return "agent_with_tools"  # SUCCESS
                 
@@ -438,7 +560,17 @@ Answer the user's question directly from your knowledge. Do NOT mention or try t
         Deterministic response for meta questions about the model.
         Returns model info without calling LLM.
         """
-        meta_response = f"Tôi đang sử dụng mô hình {self.model_name} chạy local thông qua Ollama. Đây là một LLM (Large Language Model) được triển khai trên máy của bạn."
+        if self.provider == "groq":
+            meta_response = (
+                f"Tôi đang sử dụng mô hình {self.model_name} chạy trên Groq Cloud. "
+                f"Groq sử dụng LPU (Language Processing Unit) để inference cực nhanh. "
+                f"API endpoint: Groq OpenAI-compatible API."
+            )
+        else:
+            meta_response = (
+                f"Tôi đang sử dụng mô hình {self.model_name} chạy local thông qua Ollama. "
+                f"Đây là một LLM (Large Language Model) được triển khai trên máy của bạn."
+            )
         
         return {
             "messages": [AIMessage(content=meta_response)],
@@ -559,41 +691,10 @@ Context: {error_context[:200]}""")
     def _extract_text_from_content(self, content) -> str:
         """
         Extract plain text from dict/list/JSON string recursively,
-        ưu tiên 'text' hoặc 'content' nếu có, vẫn giữ logic file:/// HTML.
+        ưu tiên 'text' hoặc 'content' nếu có.
         """
-        import os
         import re
         import json
-
-        def html_link_from_path(path):
-            import os
-            if path.startswith("file://"):
-                return path
-
-            if os.path.isabs(path):
-                abs_path = path
-            else:
-                base_dir = "E:/WorkSpace/Agent/Teaching Assistant/Grader/"
-                abs_path = os.path.abspath(os.path.join(base_dir, path))
-
-            abs_path = abs_path.replace("\\", "/")
-            if not abs_path.startswith("/"):
-                abs_path = "/" + abs_path
-            return f"file://{abs_path}"
-
-        def extract_all_html_files(obj):
-            html_files = set()
-            if isinstance(obj, dict):
-                for v in obj.values():
-                    html_files.update(extract_all_html_files(v))
-            elif isinstance(obj, list):
-                for item in obj:
-                    html_files.update(extract_all_html_files(item))
-            elif isinstance(obj, str) and ".html" in obj:
-                matches = re.findall(r"([\w\-./\\]+\.html)", obj)
-                for m in matches:
-                    html_files.add(m.strip())
-            return html_files
 
         def extract_text_recursive(obj):
             if isinstance(obj, dict):
@@ -621,12 +722,7 @@ Context: {error_context[:200]}""")
 
             return str(obj)
 
-        result_text = extract_text_recursive(content)
-        html_files = extract_all_html_files(content)
-        html_file = max(html_files, key=lambda x: len(x), default=None)
-        if html_file:
-            return f"{result_text}\n[Link quiz: {html_link_from_path(html_file)}]"
-        return result_text
+        return extract_text_recursive(content)
 
     
     def invoke(self, user_input: str, history: list[dict] = None) -> dict:
@@ -782,6 +878,26 @@ Context: {error_context[:200]}""")
             yield output
 
 
-def create_agent(model: str = "llama3.1:latest", max_iterations: int = 10) -> ReActAgent:
-    """Factory function để tạo agent"""
-    return ReActAgent(model_name=model, max_iterations=max_iterations)
+def create_agent(
+    model: str = "llama3.1:latest",
+    max_iterations: int = 10,
+    provider: str = "groq",
+    groq_api_key: Optional[str] = None,
+    groq_base_url: str = "https://api.groq.com/openai/v1",
+    ollama_base_url: str = "http://localhost:11434",
+    groq_fallback_to_ollama: bool = False,
+    ollama_fallback_model: str = "llama3.1:latest",
+    user_id: Optional[str] = None,
+) -> ReActAgent:
+    """Factory function to create agent with provider-aware LLM"""
+    return ReActAgent(
+        model_name=model,
+        max_iterations=max_iterations,
+        provider=provider,
+        groq_api_key=groq_api_key,
+        groq_base_url=groq_base_url,
+        ollama_base_url=ollama_base_url,
+        groq_fallback_to_ollama=groq_fallback_to_ollama,
+        ollama_fallback_model=ollama_fallback_model,
+        user_id=user_id,
+    )

@@ -1,0 +1,12 @@
+{
+  "chat": false,
+  "upload": false,
+  "grading": false,
+  "document_rag": true,
+  "canvas": true,
+  "canvas_quiz": true,
+  "canvas_simulation": false,
+  "canvas_results": false,
+  "guide": true,
+  "settings": true
+}
