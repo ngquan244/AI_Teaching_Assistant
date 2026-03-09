@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Grader — VPS Deployment Script (Hetzner CX33 / Ubuntu 24.04)
+# Grader — VPS Deployment Script (Hetzner / GCP Compute Engine / Ubuntu 24.04)
 # =============================================================================
 # Usage:
-#   1. Create VPS on Hetzner Cloud (CX33, Ubuntu 24.04)
-#   2. SSH in: ssh root@YOUR_VPS_IP
+#   1. Create a VPS (Hetzner) or VM (GCP Compute Engine) with Ubuntu 24.04
+#   2. SSH in: ssh root@YOUR_SERVER_IP
 #   3. Run:    bash deploy.sh
 #
 #   On subsequent deployments (updates):
 #              bash deploy.sh update
+#
+# Provider detection:
+#   - Auto-detects GCP via metadata server; defaults to Hetzner otherwise.
+#   - Override: DEPLOY_PROVIDER=gcp bash deploy.sh
+#   - Or set DEPLOY_PROVIDER in .env
 # =============================================================================
 
 set -euo pipefail
@@ -22,6 +27,19 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROVIDER DETECTION
+# ─────────────────────────────────────────────────────────────────────────────
+PROVIDER="${DEPLOY_PROVIDER:-auto}"
+if [ "$PROVIDER" = "auto" ]; then
+    if curl -sf -m 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/ > /dev/null 2>&1; then
+        PROVIDER="gcp"
+    else
+        PROVIDER="hetzner"
+    fi
+fi
+info "Provider detected: $PROVIDER"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UPDATE MODE — pull latest code and restart
@@ -117,12 +135,18 @@ docker version >/dev/null 2>&1 || error "Docker is not working"
 docker compose version >/dev/null 2>&1 || error "Docker Compose is not working"
 info "Docker verified: $(docker --version)"
 
-info "Configuring firewall (UFW)..."
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-info "Firewall configured: SSH + HTTP + HTTPS only."
+# Firewall — provider-specific
+if [ "$PROVIDER" = "hetzner" ]; then
+    info "Configuring firewall (UFW)..."
+    ufw allow OpenSSH
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw --force enable
+    info "Firewall configured: SSH + HTTP + HTTPS only."
+else
+    info "GCP: Firewall managed via VPC firewall rules (skipping UFW)."
+    info "Ensure GCP firewall allows TCP 22, 80, 443 for this VM."
+fi
 
 # SSH hardening
 info "Hardening SSH..."
@@ -145,7 +169,7 @@ if ! command -v fail2ban-client &> /dev/null; then
     systemctl start fail2ban
 fi
 
-# Swap (2GB — helpful for 8GB VPS)
+# Swap (2GB — helpful for VPS/VM with limited RAM, works on both Hetzner and GCE)
 if [ ! -f /swapfile ]; then
     info "Creating 2GB swap..."
     fallocate -l 2G /swapfile
@@ -307,8 +331,9 @@ warn "Note: DB backup covers PostgreSQL only. data/ (uploads, ChromaDB, workspac
 echo ""
 info "================================================================"
 info "  Deployment complete!"
-info "  URL:     https://${PRODUCTION_DOMAIN}"
-info "  Flower:  ssh -L 5555:localhost:5555 root@VPS, then http://localhost:5555"
+info "  Provider: $PROVIDER"
+info "  URL:      https://${PRODUCTION_DOMAIN}"
+info "  Flower:   ssh -L 5555:localhost:5555 root@SERVER, then http://localhost:5555"
 info "================================================================"
 info ""
 info "  Useful commands:"
