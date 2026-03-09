@@ -1730,6 +1730,116 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
         .qb-settings::-webkit-scrollbar-thumb:hover {
           background: rgba(56, 189, 248, 0.35);
         }
+
+        /* ===== Responsive: Tablet ===== */
+        @media (max-width: 768px) {
+          .qb-header {
+            padding: 14px 16px;
+            gap: 12px;
+          }
+          .qb-header-icon {
+            width: 40px; height: 40px;
+            border-radius: 12px;
+          }
+          .qb-header-icon::before { display: none; }
+          .qb-header h2 { font-size: 1.1rem; }
+          .qb-subtitle { font-size: 0.8rem; }
+          .qb-header-badge { font-size: 0.65rem; padding: 3px 8px; }
+
+          .qb-body {
+            flex-direction: column;
+          }
+          .qb-settings {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            border-right: none;
+            border-bottom: 1px solid rgba(56, 189, 248, 0.12);
+            max-height: 45vh;
+            padding: 14px 16px;
+          }
+          .qb-questions {
+            flex: 1;
+            min-height: 200px;
+          }
+          .qb-questions-header {
+            padding: 12px 16px 8px;
+          }
+
+          .qb-options-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .qb-result-card {
+            flex-wrap: wrap;
+            gap: 10px;
+          }
+          .qb-result-content { min-width: 0; }
+          .qb-result-desc { white-space: normal; }
+          .qb-btn-canvas-link { width: 100%; justify-content: center; }
+
+          .qb-footer {
+            padding: 10px 16px;
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .qb-footer-info { min-width: 0; }
+          .qb-footer-course { font-size: 0.75rem; }
+          .qb-footer-stats { font-size: 0.7rem; }
+
+          .qb-course-row { flex-wrap: wrap; }
+
+          .qb-question-detail { padding: 4px 14px 14px 14px; }
+
+          .qb-edit-mode { padding: 10px 14px 16px 14px; }
+
+          .qb-question-list { padding: 4px 16px 14px; }
+        }
+
+        /* ===== Responsive: Small Mobile ===== */
+        @media (max-width: 480px) {
+          .qb-header { padding: 12px 14px; gap: 10px; }
+          .qb-header-icon { width: 36px; height: 36px; border-radius: 10px; }
+          .qb-header h2 { font-size: 1rem; }
+          .qb-subtitle { display: none; }
+
+          .qb-settings {
+            max-height: 40vh;
+            padding: 12px 14px;
+          }
+          .qb-section { padding: 10px 0; }
+          .qb-section-title { font-size: 0.7rem; margin-bottom: 8px; }
+          .qb-label-text { font-size: 0.74rem; }
+
+          .qb-toggle-info { font-size: 0.76rem; gap: 6px; }
+          .qb-switch { width: 32px; height: 18px; }
+          .qb-switch-thumb { width: 14px; height: 14px; }
+          .qb-switch.on .qb-switch-thumb { transform: translateX(14px); }
+
+          .qb-footer {
+            padding: 10px 14px;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+          }
+          .qb-btn-create {
+            width: 100%;
+            justify-content: center;
+            padding: 10px 16px;
+          }
+
+          .qb-question-row { padding: 8px 12px; gap: 8px; }
+          .qb-q-number { width: 24px; height: 24px; font-size: 0.7rem; border-radius: 6px; }
+          .qb-q-text { font-size: 0.8rem; }
+
+          .qb-questions-header { padding: 10px 14px 6px; }
+          .qb-questions-header h3 { font-size: 0.82rem; }
+          .qb-question-list { padding: 4px 14px 12px; }
+
+          .qb-edit-textarea { min-height: 50px; font-size: 0.8rem; }
+          .qb-edit-actions { flex-wrap: wrap; }
+          .qb-btn-save { width: 100%; justify-content: center; }
+        }
       `}</style>
     </div>
   );

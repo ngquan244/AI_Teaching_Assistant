@@ -5420,6 +5420,229 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           gap: 8px;
           margin-bottom: 12px;
         }
+
+        /* ===== Responsive: Tablet ===== */
+        @media (max-width: 768px) {
+          .topic-modal,
+          .quiz-modal,
+          .edit-topics-modal {
+            max-width: 95%;
+            max-height: 90vh;
+            margin: 0.5rem;
+            border-radius: 14px;
+          }
+
+          .modal-header,
+          .quiz-modal-header {
+            padding: 14px 16px;
+          }
+          .modal-header h3,
+          .quiz-modal-header h3 {
+            font-size: 1rem;
+          }
+          .modal-close {
+            padding: 0 10px;
+            height: 36px;
+            min-width: 70px;
+            font-size: 0.82rem;
+          }
+
+          .topic-source-selector {
+            padding: 12px 16px;
+            gap: 6px;
+          }
+          .source-tab {
+            padding: 10px 12px;
+            font-size: 0.82rem;
+          }
+
+          .modal-body,
+          .quiz-modal-body {
+            padding: 14px 16px;
+          }
+
+          .modal-footer,
+          .quiz-modal-footer {
+            padding: 12px 16px;
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .modal-footer .btn,
+          .quiz-modal-footer .btn {
+            padding: 8px 16px;
+            font-size: 0.84rem;
+            flex: 1;
+            justify-content: center;
+            min-width: 0;
+          }
+
+          .modal-doc-header {
+            padding: 12px 14px;
+            gap: 10px;
+          }
+          .modal-doc-info { gap: 10px; }
+          .modal-doc-name { font-size: 0.85rem; }
+
+          .modal-topic-tag {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+          }
+
+          .quiz-modal .quiz-question {
+            padding: 14px;
+          }
+          .quiz-modal .question-text { font-size: 0.9rem; }
+          .quiz-modal .option-label {
+            padding: 8px 12px;
+          }
+          .quiz-modal .edit-option {
+            flex-wrap: wrap;
+            gap: 6px;
+          }
+
+          .quiz-preview-card {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 12px;
+          }
+          .quiz-preview-actions {
+            width: 100%;
+            flex-wrap: wrap;
+          }
+          .quiz-preview-actions .btn {
+            flex: 1;
+            justify-content: center;
+          }
+          .quiz-preview-meta {
+            max-width: 100%;
+          }
+
+          .edit-topics-modal .modal-body {
+            padding: 14px 16px;
+          }
+          .add-topic-input-group {
+            flex-direction: column;
+          }
+          .btn-add-topic {
+            padding: 10px 20px;
+            justify-content: center;
+          }
+          .topic-edit-item {
+            padding: 10px 12px;
+            gap: 8px;
+          }
+          .topic-actions {
+            flex-wrap: wrap;
+          }
+          .topic-edit-inline {
+            flex-wrap: wrap;
+          }
+        }
+
+        /* ===== Responsive: Small Mobile ===== */
+        @media (max-width: 480px) {
+          .topic-modal,
+          .quiz-modal,
+          .edit-topics-modal {
+            max-width: 100%;
+            max-height: 95vh;
+            margin: 0;
+            border-radius: 12px 12px 0 0;
+          }
+
+          .modal-header,
+          .quiz-modal-header {
+            padding: 12px 14px;
+          }
+          .modal-header h3,
+          .quiz-modal-header h3 {
+            font-size: 0.92rem;
+            gap: 8px;
+          }
+          .modal-close span { display: none; }
+          .modal-close {
+            min-width: 36px;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            border-radius: 10px;
+          }
+
+          .quiz-modal-header-info { gap: 6px; }
+          .quiz-count { font-size: 0.72rem; padding: 3px 8px; }
+
+          .topic-source-selector {
+            flex-direction: column;
+            padding: 10px 14px;
+          }
+          .source-tab {
+            padding: 10px;
+            font-size: 0.8rem;
+          }
+
+          .modal-body,
+          .quiz-modal-body {
+            padding: 12px 14px;
+          }
+          .modal-empty-state { padding: 32px 16px; }
+          .modal-selected-summary {
+            padding: 10px 12px;
+            font-size: 0.82rem;
+          }
+
+          .modal-footer,
+          .quiz-modal-footer {
+            padding: 10px 14px;
+            flex-direction: column;
+          }
+          .modal-footer .btn,
+          .quiz-modal-footer .btn {
+            width: 100%;
+            justify-content: center;
+          }
+
+          .modal-doc-header {
+            padding: 10px 12px;
+            gap: 8px;
+          }
+          .modal-doc-topics { padding: 12px; }
+          .modal-topics-grid { gap: 6px; }
+          .modal-topic-tag {
+            padding: 6px 10px;
+            font-size: 0.78rem;
+          }
+
+          .quiz-modal .quiz-question { padding: 12px; border-radius: 10px; }
+          .quiz-modal .question-header { margin-bottom: 8px; }
+          .quiz-modal .question-text { font-size: 0.85rem; }
+          .quiz-modal .option-label { padding: 8px 10px; font-size: 0.84rem; }
+          .quiz-modal .question-explanation { padding: 10px; font-size: 0.8rem; }
+
+          .quiz-preview-card { padding: 12px 14px; }
+          .quiz-preview-title { font-size: 0.88rem; }
+
+          .topic-edit-item {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+          }
+          .topic-number { align-self: flex-start; }
+          .topic-actions {
+            justify-content: flex-end;
+          }
+          .topic-edit-inline {
+            flex-direction: column;
+            gap: 6px;
+          }
+          .btn-save-edit,
+          .btn-cancel-edit {
+            flex: 1;
+          }
+          .no-topics-message {
+            padding: 24px 16px;
+            font-size: 0.82rem;
+          }
+        }
       `}</style>
 
       {/* Quiz generation progress modal */}
