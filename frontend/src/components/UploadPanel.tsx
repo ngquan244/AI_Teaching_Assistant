@@ -1,4 +1,4 @@
-import React, { useState, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useCallback } from 'react';
 import { uploadApi } from '../api/upload';
 import { Upload, ImageIcon, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';

@@ -20,6 +20,8 @@ from backend.services.canvas_service import (
     list_quizzes,
     list_quiz_questions,
     build_full_quiz,
+    list_question_banks,
+    list_bank_questions,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,41 @@ async def get_quiz_questions(
     """List all questions in an existing quiz (paginated)."""
     token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
     result = await list_quiz_questions(token, base_url, course_id, quiz_id)
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error", "Failed"))
+    return result
+
+
+# ============================================================================
+# Question Banks
+# ============================================================================
+
+@router.get("/courses/{course_id}/question-banks")
+async def get_question_banks(
+    course_id: int,
+    user: CurrentUser,
+    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
+    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
+):
+    """List assessment question banks for a course."""
+    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    result = await list_question_banks(token, base_url, course_id)
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error", "Failed"))
+    return result
+
+
+@router.get("/courses/{course_id}/question-banks/{bank_id}/questions")
+async def get_bank_questions(
+    course_id: int,
+    bank_id: int,
+    user: CurrentUser,
+    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
+    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
+):
+    """List questions in an assessment question bank."""
+    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    result = await list_bank_questions(token, base_url, course_id, bank_id)
     if not result["success"]:
         raise HTTPException(status_code=502, detail=result.get("error", "Failed"))
     return result

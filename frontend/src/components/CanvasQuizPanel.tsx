@@ -334,6 +334,8 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
       const res = await canvasQuizApi.createFullQuiz({
         course_id: selectedCourseId,
         quiz: quizParams,
+        direct_questions: [],
+        source_questions: [],
         bank_questions: bankQs,
         question_groups: groups,
         default_points: defaultPoints,

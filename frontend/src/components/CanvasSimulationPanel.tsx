@@ -401,7 +401,7 @@ const CanvasSimulationPanel: React.FC = () => {
                       </div>
                       <div className="csim-precheck-row">
                         <span>Loại quiz:</span>
-                        <span>{{ assignment: 'Bài kiểm tra', practice_quiz: 'Bài luyện tập', graded_survey: 'Khảo sát có điểm', survey: 'Khảo sát' }[preCheck.quiz_type] || preCheck.quiz_type}</span>
+                        <span>{{ assignment: 'Bài kiểm tra', practice_quiz: 'Bài luyện tập', graded_survey: 'Khảo sát có điểm', survey: 'Khảo sát' }[preCheck.quiz_type ?? ''] || preCheck.quiz_type}</span>
                       </div>
                       <div className="csim-precheck-row">
                         <span>Số lần được làm:</span>
@@ -663,7 +663,7 @@ const CanvasSimulationPanel: React.FC = () => {
                       <tbody>
                         {history.map((r) => (
                           <tr key={r.id}>
-                            <td>{{ quiz_id: r.quiz_title || `Quiz #${r.quiz_id}` }['quiz_id']}</td>
+                            <td>{r.quiz_title || `Quiz #${r.quiz_id}`}</td>
                             <td>{r.attempt_number ?? '—'}</td>
                             <td>
                               {r.score != null ? (

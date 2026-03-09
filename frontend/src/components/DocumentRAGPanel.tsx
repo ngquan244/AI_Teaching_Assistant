@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   FileText,
   Upload,
-  Search,
   Database,
   Trash2,
   RefreshCw,
@@ -12,7 +11,6 @@ import {
   ChevronDown,
   ChevronUp,
   FileIcon,
-  Server,
   Info,
   BookOpen,
   HelpCircle,
@@ -55,7 +53,6 @@ import {
   setLLMProvider,
   asyncUploadAndIndex,
   asyncGenerateQuiz,
-  type RAGSource,
   type RAGIndexStats,
   type RAGUploadedFile,
   type OllamaStatus,

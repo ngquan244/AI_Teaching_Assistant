@@ -66,7 +66,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
     : SIDEBAR_TABS.filter((tab) => isPanelVisible(tab.id));
 
   // Find current tab label for mobile header
-  const currentTabLabel = SIDEBAR_TABS.find(t => t.id === activeTab)?.label || 'TA Grader';
+  const currentTabLabel = SIDEBAR_TABS.find(t => t.id === activeTab)?.label || 'AI Teaching Assistant';
 
   return (
     <>
@@ -94,7 +94,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
       <div className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-header">
           <GraduationCap size={32} />
-          <h1>TA Grader</h1>
+          <h1>AI Teaching Assistant</h1>
           <button
             className="sidebar-close-btn"
             onClick={() => setMobileOpen(false)}

@@ -1096,6 +1096,79 @@ async def build_full_quiz(
 
 
 # ============================================================================
+# Canvas Assessment Question Banks
+# ============================================================================
+
+async def list_question_banks(token: str, base_url: str, course_id: int) -> dict:
+    """
+    List assessment question banks for a course.
+    GET /api/v1/courses/{course_id}/question_banks
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/question_banks"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(
+                url, headers=headers, params={"per_page": 50}
+            )
+            response.raise_for_status()
+            banks = response.json()
+            return {"success": True, "banks": banks}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Canvas API error listing question banks: {e}")
+            return {
+                "success": False,
+                "error": f"Canvas API error: {e.response.status_code}",
+                "banks": [],
+            }
+        except httpx.RequestError as e:
+            logger.error(f"Network error listing question banks: {e}")
+            return {
+                "success": False,
+                "error": "Network error connecting to Canvas",
+                "banks": [],
+            }
+
+
+async def list_bank_questions(
+    token: str, base_url: str, course_id: int, bank_id: int
+) -> dict:
+    """
+    List questions in an assessment question bank.
+    GET /api/v1/courses/{course_id}/question_banks/{bank_id}/questions
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/v1/courses/{course_id}"
+        f"/question_banks/{bank_id}/questions"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(
+                url, headers=headers, params={"per_page": 50}
+            )
+            response.raise_for_status()
+            questions = response.json()
+            return {"success": True, "questions": questions}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Canvas API error listing bank questions: {e}")
+            return {
+                "success": False,
+                "error": f"Canvas API error: {e.response.status_code}",
+                "questions": [],
+            }
+        except httpx.RequestError as e:
+            logger.error(f"Network error listing bank questions: {e}")
+            return {
+                "success": False,
+                "error": "Network error connecting to Canvas",
+                "questions": [],
+            }
+
+
+# ============================================================================
 # Canvas User, Enrollment, Quiz-Submission APIs  (Simulation + Results)
 # ============================================================================
 

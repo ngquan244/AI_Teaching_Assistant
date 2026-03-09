@@ -188,6 +188,8 @@ export interface CreateCanvasQuizRequest {
   direct_questions: DirectQuizQuestion[];
   source_questions: SourceQuizSelect[];
   default_points: number;
+  bank_questions?: BankQuestionSelect[];
+  question_groups?: QuestionGroupConfig[];
 }
 
 export interface CreateCanvasQuizResponse {
@@ -199,6 +201,36 @@ export interface CreateCanvasQuizResponse {
   groups_created?: number;
   message?: string;
   error?: string;
+}
+
+// ============================================================================
+// Canvas Assessment Question Bank Types
+// ============================================================================
+
+export interface AssessmentQuestionBank {
+  id: number;
+  title: string;
+  assessment_question_count?: number;
+}
+
+export interface AssessmentQuestion {
+  id: number;
+  question_name?: string;
+  question_text?: string;
+  question_type?: string;
+  points_possible?: number;
+}
+
+export interface BankQuestionSelect {
+  bank_id: number;
+  question_ids: number[];
+}
+
+export interface QuestionGroupConfig {
+  bank_id: number;
+  name: string;
+  pick_count: number;
+  question_points: number;
 }
 
 export interface ImportProgress {

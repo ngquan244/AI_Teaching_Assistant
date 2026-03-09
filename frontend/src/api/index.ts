@@ -1,6 +1,5 @@
 export { chatApi } from './chat';
 export { uploadApi } from './upload';
-export { quizApi } from './quiz';
 export { gradingApi } from './grading';
 export { configApi } from './config';
 export { apiClient, getStoredToken, setStoredToken, removeStoredToken, removeAllTokens, getStoredRefreshToken, setStoredRefreshToken, removeStoredRefreshToken } from './client';

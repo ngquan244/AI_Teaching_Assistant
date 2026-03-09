@@ -8,6 +8,8 @@ import type {
   CanvasQuiz,
   CreateCanvasQuizRequest,
   CreateCanvasQuizResponse,
+  AssessmentQuestionBank,
+  AssessmentQuestion,
 } from '../types/canvas';
 
 // ---- Quizzes ----
@@ -81,10 +83,58 @@ export async function createFullQuiz(
   }
 }
 
+// ---- Question Banks ----
+
+export async function fetchQuestionBanks(courseId: number): Promise<{
+  success: boolean;
+  banks: AssessmentQuestionBank[];
+  error?: string;
+}> {
+  try {
+    const headers = await getCanvasHeaders();
+    const response = await apiClient.get(
+      `/api/canvas-quiz/courses/${courseId}/question-banks`,
+      { headers },
+    );
+    return response.data;
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } }; message?: string };
+    return {
+      success: false,
+      banks: [],
+      error: err.response?.data?.detail || err.message || 'Failed to fetch question banks',
+    };
+  }
+}
+
+export async function fetchBankQuestions(courseId: number, bankId: number): Promise<{
+  success: boolean;
+  questions: AssessmentQuestion[];
+  error?: string;
+}> {
+  try {
+    const headers = await getCanvasHeaders();
+    const response = await apiClient.get(
+      `/api/canvas-quiz/courses/${courseId}/question-banks/${bankId}/questions`,
+      { headers },
+    );
+    return response.data;
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } }; message?: string };
+    return {
+      success: false,
+      questions: [],
+      error: err.response?.data?.detail || err.message || 'Failed to fetch bank questions',
+    };
+  }
+}
+
 export const canvasQuizApi = {
   fetchQuizzes,
   fetchQuizQuestions,
   createFullQuiz,
+  fetchQuestionBanks,
+  fetchBankQuestions,
 };
 
 export default canvasQuizApi;

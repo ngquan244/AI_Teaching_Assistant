@@ -44,6 +44,7 @@ export interface SimulationRunResult {
   id: string;
   course_id: number;
   quiz_id: number;
+  quiz_title?: string;
   test_student_name?: string;
   canvas_submission_id?: number;
   attempt_number?: number;
