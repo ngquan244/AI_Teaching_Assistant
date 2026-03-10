@@ -145,6 +145,12 @@ class CollectionRegistry:
         except Exception as e:
             logger.warning(f"Could not load collection registry: {e}")
             self._registry = {}
+
+    def reload(self):
+        """Reload registry from disk, picking up cross-process changes."""
+        with self._lock:
+            self._registry.clear()
+            self._load()
     
     @staticmethod
     def _make_key(file_hash: str, user_id: Optional[str] = None) -> str:
@@ -755,13 +761,23 @@ class PerFileCollectionManager:
                 logger.info(f"Collection {collection_name} still referenced by {remaining_refs} user(s), keeping data")
                 return True
             
-            # 2. Remove from in-memory cache (releases references)
+            # 2. Remove from in-memory cache — explicitly release Chroma/SQLite handles
             if collection_name in self._collections:
-                self._collections.pop(collection_name)
+                old_collection = self._collections.pop(collection_name)
+                try:
+                    # Release the underlying SQLite connections held by Chroma
+                    if hasattr(old_collection, '_client'):
+                        del old_collection._client
+                    del old_collection
+                except Exception:
+                    pass
             
-            # 3. Try to delete via ChromaDB client API
+            # 3. Force GC before touching ChromaDB files to release SQLite handles
+            import gc
+            gc.collect()
+            
+            # 4. Try to delete via ChromaDB client API
             try:
-                # Create a temporary client to properly delete from ChromaDB
                 from chromadb import PersistentClient
                 collection_dir = self.persist_directory / collection_name
                 if collection_dir.exists():
@@ -770,16 +786,14 @@ class PerFileCollectionManager:
                         client.delete_collection(collection_name)
                     except Exception:
                         pass  # Collection might not exist in this client
-                    # Close the client to release file handles
                     del client
+                    gc.collect()  # Release file handles from PersistentClient
             except Exception as e:
                 logger.warning(f"ChromaDB client cleanup for {collection_name}: {e}")
             
-            # 4. Try to delete the collection directory
+            # 5. Try to delete the collection directory
             try:
                 import shutil
-                import gc
-                gc.collect()  # Force garbage collection to release file handles
                 
                 collection_dir = self.persist_directory / collection_name
                 if collection_dir.exists():

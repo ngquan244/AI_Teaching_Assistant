@@ -500,23 +500,28 @@ class CanvasRAGService:
             # ---- Persist to PostgreSQL when session available ----
             col_row = None
             if db_session and user_id:
-                col_row = SyncRAGCollectionRepository.register(
-                    db_session,
-                    user_id=_uuid.UUID(user_id),
-                    file_hash=file_hash,
-                    filename=filename,
-                    collection_name=collection_name or f"canvas_{file_hash[:16]}",
-                    source=RAGSourceType.CANVAS,
-                    course_id=int(course_id) if course_id else None,
-                    chunk_count=added_count,
-                    is_indexed=True,
-                )
-                if topics_extracted and col_row:
-                    SyncRAGCollectionRepository.save_topics(
+                try:
+                    col_row = SyncRAGCollectionRepository.register(
                         db_session,
-                        collection_id=col_row.id,
-                        topics=topics_extracted,
+                        user_id=_uuid.UUID(user_id),
+                        file_hash=file_hash,
+                        filename=filename,
+                        collection_name=collection_name or f"canvas_{file_hash[:16]}",
+                        source=RAGSourceType.CANVAS,
+                        course_id=int(course_id) if course_id else None,
+                        chunk_count=added_count,
+                        is_indexed=True,
                     )
+                    if topics_extracted and col_row:
+                        SyncRAGCollectionRepository.save_topics(
+                            db_session,
+                            collection_id=col_row.id,
+                            topics=topics_extracted,
+                        )
+                    db_session.commit()
+                except Exception as e:
+                    logger.warning(f"Could not persist to PostgreSQL: {e}")
+                    db_session.rollback()
             
             return {
                 "success": True,
@@ -935,6 +940,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         db_session.rollback()
                 # Fallback to in-memory registry (no user_id filter — canvas entries have user_id=null)
                 if not target_hashes:
+                    # Reload registry from disk to pick up cross-process changes
+                    # (backend may have updated the JSON file since worker startup)
+                    self._collection_manager.registry.reload()
                     matching = self._collection_manager.registry.get_by_filenames(selected_documents)
                     target_hashes = [m.file_hash for m in matching]
                     quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
