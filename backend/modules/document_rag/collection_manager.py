@@ -376,6 +376,42 @@ class PerFileCollectionManager:
         except Exception as e:
             logger.warning(f"Error during orphaned directory cleanup: {e}")
     
+    def ensure_fresh_state(self):
+        """
+        Ensure this manager's in-memory state reflects what's on disk.
+
+        Call before any cross-process operation (e.g., worker-llm querying
+        collections that were ingested by the backend process).
+
+        Steps:
+        1. Reload collection registry from disk (picks up new ingests/deletes)
+        2. Evict stale entries from _collections cache (collections that are no
+           longer in the registry should not be served from memory)
+        3. Clean up orphaned directories on disk
+        """
+        self.registry.reload()
+
+        # Evict cached Chroma instances whose collection names are no longer
+        # present in the freshly-reloaded registry.
+        registered_names = {meta.collection_name for meta in self.registry.get_all()}
+        stale_keys = [k for k in self._collections if k not in registered_names]
+        for key in stale_keys:
+            old = self._collections.pop(key, None)
+            if old is not None:
+                try:
+                    if hasattr(old, '_client'):
+                        del old._client
+                    del old
+                except Exception:
+                    pass
+            logger.debug(f"Evicted stale cached collection: {key}")
+
+        if stale_keys:
+            import gc
+            gc.collect()
+
+        self._cleanup_orphaned_directories()
+    
     def _init_embeddings(self):
         """Initialize shared embedding model (singleton, shared with ChromaVectorStore)."""
         with PerFileCollectionManager._embedding_lock:
@@ -577,11 +613,22 @@ class PerFileCollectionManager:
         # First try to get collection name and course_id from registry
         # This ensures we use the correct collection name even if course_id isn't passed
         meta = self.registry.get(file_hash)
+        if not meta:
+            # Registry may be stale in multi-process Docker (e.g., worker-llm
+            # hasn't seen backend's ingest). Reload once from disk before
+            # falling back to generated name, which would produce the WRONG
+            # name (doc_* instead of canvas_*) and create an empty collection.
+            self.registry.reload()
+            meta = self.registry.get(file_hash)
         if meta:
             collection_name = meta.collection_name
             actual_course_id = meta.course_id
         else:
             # Fallback to generating collection name
+            logger.warning(
+                f"Registry miss for {file_hash[:8]} even after reload — "
+                f"falling back to generated name (course_id={course_id})"
+            )
             collection_name = self.get_collection_name(file_hash, course_id)
             actual_course_id = course_id
         
@@ -772,26 +819,14 @@ class PerFileCollectionManager:
                 except Exception:
                     pass
             
-            # 3. Force GC before touching ChromaDB files to release SQLite handles
+            # 3. Force GC to release SQLite handles before deleting directory.
+            #    DO NOT create a temporary PersistentClient here — it opens new
+            #    SQLite handles on the same directory, which prevents rmtree
+            #    from succeeding (PermissionError on Windows/Docker).
             import gc
             gc.collect()
             
-            # 4. Try to delete via ChromaDB client API
-            try:
-                from chromadb import PersistentClient
-                collection_dir = self.persist_directory / collection_name
-                if collection_dir.exists():
-                    client = PersistentClient(path=str(collection_dir))
-                    try:
-                        client.delete_collection(collection_name)
-                    except Exception:
-                        pass  # Collection might not exist in this client
-                    del client
-                    gc.collect()  # Release file handles from PersistentClient
-            except Exception as e:
-                logger.warning(f"ChromaDB client cleanup for {collection_name}: {e}")
-            
-            # 5. Try to delete the collection directory
+            # 4. Try to delete the collection directory directly
             try:
                 import shutil
                 
@@ -800,10 +835,10 @@ class PerFileCollectionManager:
                     shutil.rmtree(collection_dir)
                     logger.info(f"Deleted collection directory: {collection_name}")
             except PermissionError as e:
-                # Files are locked (e.g., by another process) - log but continue
+                # Files are locked (e.g., by another process) - log but continue.
+                # The registry is already cleared, so _cleanup_orphaned_directories()
+                # will retry on next startup or after the caller invokes it.
                 logger.warning(f"Could not delete directory {collection_name} (files locked): {e}")
-                # The registry is already updated, so this won't appear in listings
-                # The orphaned directory can be cleaned up on restart or manually
             except Exception as e:
                 logger.warning(f"Could not delete collection directory: {e}")
             

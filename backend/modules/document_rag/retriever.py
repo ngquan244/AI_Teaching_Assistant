@@ -267,6 +267,12 @@ class MultiCollectionRetriever:
         k = k or self.k
         search_type = search_type or self.search_type
         
+        # Reload registry from disk to pick up cross-process changes.
+        # In multi-process Docker, the backend may have ingested/deleted
+        # collections since this worker started. Without reload, hash_to_name
+        # will be empty and query_collection will use wrong collection names.
+        self.collection_manager.registry.reload()
+        
         resolved_hashes = self.resolve_target_file_hashes(target_file_hashes, user_id)
         
         if not resolved_hashes:

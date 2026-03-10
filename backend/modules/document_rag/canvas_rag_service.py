@@ -920,6 +920,14 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         quiz_logger.info(f"canvas generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
         
         try:
+            # CRITICAL: Always reload registry from disk before retrieval.
+            # In multi-process Docker (backend + worker-llm), the backend process
+            # updates the registry JSON after ingest, but this worker's in-memory
+            # registry is stale from startup. Without reload, query_collection()
+            # falls back to generating wrong collection name (doc_* instead of
+            # canvas_*), pointing to an empty/nonexistent Chroma → 0 docs.
+            self._collection_manager.ensure_fresh_state()
+
             # Resolve target file hashes from selected_documents
             # Canvas collections are registered WITHOUT user_id (user_id=null),
             # so we must NOT filter by user_id in registry lookups.
@@ -940,9 +948,6 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         db_session.rollback()
                 # Fallback to in-memory registry (no user_id filter — canvas entries have user_id=null)
                 if not target_hashes:
-                    # Reload registry from disk to pick up cross-process changes
-                    # (backend may have updated the JSON file since worker startup)
-                    self._collection_manager.registry.reload()
                     matching = self._collection_manager.registry.get_by_filenames(selected_documents)
                     target_hashes = [m.file_hash for m in matching]
                     quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
@@ -1080,6 +1085,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     logger.info(f"Deleted collection for file hash: {hash_to_remove}")
                 else:
                     logger.warning(f"Collection not found in manager for hash: {hash_to_remove}")
+                # Retry cleanup of any directories that couldn't be deleted
+                # due to locked file handles (e.g., SQLite).
+                self._collection_manager._cleanup_orphaned_directories()
             except Exception as e:
                 logger.warning(f"Could not delete from collection_manager: {e}")
             
