@@ -661,9 +661,13 @@ async def async_index_canvas_file(
         await db.commit()
 
         result = await apply_async_nonblocking(
-            tasks.rag_tasks.ingest_document,
-            args=[str(job.id), str(file_path)],
-            kwargs={"user_id": str(user.id)},
+            tasks.rag_tasks.canvas_index_file,
+            args=[str(job.id), request.filename],
+            kwargs={
+                "user_id": str(user.id),
+                "course_id": request.course_id,
+                "file_path": str(file_path),
+            },
         )
 
         await job_service.set_celery_task_id(job.id, result.id)

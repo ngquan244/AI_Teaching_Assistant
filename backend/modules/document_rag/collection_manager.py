@@ -16,7 +16,9 @@ Collection Naming Strategy:
 """
 
 import logging
+import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, Optional, List, Any, Set, Tuple
@@ -160,24 +162,42 @@ class CollectionRegistry:
         return file_hash
 
     def _save(self):
-        """Save registry to disk."""
+        """Save registry to disk atomically.
+        
+        Uses write-to-temp + os.replace() to prevent corruption when
+        multiple processes (e.g., worker-rag and backend) write concurrently.
+        os.replace() is atomic on POSIX and near-atomic on Windows/NTFS.
+        """
         try:
-            with open(self.registry_path, 'w', encoding='utf-8') as f:
-                data = {
-                    key: {
-                        'collection_name': meta.collection_name,
-                        'file_hash': meta.file_hash,
-                        'filename': meta.filename,
-                        'course_id': meta.course_id,
-                        'created_at': meta.created_at,
-                        'updated_at': meta.updated_at,
-                        'chunk_count': meta.chunk_count,
-                        'is_indexed': meta.is_indexed,
-                        'user_id': meta.user_id,
-                    }
-                    for key, meta in self._registry.items()
+            data = {
+                key: {
+                    'collection_name': meta.collection_name,
+                    'file_hash': meta.file_hash,
+                    'filename': meta.filename,
+                    'course_id': meta.course_id,
+                    'created_at': meta.created_at,
+                    'updated_at': meta.updated_at,
+                    'chunk_count': meta.chunk_count,
+                    'is_indexed': meta.is_indexed,
+                    'user_id': meta.user_id,
                 }
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                for key, meta in self._registry.items()
+            }
+            # Write to a temp file in the same directory, then atomically replace.
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.registry_path.parent), suffix='.tmp'
+            )
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, str(self.registry_path))
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error(f"Could not save collection registry: {e}")
     

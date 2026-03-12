@@ -716,6 +716,12 @@ class RAGService:
         """
         self._ensure_initialized()
         
+        # CRITICAL: Reload registry from disk before retrieval.
+        # In multi-process Docker (backend + worker-llm), the worker's in-memory
+        # registry may be stale from startup. Without reload, query_collection()
+        # falls back to generating wrong collection names → 0 docs retrieved.
+        self._collection_manager.ensure_fresh_state()
+        
         # Handle both single topic and multiple topics
         if topics and len(topics) > 0:
             topic_list = topics
