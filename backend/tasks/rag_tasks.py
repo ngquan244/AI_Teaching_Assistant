@@ -287,6 +287,7 @@ def canvas_index_file(
     filename: str,
     user_id: Optional[str] = None,
     course_id: Optional[int] = None,
+    file_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Index a downloaded Canvas file into a per-file collection.
@@ -299,6 +300,7 @@ def canvas_index_file(
         filename: Name of Canvas file to index
         user_id: User ID for logging
         course_id: Canvas course ID for collection naming
+        file_path: Full path to the file (supports per-user directories)
     """
     job_service, db_session = get_sync_job_service()
     job_uuid = uuid.UUID(job_id)
@@ -307,7 +309,15 @@ def canvas_index_file(
         job_service.start_job(job_uuid, f"Indexing Canvas file into per-file collection: {filename}")
         
         service = _get_canvas_rag_service()
-        file_path = service.CANVAS_RAG_DIR / filename
+        # Use explicit file_path when provided (per-user directory),
+        # fall back to base directory for backwards compatibility.
+        if file_path:
+            from pathlib import Path as _Path
+            file_path = _Path(file_path)
+        elif user_id:
+            file_path = service._get_user_dir(user_id) / filename
+        else:
+            file_path = service.CANVAS_RAG_DIR / filename
         
         if not file_path.exists():
             error = f"File not found: {filename}"
