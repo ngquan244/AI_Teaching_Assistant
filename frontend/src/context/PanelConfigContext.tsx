@@ -9,7 +9,7 @@ import { useAuth } from './AuthContext';
 
 /** How often (ms) to poll for config changes — 30 seconds */
 const POLL_INTERVAL = 30_000;
-import type { TabType } from '../types';
+import { TABS, type TabType } from '../types';
 
 // =============================================================================
 // Types
@@ -154,7 +154,7 @@ export function getFirstVisibleTab(
 ): TabType | null {
   if (isPanelVisible(activeTab)) return null; // current tab is fine
   const first = allTabs.find((t) => isPanelVisible(t));
-  return (first ?? 'chat') as TabType;
+  return (first ?? TABS.GUIDE) as TabType;
 }
 
 export default PanelConfigContext;

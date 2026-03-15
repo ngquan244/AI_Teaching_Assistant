@@ -9,9 +9,6 @@ import {
   ToggleRight,
   Loader2,
   Save,
-  MessageSquare,
-  FileUp,
-  BarChart3,
   FileText,
   FolderOpen,
   PenSquare,
@@ -20,32 +17,29 @@ import {
   Settings,
   AlertCircle,
   CheckCircle,
+  BookOpen,
 } from 'lucide-react';
 import { getAdminPanelConfig, updatePanelConfig, type PanelConfig } from '../../api/admin';
 
 // Map panel key → icon
-const PANEL_ICONS: Record<string, typeof MessageSquare> = {
-  chat: MessageSquare,
-  upload: FileUp,
-  grading: BarChart3,
+const PANEL_ICONS: Record<string, typeof FileText> = {
   document_rag: FileText,
   canvas: FolderOpen,
   canvas_quiz: PenSquare,
   canvas_simulation: PlayCircle,
   canvas_results: PieChart,
+  guide: BookOpen,
   settings: Settings,
 };
 
 // Panel descriptions for better UX
 const PANEL_DESCRIPTIONS: Record<string, string> = {
-  chat: 'Trò chuyện với AI assistant để hỗ trợ giảng dạy',
-  upload: 'Upload file bài thi, tài liệu để xử lý',
-  grading: 'Chấm điểm bài thi tự động bằng AI',
   document_rag: 'Hỏi đáp dựa trên tài liệu (RAG)',
   canvas: 'Kết nối và quản lý Canvas LMS',
   canvas_quiz: 'Tạo quiz trên Canvas từ tài liệu',
   canvas_simulation: 'Tạo test student và giả lập nộp bài quiz trên Canvas',
   canvas_results: 'Tổng hợp kết quả quiz, điểm khóa học và xuất báo cáo Excel/CSV',
+  guide: 'Hướng dẫn sử dụng hệ thống',
   settings: 'Cấu hình model AI, provider và các tùy chọn',
 };
 

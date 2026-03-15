@@ -20,13 +20,13 @@ if (-not (Test-Path $celeryExe)) {
 }
 
 Write-Host "Configuration:" -ForegroundColor Yellow
-Write-Host "  - Queues: rag, llm, canvas, misc, celery" -ForegroundColor Gray
+Write-Host "  - Queues: rag, llm, canvas, celery, default" -ForegroundColor Gray
 Write-Host "  - Pool: threads" -ForegroundColor Gray
 Write-Host "  - Concurrency: 4 threads" -ForegroundColor Gray
-Write-Host ""
+Write-Host "" 
 Write-Host "Starting worker..." -ForegroundColor Green
 Write-Host ""
 
 # Start worker
 & "$venvPath\Scripts\Activate.ps1"
-& "$celeryExe" -A backend.celery_app worker -Q rag,llm,canvas,misc,celery --pool=threads -c 4 --loglevel=INFO -n dev@%COMPUTERNAME%
+& "$celeryExe" -A backend.celery_app worker -Q rag,llm,canvas,celery,default --pool=threads -c 4 --loglevel=INFO -n dev@%COMPUTERNAME%

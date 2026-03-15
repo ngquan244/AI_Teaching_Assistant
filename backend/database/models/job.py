@@ -37,28 +37,11 @@ class JobType(str, enum.Enum):
     
     # Quiz Operations
     GENERATE_QUIZ = "GENERATE_QUIZ"
-    EXPORT_QTI = "EXPORT_QTI"
     
     # Canvas Operations
-    CANVAS_DOWNLOAD = "CANVAS_DOWNLOAD"
-    CANVAS_BATCH_DOWNLOAD = "CANVAS_BATCH_DOWNLOAD"
-    CANVAS_IMPORT_QTI = "CANVAS_IMPORT_QTI"
+    CANVAS_FILE_DOWNLOAD = "CANVAS_FILE_DOWNLOAD"
+    CANVAS_QTI_IMPORT = "CANVAS_QTI_IMPORT"
     CANVAS_INDEX_FILE = "CANVAS_INDEX_FILE"
-    
-    # Grading Operations
-    GRADE_BATCH = "GRADE_BATCH"
-    GRADE_SINGLE = "GRADE_SINGLE"
-    GENERATE_REPORT = "GENERATE_REPORT"
-    
-    # Chat/Agent Operations
-    AGENT_INVOKE = "AGENT_INVOKE"
-    
-    # Canvas Quiz
-    CANVAS_CREATE_QUIZ = "CANVAS_CREATE_QUIZ"
-    
-    # Misc
-    FILE_DOWNLOAD = "FILE_DOWNLOAD"
-    EMAIL_SEND = "EMAIL_SEND"
 
 
 class JobStatus(str, enum.Enum):

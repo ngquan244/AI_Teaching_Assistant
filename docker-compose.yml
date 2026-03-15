@@ -109,7 +109,7 @@ services:
       dockerfile: Dockerfile
     container_name: grader_worker_rag
     restart: unless-stopped
-    command: celery -A backend.celery_app worker -Q rag -c 2 --loglevel=INFO -n rag@%h
+    command: celery -A backend.celery_app worker -Q rag,celery,default -c 2 --loglevel=INFO -n rag@%h
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -120,7 +120,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-grader_db}
     volumes:
       - ./data:/app/data
-      - ./kaggle:/app/kaggle
     depends_on:
       redis:
         condition: service_healthy
@@ -201,40 +200,6 @@ services:
           memory: 512M
         reservations:
           memory: 128M
-
-  # Misc Worker: Grading, file operations, etc.
-  worker-misc:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: grader_worker_misc
-    restart: unless-stopped
-    command: celery -A backend.celery_app worker -Q misc,celery -c 2 --loglevel=INFO -n misc@%h
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
-      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
-    volumes:
-      - ./data:/app/data
-      - ./kaggle:/app/kaggle
-      - ./exports:/app/exports
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - grader_network
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 512M
 
   # ===========================================================================
   # Flower - Celery monitoring dashboard (optional)

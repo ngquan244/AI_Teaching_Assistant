@@ -378,11 +378,8 @@ async def retry_job(
         JobType.EXTRACT_TOPICS: tasks.rag_tasks.extract_topics,
         JobType.GENERATE_QUIZ: tasks.llm_tasks.generate_quiz,
         JobType.CANVAS_FILE_DOWNLOAD: tasks.canvas_tasks.download_file,
-        JobType.CANVAS_FILE_UPLOAD: tasks.canvas_tasks.download_files_batch,
         JobType.CANVAS_QTI_IMPORT: tasks.canvas_tasks.import_qti,
-        JobType.GRADE_BATCH: tasks.grading_tasks.grade_batch,
-        JobType.GRADE_SINGLE: tasks.grading_tasks.grade_single,
-        JobType.GENERATE_REPORT: tasks.grading_tasks.generate_report,
+        JobType.CANVAS_INDEX_FILE: tasks.rag_tasks.canvas_index_file,
     }
     
     task_func = task_map.get(job.job_type)

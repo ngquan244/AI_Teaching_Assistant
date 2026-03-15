@@ -10,7 +10,6 @@ Workers should be started with:
     celery -A backend.celery_app worker -Q rag -c 4 --loglevel=info
     celery -A backend.celery_app worker -Q llm -c 2 --loglevel=info
     celery -A backend.celery_app worker -Q canvas -c 2 --loglevel=info
-    celery -A backend.celery_app worker -Q misc -c 4 --loglevel=info
 """
 import logging
 from celery import Celery
@@ -35,14 +34,12 @@ default_exchange = Exchange("default", type="direct")
 rag_exchange = Exchange("rag", type="direct")
 llm_exchange = Exchange("llm", type="direct")
 canvas_exchange = Exchange("canvas", type="direct")
-misc_exchange = Exchange("misc", type="direct")
 
 CELERY_QUEUES = (
     Queue("default", default_exchange, routing_key="default"),
     Queue("rag", rag_exchange, routing_key="rag"),
     Queue("llm", llm_exchange, routing_key="llm"),
     Queue("canvas", canvas_exchange, routing_key="canvas"),
-    Queue("misc", misc_exchange, routing_key="misc"),
 )
 
 # Task routing based on task name patterns
@@ -53,10 +50,6 @@ CELERY_ROUTES = {
     "backend.tasks.llm_tasks.*": {"queue": "llm", "routing_key": "llm"},
     # Canvas tasks
     "backend.tasks.canvas_tasks.*": {"queue": "canvas", "routing_key": "canvas"},
-    # Grading tasks (use misc queue)
-    "backend.tasks.grading_tasks.*": {"queue": "misc", "routing_key": "misc"},
-    # Misc tasks
-    "backend.tasks.misc_tasks.*": {"queue": "misc", "routing_key": "misc"},
 }
 
 # =============================================================================
@@ -71,8 +64,6 @@ celery_app = Celery(
         "backend.tasks.rag_tasks",
         "backend.tasks.llm_tasks",
         "backend.tasks.canvas_tasks",
-        "backend.tasks.grading_tasks",
-        "backend.tasks.misc_tasks",
     ],
 )
 

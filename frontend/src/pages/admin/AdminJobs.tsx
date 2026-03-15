@@ -19,18 +19,9 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   RAG_QUERY: 'RAG Query',
   EXTRACT_TOPICS: 'Extract Topics',
   GENERATE_QUIZ: 'Generate Quiz',
-  EXPORT_QTI: 'Export QTI',
-  CANVAS_DOWNLOAD: 'Canvas Download',
-  CANVAS_BATCH_DOWNLOAD: 'Batch Download',
-  CANVAS_IMPORT_QTI: 'Import QTI',
+  CANVAS_FILE_DOWNLOAD: 'Canvas Download',
+  CANVAS_QTI_IMPORT: 'Import QTI',
   CANVAS_INDEX_FILE: 'Index File',
-  GRADE_BATCH: 'Grade Batch',
-  GRADE_SINGLE: 'Grade Single',
-  GENERATE_REPORT: 'Report',
-  AGENT_INVOKE: 'Agent',
-  CANVAS_CREATE_QUIZ: 'Create Quiz',
-  FILE_DOWNLOAD: 'File Download',
-  EMAIL_SEND: 'Email',
 };
 
 const STATUS_OPTIONS = [

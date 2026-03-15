@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 # All panel keys (matching frontend TABS constant)
 ALL_PANELS = [
-    "upload",
-    "grading",
     "document_rag",
     "canvas",
     "canvas_quiz",
@@ -26,8 +24,6 @@ ALL_PANELS = [
 
 # Human-readable labels for each panel
 PANEL_LABELS: Dict[str, str] = {
-    "upload": "Upload",
-    "grading": "Chấm điểm",
     "document_rag": "Tài Liệu",
     "canvas": "Canvas LMS",
     "canvas_quiz": "Tạo Canvas Quiz",
