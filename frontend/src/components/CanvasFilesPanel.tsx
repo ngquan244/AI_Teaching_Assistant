@@ -42,7 +42,7 @@ import { useAuth } from '../context/AuthContext';
 import { canvasApi } from '../api/canvas';
 import {
   downloadCanvasFile,
-  indexCanvasFile,
+  asyncIndexCanvasFile,
   extractCanvasTopics,
   listIndexedCanvasDocuments,
   getCanvasDocumentTopics,
@@ -51,6 +51,7 @@ import {
   CanvasPermissionError,
   type CanvasIndexedDocument,
 } from '../api/canvasRag';
+import { getJob, TERMINAL_STATUSES } from '../api/jobs';
 import {
   getSelectedCourse,
   clearSelectedCourse,
@@ -395,24 +396,46 @@ const CanvasFilesPanel: React.FC = () => {
       }
     }
 
-    // Proceed to index
+    // Proceed to index via async job
     updateFileStatus(file.id, { status: 'indexing' });
     
     try {
-      const indexResult = await indexCanvasFile(filenameToIndex, selectedCourse?.id);
-      
-      if (indexResult.success) {
-        updateFileStatus(file.id, { status: 'indexed' });
-        // Refresh indexed docs to show updated status
-        await loadIndexedDocs(selectedCourse?.id, 1);
-        // Dispatch event to notify DocumentRAGPanel to refresh topics
-        window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
-      } else if (indexResult.already_indexed) {
-        updateFileStatus(file.id, { status: 'indexed' });
+      const asyncResp = await asyncIndexCanvasFile(filenameToIndex, selectedCourse?.id);
+      const jobId = asyncResp.job_id;
+
+      // Poll until job completes
+      let jobResult = await getJob(jobId);
+      while (!TERMINAL_STATUSES.includes(jobResult.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        jobResult = await getJob(jobId);
+      }
+
+      if (jobResult.status === 'SUCCEEDED' && jobResult.result) {
+        const result = jobResult.result as {
+          success?: boolean;
+          already_indexed?: boolean;
+          error?: string;
+        };
+        if (result.success) {
+          if (result.already_indexed) {
+            updateFileStatus(file.id, { status: 'indexed' });
+          } else {
+            updateFileStatus(file.id, { status: 'indexed' });
+            // Refresh indexed docs to show updated status
+            await loadIndexedDocs(selectedCourse?.id, 1);
+            // Dispatch event to notify DocumentRAGPanel to refresh topics
+            window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
+          }
+        } else {
+          updateFileStatus(file.id, { 
+            status: 'failed', 
+            error: result.error || 'Index failed' 
+          });
+        }
       } else {
         updateFileStatus(file.id, { 
           status: 'failed', 
-          error: indexResult.error || 'Index failed' 
+          error: jobResult.error_message || 'Index failed' 
         });
       }
     } catch (err) {
