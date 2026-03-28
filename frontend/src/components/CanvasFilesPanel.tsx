@@ -45,6 +45,7 @@ import {
   asyncIndexCanvasFile,
   extractCanvasTopics,
   listIndexedCanvasDocuments,
+  listAllIndexedCanvasDocuments,
   getCanvasDocumentTopics,
   updateCanvasDocumentTopics,
   removeCanvasFileIndex,
@@ -126,6 +127,30 @@ const statusLabels: Record<ExtendedFileStatus, string> = {
 
 // Tab type removed — single view now
 
+const sanitizeCanvasFilename = (name: string) =>
+  name.toLowerCase().replace(/[,]/g, '').replace(/\s+/g, ' ').trim();
+
+const stripPdfExtension = (name: string) => name.replace(/\.pdf$/i, '');
+
+const filenamesMatch = (left: string, right: string) => {
+  const leftSanitized = sanitizeCanvasFilename(left);
+  const rightSanitized = sanitizeCanvasFilename(right);
+  const leftBase = stripPdfExtension(leftSanitized);
+  const rightBase = stripPdfExtension(rightSanitized);
+
+  return (
+    leftSanitized === rightSanitized ||
+    leftBase === rightBase ||
+    leftSanitized.includes(rightBase) ||
+    rightSanitized.includes(leftBase)
+  );
+};
+
+const findMatchingIndexedDoc = (
+  displayName: string,
+  docs: CanvasIndexedDocument[],
+) => docs.find((doc) => filenamesMatch(displayName, doc.filename));
+
 const CanvasFilesPanel: React.FC = () => {
   const { isAuthenticated, canvasTokens } = useAuth();
   const canvasStars = useMemo(() => generateCanvasStars(30), []);
@@ -148,6 +173,7 @@ const CanvasFilesPanel: React.FC = () => {
 
   // Indexed documents state (always available, even offline)
   const [indexedDocs, setIndexedDocs] = useState<CanvasIndexedDocument[]>([]);
+  const [allIndexedDocs, setAllIndexedDocs] = useState<CanvasIndexedDocument[]>([]);
   const [indexedSectionExpanded, setIndexedSectionExpanded] = useState(true);
   const [indexedLoading, setIndexedLoading] = useState(false);
 
@@ -170,6 +196,27 @@ const CanvasFilesPanel: React.FC = () => {
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isSavingTopics, setIsSavingTopics] = useState(false);
 
+  const loadAllIndexedDocs = async (courseId?: number) => {
+    try {
+      const docs = await listAllIndexedCanvasDocuments(courseId);
+      setAllIndexedDocs(docs);
+      return docs;
+    } catch (err) {
+      if (err instanceof CanvasPermissionError) {
+        setError('KhÃ´ng cÃ³ quyá»n truy cáº­p khÃ³a há»c nÃ y. Vui lÃ²ng kiá»ƒm tra Canvas token.');
+      }
+      console.error('Error loading all indexed docs:', err);
+      return [];
+    }
+  };
+
+  const refreshIndexedData = async (courseId?: number, page?: number) => {
+    await Promise.all([
+      loadIndexedDocs(courseId, page),
+      loadAllIndexedDocs(courseId),
+    ]);
+  };
+
   // Load selected course on mount
   useEffect(() => {
     const stored = getSelectedCourse();
@@ -177,14 +224,14 @@ const CanvasFilesPanel: React.FC = () => {
       setSelectedCourse(stored);
     }
     // Always load indexed docs on mount (works offline)
-    loadIndexedDocs();
+    refreshIndexedData(stored?.id, 1);
   }, []);
 
   // Fetch remote files when course changes
   useEffect(() => {
     if (selectedCourse) {
       fetchRemoteFiles(selectedCourse.id);
-      loadIndexedDocs(selectedCourse.id);
+      refreshIndexedData(selectedCourse.id, 1);
     }
   }, [selectedCourse]);
 
@@ -223,10 +270,11 @@ const CanvasFilesPanel: React.FC = () => {
     setDownloadStates(new Map());
 
     try {
-      // Fetch remote files and indexed docs in parallel
-      const [remoteResponse, indexedRes] = await Promise.all([
+      // Fetch remote files plus both indexed views in parallel.
+      const [remoteResponse, indexedRes, allIndexed] = await Promise.all([
         canvasApi.fetchCourseFiles(courseId),
         listIndexedCanvasDocuments(courseId, 1, ITEMS_PER_PAGE),
+        listAllIndexedCanvasDocuments(courseId),
       ]);
 
       if (!remoteResponse.success) {
@@ -252,30 +300,13 @@ const CanvasFilesPanel: React.FC = () => {
         setIndexedTotalPages(indexedRes.pages);
         setIndexedTotal(indexedRes.total);
       }
+      setAllIndexedDocs(allIndexed);
       
-      // Check status for each remote file against indexed docs
-      const indexedFileSet = new Set(
-        indexedRes.success 
-          ? indexedRes.documents.map(d => d.filename.toLowerCase().trim()) 
-          : []
-      );
-      
-      // Helper to sanitize filename for comparison
-      const sanitize = (name: string) => 
-        name.toLowerCase().replace(/[,]/g, '').replace(/\s+/g, ' ').trim();
-      
-      // Set initial status for files that are already indexed
+      // Set initial status for files that are already indexed anywhere in the course,
+      // not just in the currently visible indexed-documents page.
       const newStates = new Map<number, ExtendedDownloadState>();
       remoteResponse.files.forEach((file: CanvasFile) => {
-        const remoteNameSanitized = sanitize(file.display_name);
-        
-        const isIndexed = [...indexedFileSet].some(indexedName => 
-          sanitize(indexedName) === remoteNameSanitized ||
-          remoteNameSanitized.includes(sanitize(indexedName.replace('.pdf', ''))) ||
-          sanitize(indexedName).includes(remoteNameSanitized.replace('.pdf', ''))
-        );
-        
-        if (isIndexed) {
+        if (findMatchingIndexedDoc(file.display_name, allIndexed)) {
           newStates.set(file.id, {
             fileId: file.id,
             filename: file.display_name,
@@ -309,6 +340,7 @@ const CanvasFilesPanel: React.FC = () => {
     setSelectedCourse(null);
     setRemoteFiles([]);
     setDownloadStates(new Map());
+    refreshIndexedData(undefined, 1);
   };
 
   const updateFileStatus = useCallback(
@@ -386,7 +418,9 @@ const CanvasFilesPanel: React.FC = () => {
     // Check if already indexed (for duplicates)
     if (downloadResult.status === 'duplicate') {
       // Check if this file is already in indexedDocs
-      const isAlreadyIndexed = indexedDocs.some(doc => doc.filename === filenameToIndex);
+      const isAlreadyIndexed = allIndexedDocs.some((doc) =>
+        filenamesMatch(filenameToIndex, doc.filename),
+      );
       if (isAlreadyIndexed) {
         updateFileStatus(file.id, { 
           status: 'indexed',
@@ -422,7 +456,7 @@ const CanvasFilesPanel: React.FC = () => {
           } else {
             updateFileStatus(file.id, { status: 'indexed' });
             // Refresh indexed docs to show updated status
-            await loadIndexedDocs(selectedCourse?.id, 1);
+            await refreshIndexedData(selectedCourse?.id, 1);
             // Dispatch event to notify DocumentRAGPanel to refresh topics
             window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
           }
@@ -490,7 +524,7 @@ const CanvasFilesPanel: React.FC = () => {
     setIsDownloading(false);
     
     // Refresh indexed docs
-    loadIndexedDocs(selectedCourse?.id, 1);
+    refreshIndexedData(selectedCourse?.id, 1);
   };
 
   // === File action handlers (shared by remote rows + indexed section) ===
@@ -507,7 +541,7 @@ const CanvasFilesPanel: React.FC = () => {
           newMap.delete(filename);
           return newMap;
         });
-        await loadIndexedDocs(selectedCourse?.id, 1);
+        await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       } else {
         setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
@@ -528,7 +562,7 @@ const CanvasFilesPanel: React.FC = () => {
     try {
       const result = await removeCanvasFileIndex(filename);
       if (result.success) {
-        await loadIndexedDocs(selectedCourse?.id, 1);
+        await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
     } catch (err) {
@@ -558,7 +592,7 @@ const CanvasFilesPanel: React.FC = () => {
           newMap.delete(file.id);
           return newMap;
         });
-        await loadIndexedDocs(selectedCourse?.id, 1);
+        await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
     } catch (err) {
@@ -630,7 +664,7 @@ const CanvasFilesPanel: React.FC = () => {
       
       if (response.success) {
         closeEditTopicsModal();
-        await loadIndexedDocs(selectedCourse?.id, 1);
+        await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       } else {
         alert('Không thể lưu chủ đề. Vui lòng thử lại.');
@@ -879,19 +913,6 @@ const CanvasFilesPanel: React.FC = () => {
                 const startIndex = (remoteCurrentPage - 1) * ITEMS_PER_PAGE;
                 const paginatedFiles = remoteFiles.slice(startIndex, startIndex + ITEMS_PER_PAGE);
                 
-                // Helper to find indexed doc by remote filename
-                const findIndexedDoc = (displayName: string) => {
-                  const sanitize = (name: string) => 
-                    name.toLowerCase().replace(/[,]/g, '').replace(/\s+/g, ' ').trim();
-                  const remoteSanitized = sanitize(displayName);
-                  return indexedDocs.find(doc => {
-                    const docSanitized = sanitize(doc.filename);
-                    return docSanitized === remoteSanitized ||
-                      remoteSanitized.includes(sanitize(doc.filename.replace('.pdf', ''))) ||
-                      docSanitized.includes(remoteSanitized.replace('.pdf', ''));
-                  });
-                };
-
                 return (
                   <>
                     <div className="files-list">
@@ -908,8 +929,8 @@ const CanvasFilesPanel: React.FC = () => {
                           {paginatedFiles.length > 0 ? (
                             paginatedFiles.map((file) => {
                               const state = downloadStates.get(file.id);
-                              const isIndexed = state?.status === 'indexed';
-                              const indexedDoc = isIndexed ? findIndexedDoc(file.display_name) : null;
+                              const indexedDoc = findMatchingIndexedDoc(file.display_name, allIndexedDocs);
+                              const isIndexed = state?.status === 'indexed' || Boolean(indexedDoc);
                               const actionState = fileActionStates.get(
                                 indexedDoc?.filename || file.display_name.replace(/[,]/g, '')
                               );
@@ -1064,7 +1085,7 @@ const CanvasFilesPanel: React.FC = () => {
               className="btn-secondary btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
-                loadIndexedDocs(selectedCourse?.id);
+                refreshIndexedData(selectedCourse?.id, 1);
               }}
               disabled={indexedLoading}
             >

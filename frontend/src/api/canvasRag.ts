@@ -137,6 +137,15 @@ export interface CanvasIndexedDocument {
   course_name?: string;
 }
 
+export interface CanvasIndexedDocumentsListResponse {
+  success: boolean;
+  documents: CanvasIndexedDocument[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 export interface CanvasStats {
   total_documents: number;
   total_chunks: number;
@@ -304,11 +313,40 @@ export async function listIndexedCanvasDocuments(courseId?: number, page = 1, pa
     const params: Record<string, unknown> = { page, page_size: pageSize };
     if (courseId) params.course_id = courseId;
     const cfg = await canvasConfig({ params });
-    const response = await apiClient.get(`${API_BASE}/indexed`, cfg);
+    const response = await apiClient.get<CanvasIndexedDocumentsListResponse>(`${API_BASE}/indexed`, cfg);
     return response.data;
   } catch (error) {
     handlePermissionError(error);
   }
+}
+
+/**
+ * List all indexed Canvas documents for a course by walking pagination.
+ * Useful when the UI needs authoritative indexed status for every remote file.
+ */
+export async function listAllIndexedCanvasDocuments(
+  courseId?: number,
+): Promise<CanvasIndexedDocument[]> {
+  const pageSize = 100;
+  const firstPage = await listIndexedCanvasDocuments(courseId, 1, pageSize);
+
+  if (!firstPage.success || firstPage.pages <= 1) {
+    return firstPage.documents;
+  }
+
+  const remainingPages = Array.from(
+    { length: firstPage.pages - 1 },
+    (_, index) => index + 2,
+  );
+
+  const responses = await Promise.all(
+    remainingPages.map((page) => listIndexedCanvasDocuments(courseId, page, pageSize)),
+  );
+
+  return [
+    ...firstPage.documents,
+    ...responses.flatMap((response) => response.documents),
+  ];
 }
 
 /**
@@ -422,6 +460,7 @@ export const canvasRagApi = {
   getCanvasDocumentTopics,
   updateCanvasDocumentTopics,
   listIndexedCanvasDocuments,
+  listAllIndexedCanvasDocuments,
   queryCanvasDocuments,
   generateCanvasQuiz,
   resetCanvasIndex,
