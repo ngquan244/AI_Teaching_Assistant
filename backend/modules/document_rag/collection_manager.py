@@ -185,6 +185,31 @@ class CollectionRegistry:
             return f"{user_id}:{file_hash}"
         return file_hash
 
+    def _get_meta_with_legacy_fallback(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[CollectionMetadata]:
+        """
+        Resolve registry metadata with backward-compatible fallback.
+
+        Older indexes were stored under the plain `file_hash` key with
+        `user_id=None`. After per-user keys were introduced, those legacy
+        entries may still exist without a user-scoped mirror. When a lookup is
+        performed with a user_id, falling back to the legacy entry prevents us
+        from generating the wrong collection name (`doc_*`) for an existing
+        Canvas collection (`canvas_*`).
+        """
+        key = self._make_key(file_hash, user_id)
+        meta = self._registry.get(key)
+        if meta is not None or user_id is None:
+            return meta
+
+        legacy_meta = self._registry.get(file_hash)
+        if legacy_meta and legacy_meta.user_id is None:
+            return legacy_meta
+        return None
+
     def _save(self):
         """Save registry to disk atomically.
         
@@ -207,8 +232,7 @@ class CollectionRegistry:
     def get(self, file_hash: str, user_id: Optional[str] = None) -> Optional[CollectionMetadata]:
         """Get collection metadata by file hash (scoped to user when provided)."""
         with self._lock:
-            key = self._make_key(file_hash, user_id)
-            return self._registry.get(key)
+            return self._get_meta_with_legacy_fallback(file_hash, user_id)
     
     def register(
         self,
@@ -278,15 +302,13 @@ class CollectionRegistry:
     def is_indexed(self, file_hash: str, user_id: Optional[str] = None) -> bool:
         """Check if a file is already indexed (scoped to user when provided)."""
         with self._lock:
-            key = self._make_key(file_hash, user_id)
-            meta = self._registry.get(key)
+            meta = self._get_meta_with_legacy_fallback(file_hash, user_id)
             return meta is not None and meta.is_indexed
     
     def get_collection_name(self, file_hash: str, user_id: Optional[str] = None) -> Optional[str]:
         """Get collection name for a file hash."""
         with self._lock:
-            key = self._make_key(file_hash, user_id)
-            meta = self._registry.get(key)
+            meta = self._get_meta_with_legacy_fallback(file_hash, user_id)
             return meta.collection_name if meta else None
     
     def get_all(self, user_id: Optional[str] = None) -> List[CollectionMetadata]:
@@ -310,11 +332,23 @@ class CollectionRegistry:
     def get_by_filenames(self, filenames: List[str], user_id: Optional[str] = None) -> List[CollectionMetadata]:
         """Get collections for specific filenames, scoped to user when provided."""
         with self._lock:
-            return [
-                meta for meta in self._registry.values()
-                if meta.filename in filenames
-                and (user_id is None or meta.user_id == user_id)
-            ]
+            if user_id is None:
+                return [
+                    meta for meta in self._registry.values()
+                    if meta.filename in filenames
+                ]
+
+            # Prefer user-scoped entries, but include legacy shared entries for
+            # files that have not been backfilled into per-user registry keys.
+            matches_by_hash: Dict[str, CollectionMetadata] = {}
+            for meta in self._registry.values():
+                if meta.filename not in filenames:
+                    continue
+                if meta.user_id == user_id:
+                    matches_by_hash[meta.file_hash] = meta
+                elif meta.user_id is None and meta.file_hash not in matches_by_hash:
+                    matches_by_hash[meta.file_hash] = meta
+            return list(matches_by_hash.values())
     
     def get_by_course_id(self, course_id: int) -> List[CollectionMetadata]:
         """Get all collections for a specific course."""

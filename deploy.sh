@@ -209,15 +209,16 @@ install_maintenance_cron() {
     local cron_data
 
     cron_ssl="0 3,15 * * * cd $REPO_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile ssl run --rm certbot renew --quiet && docker compose -f docker-compose.yml -f docker-compose.prod.yml restart nginx"
-    cron_backup="0 2 * * * cd $REPO_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres pg_dump -U \${POSTGRES_USER} \${POSTGRES_DB} | gzip > /root/backups/grader_\$(date +\\%Y\\%m\\%d).sql.gz"
+    cron_backup="0 2 * * * cd $REPO_DIR && bash ./docker/backup_postgres.sh"
     cron_data="0 3 * * 0 tar czf /root/backups/grader_data_\$(date +\\%Y\\%m\\%d).tar.gz -C $REPO_DIR data/ exports/ 2>/dev/null || true"
 
     (crontab -l 2>/dev/null | grep -v certbot; echo "$cron_ssl") | crontab -
-    (crontab -l 2>/dev/null | grep -v pg_dump; echo "$cron_backup") | crontab -
+    (crontab -l 2>/dev/null | grep -v backup_postgres.sh; echo "$cron_backup") | crontab -
     (crontab -l 2>/dev/null | grep -v grader_data; echo "$cron_data") | crontab -
 
     info "Cron jobs installed: SSL renewal + daily DB backup + weekly data/exports backup."
     warn "DB backup covers PostgreSQL only. data/ and exports/ are backed up weekly."
+    warn "DB backup logs are written to /root/backups/grader_db_backup.log"
 }
 
 verify_deployment() {

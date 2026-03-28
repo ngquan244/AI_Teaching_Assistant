@@ -99,12 +99,6 @@ class Settings(BaseSettings):
     LLM_RATE_LIMIT: str = "10/m"  # 10 requests per minute for LLM tasks
     CANVAS_RATE_LIMIT: str = "30/m"  # 30 requests per minute for Canvas API
     
-    # Worker concurrency
-    WORKER_CONCURRENCY_RAG: int = 4
-    WORKER_CONCURRENCY_LLM: int = 2
-    WORKER_CONCURRENCY_CANVAS: int = 2
-    WORKER_CONCURRENCY_MISC: int = 4
-    
     @property
     def DATABASE_URL(self) -> str:
         """Async PostgreSQL connection URL for FastAPI."""
