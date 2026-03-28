@@ -39,6 +39,11 @@ services:
   redis:
     # Production memory settings
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -e --no-auth-warning -a \"${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ===========================================================================
   # Nginx Reverse Proxy + TLS Termination
@@ -100,24 +105,8 @@ services:
     container_name: grader_backend
     restart: unless-stopped
     
-    environment:
-      - ENVIRONMENT=production
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_REFRESH_SECRET_KEY=${JWT_REFRESH_SECRET_KEY}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - CORS_ORIGINS=["https://${PRODUCTION_DOMAIN}"]
-      - SIGNUP_MODE=${SIGNUP_MODE:-invite}
-      - SIGNUP_INVITE_CODE=${SIGNUP_INVITE_CODE}
-      - INVITE_SECRET=${INVITE_SECRET}
-      - LLM_PROVIDER=groq
-      - GROQ_API_KEY=${GROQ_API_KEY}
+    env_file:
+      - .env
     
     # Backend is NOT exposed externally — nginx proxies to it
     ports: []
@@ -156,45 +145,18 @@ services:
   # Celery Workers — Production overrides
   # ===========================================================================
   worker-doc:
-    environment:
-      - ENVIRONMENT=production
-      - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_REFRESH_SECRET_KEY=${JWT_REFRESH_SECRET_KEY}
-      - CORS_ORIGINS=["https://${PRODUCTION_DOMAIN}"]
-      - LLM_PROVIDER=groq
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10}
+    env_file:
+      - .env
 
   worker-canvas:
-    environment:
-      - ENVIRONMENT=production
-      - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_REFRESH_SECRET_KEY=${JWT_REFRESH_SECRET_KEY}
-      - CORS_ORIGINS=["https://${PRODUCTION_DOMAIN}"]
-      - LLM_PROVIDER=groq
-      - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50}
+    env_file:
+      - .env
 
   # Flower — internal only, access via SSH tunnel: ssh -L 5555:localhost:5555 root@VPS
   flower:
+    env_file:
+      - .env
     command: celery -A backend.celery_app flower --port=5555 --broker=redis://:${REDIS_PASSWORD}@redis:6379/0
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD}
 
   # ===========================================================================
   # Frontend Build — one-shot service to produce frontend/dist
