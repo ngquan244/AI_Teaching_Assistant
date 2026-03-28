@@ -68,38 +68,33 @@ class ChromaVectorStore:
     
     def _init_embeddings(self):
         """Initialize HuggingFace embeddings model (singleton, shared with PerFileCollectionManager)."""
-        if ChromaVectorStore._embedding_model is None:
-            # Check if PerFileCollectionManager already loaded it
-            try:
-                from .collection_manager import PerFileCollectionManager
+        from .collection_manager import PerFileCollectionManager
+
+        with PerFileCollectionManager._embedding_lock:
+            if ChromaVectorStore._embedding_model is None:
+                # Check if PerFileCollectionManager already loaded it
                 if PerFileCollectionManager._embedding_model is not None:
                     logger.info("Reusing embedding model from PerFileCollectionManager")
                     ChromaVectorStore._embedding_model = PerFileCollectionManager._embedding_model
                     self.embeddings = ChromaVectorStore._embedding_model
                     return
-            except ImportError:
-                pass
 
-            logger.info(f"Loading embedding model: {self.embedding_model_name}")
-            logger.info(f"Using device: {self.device}")
-            
-            ChromaVectorStore._embedding_model = HuggingFaceEmbeddings(
-                model_name=self.embedding_model_name,
-                model_kwargs={'device': self.device},
-                encode_kwargs={'normalize_embeddings': rag_config.NORMALIZE_EMBEDDINGS}
-            )
-            
-            logger.info("Embedding model loaded successfully")
+                logger.info(f"Loading embedding model: {self.embedding_model_name}")
+                logger.info(f"Using device: {self.device}")
+                
+                ChromaVectorStore._embedding_model = HuggingFaceEmbeddings(
+                    model_name=self.embedding_model_name,
+                    model_kwargs={'device': self.device},
+                    encode_kwargs={'normalize_embeddings': rag_config.NORMALIZE_EMBEDDINGS}
+                )
+                
+                logger.info("Embedding model loaded successfully")
 
-            # Share with PerFileCollectionManager so it doesn't reload
-            try:
-                from .collection_manager import PerFileCollectionManager
+                # Share with PerFileCollectionManager so it doesn't reload
                 if PerFileCollectionManager._embedding_model is None:
                     PerFileCollectionManager._embedding_model = ChromaVectorStore._embedding_model
-            except ImportError:
-                pass
-        
-        self.embeddings = ChromaVectorStore._embedding_model
+            
+            self.embeddings = ChromaVectorStore._embedding_model
     
     def _load_or_create_store(self):
         """Load existing vector store or create new one."""

@@ -117,6 +117,17 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_no_store_headers(request: Request, call_next):
+    """Prevent caching of sensitive auth responses."""
+    response = await call_next(request)
+    if request.url.path.startswith("/api/auth"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 # Global exception handlers
 @app.exception_handler(BaseAPIException)
 async def api_exception_handler(request: Request, exc: BaseAPIException):

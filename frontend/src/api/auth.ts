@@ -2,7 +2,7 @@
  * Authentication API client
  * Handles signup, login, and profile endpoints
  */
-import { apiClient } from './client';
+import { apiClient, getStoredRefreshToken } from './client';
 
 // =============================================================================
 // Types
@@ -62,11 +62,6 @@ export interface CanvasToken {
   created_at: string;
   last_used_at: string | null;
   is_active: boolean;
-}
-
-export interface DecryptedCanvasToken {
-  access_token: string;
-  canvas_domain: string;
 }
 
 export interface UserProfileResponse {
@@ -137,12 +132,17 @@ export async function revokeCanvasToken(tokenId: string): Promise<void> {
 }
 
 /**
- * Get active Canvas token (decrypted) for API calls
+ * Logout and revoke current session server-side.
  */
-export async function getActiveCanvasToken(canvasDomain?: string): Promise<DecryptedCanvasToken> {
-  const params = canvasDomain ? { canvas_domain: canvasDomain } : undefined;
-  const response = await apiClient.get<DecryptedCanvasToken>('/api/auth/canvas-tokens/active', { params });
-  return response.data;
+export async function logout(logoutAllDevices: boolean = false): Promise<void> {
+  try {
+    await apiClient.post('/api/auth/logout', {
+      refresh_token: getStoredRefreshToken(),
+      logout_all_devices: logoutAllDevices,
+    });
+  } catch {
+    // Frontend still clears local state even if revoke request fails.
+  }
 }
 
 // Export all auth API functions
@@ -152,7 +152,7 @@ export const authApi = {
   getProfile,
   addCanvasToken,
   revokeCanvasToken,
-  getActiveCanvasToken,
+  logout,
 };
 
 export default authApi;

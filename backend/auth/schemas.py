@@ -9,6 +9,8 @@ from enum import Enum
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from backend.services.url_safety import validate_canvas_origin_url
+
 
 # =============================================================================
 # Common Weak Passwords (top 50 most common)
@@ -95,10 +97,7 @@ class SignupRequest(BaseModel):
     @field_validator("canvas_domain")
     @classmethod
     def validate_canvas_domain(cls, v: str) -> str:
-        v = v.strip().rstrip("/")
-        if not v.startswith("https://"):
-            raise ValueError("Canvas domain must use HTTPS")
-        return v
+        return validate_canvas_origin_url(v)
 
 
 class LoginRequest(BaseModel):
@@ -134,10 +133,7 @@ class AddCanvasTokenRequest(BaseModel):
     @field_validator("canvas_domain")
     @classmethod
     def validate_canvas_domain(cls, v: str) -> str:
-        v = v.strip().rstrip("/")
-        if not v.startswith("https://"):
-            raise ValueError("Canvas domain must use HTTPS")
-        return v
+        return validate_canvas_origin_url(v)
 
 
 # =============================================================================

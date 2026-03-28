@@ -162,23 +162,7 @@ services:
   # ===========================================================================
   # Celery Workers — Production overrides
   # ===========================================================================
-  worker-rag:
-    environment:
-      - ENVIRONMENT=production
-      - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_REFRESH_SECRET_KEY=${JWT_REFRESH_SECRET_KEY}
-      - CORS_ORIGINS=["https://${PRODUCTION_DOMAIN}"]
-      - LLM_PROVIDER=groq
-      - GROQ_API_KEY=${GROQ_API_KEY}
-
-  worker-llm:
+  worker-doc:
     environment:
       - ENVIRONMENT=production
       - REDIS_HOST=redis

@@ -139,6 +139,7 @@ class CollectionRegistry:
         """Load registry from disk."""
         try:
             if self.registry_path.exists():
+                self._last_mtime = self.registry_path.stat().st_mtime
                 with open(self.registry_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for key, meta_dict in data.items():
@@ -400,35 +401,48 @@ class PerFileCollectionManager:
         """
         Ensure this manager's in-memory state reflects what's on disk.
 
-        Call before any cross-process operation (e.g., worker-llm querying
-        collections that were ingested by the backend process).
+        With --pool=threads, intra-worker state is always fresh. This method
+        is kept as defense-in-depth for:
+        - FastAPI backend process (separate process, may have stale registry)
+        - Future architecture changes (if workers are ever split again)
+        - Orphaned directory cleanup
 
-        Steps:
-        1. Reload collection registry from disk (picks up new ingests/deletes)
-        2. Evict stale entries from _collections cache (collections that are no
-           longer in the registry should not be served from memory)
-        3. Clean up orphaned directories on disk
+        Optimization: skip reload if registry file hasn't changed since last load.
+
+        IMPORTANT: The _locks_lock guard below is the Phase 0.1 thread-safety fix.
+        It prevents races with get_or_create_collection() on the _collections dict.
+        Do NOT remove it — see WORKER_MERGE_PLAN.md Section 9.1, Issue 1.
         """
-        self.registry.reload()
+        with self._locks_lock:
+            # Quick mtime check — skip reload if file hasn't changed
+            try:
+                disk_mtime = self.registry.registry_path.stat().st_mtime
+                if hasattr(self.registry, '_last_mtime') and disk_mtime == self.registry._last_mtime:
+                    self._cleanup_orphaned_directories()
+                    return
+            except (OSError, AttributeError):
+                pass  # Fall through to full reload
 
-        # Evict cached Chroma instances whose collection names are no longer
-        # present in the freshly-reloaded registry.
-        registered_names = {meta.collection_name for meta in self.registry.get_all()}
-        stale_keys = [k for k in self._collections if k not in registered_names]
-        for key in stale_keys:
-            old = self._collections.pop(key, None)
-            if old is not None:
-                try:
-                    if hasattr(old, '_client'):
-                        del old._client
-                    del old
-                except Exception:
-                    pass
-            logger.debug(f"Evicted stale cached collection: {key}")
+            self.registry.reload()
 
-        if stale_keys:
-            import gc
-            gc.collect()
+            # Evict cached Chroma instances whose collection names are no longer
+            # present in the freshly-reloaded registry.
+            registered_names = {meta.collection_name for meta in self.registry.get_all()}
+            stale_keys = [k for k in self._collections if k not in registered_names]
+            for key in stale_keys:
+                old = self._collections.pop(key, None)
+                if old is not None:
+                    try:
+                        if hasattr(old, '_client'):
+                            del old._client
+                        del old
+                    except Exception:
+                        pass
+                logger.debug(f"Evicted stale cached collection: {key}")
+
+            if stale_keys:
+                import gc
+                gc.collect()
 
         self._cleanup_orphaned_directories()
     

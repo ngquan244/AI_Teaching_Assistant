@@ -4,11 +4,16 @@ Proxy endpoints for Canvas REST API with file download, MD5 deduplication, and Q
 """
 import base64
 import logging
-from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
 from typing import Optional
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.auth.dependencies import CurrentUser
+from backend.database import get_async_session
+from backend.database.models.job import JobType
+from backend.services.canvas_connection import resolve_canvas_connection_async
 from backend.services.canvas_service import (
     fetch_canvas_courses,
     fetch_course_files,
@@ -16,6 +21,8 @@ from backend.services.canvas_service import (
     download_files_batch,
     import_qti_to_canvas,
 )
+from backend.services.job_service import JobService
+from backend.services.url_safety import validate_download_url
 
 logger = logging.getLogger(__name__)
 
@@ -47,42 +54,21 @@ class QTIImportRequest(BaseModel):
 
 
 # ============================================================================
-# Helper Functions
-# ============================================================================
-
-def get_canvas_credentials(
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
-) -> tuple[str, str]:
-    """Extract Canvas credentials from headers"""
-    if not x_canvas_token:
-        raise HTTPException(
-            status_code=401,
-            detail="Canvas access token not provided"
-        )
-    
-    base_url = x_canvas_base_url or "https://lms.uet.vnu.edu.vn"
-    return x_canvas_token, base_url
-
-
-# ============================================================================
 # Endpoints
 # ============================================================================
 
 @router.get("/courses")
 async def get_courses(
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
     """
     Proxy endpoint for Canvas GET /api/v1/users/self/courses
-    
-    Headers:
-        X-Canvas-Token: Canvas access token
-        X-Canvas-Base-Url: Canvas instance URL (optional, defaults to canvas.instructure.com)
     """
-    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    token, base_url = await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     result = await fetch_canvas_courses(token, base_url)
     
     if not result["success"]:
@@ -97,18 +83,16 @@ async def get_courses(
 @router.get("/courses/{course_id}/files")
 async def get_course_files(
     course_id: int,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
     """
     Proxy endpoint for Canvas GET /api/v1/courses/{course_id}/files
-    
-    Headers:
-        X-Canvas-Token: Canvas access token
-        X-Canvas-Base-Url: Canvas instance URL (optional)
     """
-    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    token, base_url = await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     result = await fetch_course_files(token, base_url, course_id)
     
     if not result["success"]:
@@ -126,9 +110,8 @@ async def get_course_files(
 @router.post("/download")
 async def download_single_file(
     request: FileDownloadRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
     """
     Download a single file with MD5 deduplication
@@ -142,14 +125,15 @@ async def download_single_file(
         - saved_path: relative path where file was saved (if saved)
         - existing_file: path of duplicate (if duplicate)
     """
-    # We don't need the token for downloading since the URL is pre-signed
-    # But we validate credentials anyway for consistency
-    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
-    
+    await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
+
     result = await download_file_with_dedup(
         file_id=request.file_id,
         filename=request.filename,
-        download_url=request.url,
+        download_url=validate_download_url(request.url),
         course_id=request.course_id,
     )
     
@@ -159,9 +143,8 @@ async def download_single_file(
 @router.post("/download/batch")
 async def download_multiple_files(
     request: BatchDownloadRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
     """
     Download multiple files with MD5 deduplication
@@ -175,13 +158,16 @@ async def download_multiple_files(
         - duplicates: files skipped (duplicate)
         - failed: files that failed to download
     """
-    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     
     files_data = [
         {
             "file_id": f.file_id,
             "filename": f.filename,
-            "url": f.url,
+            "url": validate_download_url(f.url),
         }
         for f in request.files
     ]
@@ -197,9 +183,8 @@ async def download_multiple_files(
 @router.post("/import-qti-bank")
 async def import_qti_bank(
     request: QTIImportRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
 ):
     """
     Import a QTI zip package into Canvas as a new Question Bank.
@@ -215,17 +200,16 @@ async def import_qti_bank(
         - qti_zip_base64: Base64 encoded QTI zip file
         - filename: Optional filename (defaults to qti_import.zip)
     
-    Headers:
-        - X-Canvas-Token: Canvas access token
-        - X-Canvas-Base-Url: Canvas instance URL
-    
     Returns:
         - success: boolean
         - status: 'completed' | 'failed'
         - migration_id: Canvas migration ID
         - message: Success/error message
     """
-    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    token, base_url = await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     
     # Decode base64 zip content
     try:
@@ -271,12 +255,7 @@ async def import_qti_bank(
 # These endpoints return immediately with a job_id.
 # The actual work is done in background via Celery.
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends
 from pydantic import BaseModel as PydanticBaseModel
-from backend.database import get_async_session
-from backend.services.job_service import JobService
-from backend.database.models.job import JobType
 from backend import tasks
 from backend.celery_app import apply_async_nonblocking
 
@@ -293,9 +272,8 @@ class AsyncJobResponse(PydanticBaseModel):
 @router.post("/async/download")
 async def async_download_single_file(
     request: FileDownloadRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -303,7 +281,11 @@ async def async_download_single_file(
     
     Returns immediately with job_id. Poll /api/jobs/{job_id} for status.
     """
-    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
+    safe_url = validate_download_url(request.url)
     
     try:
         job_service = JobService(db)
@@ -314,7 +296,7 @@ async def async_download_single_file(
             payload={
                 "file_id": request.file_id,
                 "filename": request.filename,
-                "url": request.url,
+                "url": safe_url,
                 "course_id": request.course_id,
             },
         )
@@ -328,7 +310,7 @@ async def async_download_single_file(
             kwargs={
                 "file_id": request.file_id,
                 "filename": request.filename,
-                "download_url": request.url,
+                "download_url": safe_url,
                 "course_id": request.course_id,
             },
         )
@@ -351,9 +333,8 @@ async def async_download_single_file(
 @router.post("/async/download/batch")
 async def async_download_batch(
     request: BatchDownloadRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -362,13 +343,20 @@ async def async_download_batch(
     Returns immediately with job_id. Each file is processed sequentially
     with progress updates.
     """
-    get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     
     try:
         job_service = JobService(db)
         
         files_data = [
-            {"file_id": f.file_id, "filename": f.filename, "url": f.url}
+            {
+                "file_id": f.file_id,
+                "filename": f.filename,
+                "url": validate_download_url(f.url),
+            }
             for f in request.files
         ]
         
@@ -404,9 +392,8 @@ async def async_download_batch(
 @router.post("/async/import-qti-bank")
 async def async_import_qti_bank(
     request: QTIImportRequest,
+    http_request: Request,
     user: CurrentUser,
-    x_canvas_token: Optional[str] = Header(None, alias="X-Canvas-Token"),
-    x_canvas_base_url: Optional[str] = Header(None, alias="X-Canvas-Base-Url"),
     db: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -415,7 +402,10 @@ async def async_import_qti_bank(
     Multi-step process: create migration -> upload zip -> poll completion.
     Returns immediately with job_id.
     """
-    token, base_url = get_canvas_credentials(x_canvas_token, x_canvas_base_url)
+    _, base_url = await resolve_canvas_connection_async(
+        user_id=user.id,
+        request=http_request,
+    )
     
     # Validate base64 up front
     try:
@@ -447,12 +437,12 @@ async def async_import_qti_bank(
             tasks.canvas_tasks.import_qti,
             args=[str(job.id)],
             kwargs={
-                "token": token,
-                "base_url": base_url,
                 "course_id": request.course_id,
                 "question_bank_name": request.question_bank_name,
                 "qti_zip_base64": request.qti_zip_base64,
                 "filename": request.filename or "qti_import.zip",
+                "canvas_domain": base_url,
+                "user_id": str(user.id),
             },
         )
         

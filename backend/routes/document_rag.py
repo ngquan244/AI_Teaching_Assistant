@@ -23,7 +23,7 @@ from backend.core.config import settings
 from backend.core.logger import quiz_logger
 from backend.utils import get_user_rag_dir
 from backend.database.base import SessionLocal
-from backend.services.groq_key_service import get_effective_groq_key
+from backend.services.url_safety import validate_download_url
 
 logger = logging.getLogger(__name__)
 
@@ -85,18 +85,19 @@ class QuizQuestion(BaseModel):
     question: str
     options: dict
     correct_answer: str
-    explanation: Optional[str] = None
 
 
 class GenerateQuizResponse(BaseModel):
     """Response model for quiz generation"""
     success: bool
+    partial: bool = False
     questions: list = []
     topic: str = ""
     num_questions_requested: Optional[int] = None
     num_questions_generated: Optional[int] = None
     context_used: Optional[str] = None
     raw_response: Optional[str] = None
+    message: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -253,7 +254,7 @@ async def download_and_index(request: DownloadAndIndexRequest, user: CurrentUser
     try:
         # Download file from URL (follow redirects like curl -L) — async I/O
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            response = await client.get(request.url)
+            response = await client.get(validate_download_url(request.url))
             response.raise_for_status()
             content = response.content
         
@@ -547,13 +548,24 @@ def generate_quiz_from_documents(request: GenerateQuizRequest, user: CurrentUser
             )
         
         if not result.get("success"):
+            partial_questions = [
+                QuizQuestion(
+                    question_number=q.get("question_number", 0),
+                    question=q.get("question", ""),
+                    options=q.get("options", {}),
+                    correct_answer=q.get("correct_answer", ""),
+                )
+                for q in result.get("questions", [])
+            ]
             return GenerateQuizResponse(
-                success=False,
+                success=result.get("success", False),
+                partial=result.get("partial", False),
                 error=result.get("error", "Failed to generate quiz"),
-                questions=[],
+                message=result.get("message"),
+                questions=partial_questions,
                 topic=", ".join(topics_list),
                 num_questions_requested=request.num_questions,
-                num_questions_generated=0
+                num_questions_generated=len(partial_questions)
             )
         
         # Convert questions to response model
@@ -564,17 +576,18 @@ def generate_quiz_from_documents(request: GenerateQuizRequest, user: CurrentUser
                 question=q.get("question", ""),
                 options=q.get("options", {}),
                 correct_answer=q.get("correct_answer", ""),
-                explanation=q.get("explanation")
             ))
         
         return GenerateQuizResponse(
             success=True,
+            partial=result.get("partial", False),
             questions=questions,
             topic=", ".join(topics_list),
             num_questions_requested=request.num_questions,
             num_questions_generated=len(questions),
             context_used=result.get("context_used"),
-            raw_response=result.get("raw_response") if request.language == "vi" else None
+            raw_response=result.get("raw_response") if request.language == "vi" else None,
+            message=result.get("message"),
         )
         
     except HTTPException:
@@ -1139,8 +1152,6 @@ async def async_generate_quiz(
     try:
         job_service = JobService(db)
         
-        groq_api_key, _ = await get_effective_groq_key(db)
-        
         payload = {
             "topics": topics_list,
             "num_questions": request.num_questions,
@@ -1148,7 +1159,6 @@ async def async_generate_quiz(
             "language": request.language,
             "selected_documents": request.selected_documents,
             "user_id": str(user.id),
-            "groq_api_key": groq_api_key,
         }
         quiz_logger.info(f"Route async_generate_quiz: topics={topics_list}, selected_documents={request.selected_documents!r}, user={user.id}")
         
@@ -1195,8 +1205,6 @@ async def async_extract_topics(
     try:
         job_service = JobService(db)
         
-        groq_api_key, _ = await get_effective_groq_key(db)
-        
         job = await job_service.create_job(
             user_id=user.id,
             job_type=JobType.EXTRACT_TOPICS,
@@ -1209,7 +1217,7 @@ async def async_extract_topics(
         result = await apply_async_nonblocking(
             tasks.rag_tasks.extract_topics,
             args=[str(job.id)],
-            kwargs={"user_id": str(user.id), "groq_api_key": groq_api_key},
+            kwargs={"user_id": str(user.id)},
         )
         
         await job_service.set_celery_task_id(job.id, result.id)

@@ -102,47 +102,17 @@ services:
   # Celery Workers - Process background jobs
   # ===========================================================================
   
-  # RAG Worker: Document ingestion, indexing, retrieval
-  worker-rag:
+  # Document Worker: RAG indexing + LLM quiz generation (shared process, thread pool)
+  # CRITICAL: --pool=threads ensures all tasks share the same process memory.
+  # Without it, Celery defaults to prefork on Linux, forking separate child
+  # processes with isolated singletons — defeating the purpose of this merge.
+  worker-doc:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: grader_worker_rag
+    container_name: grader_worker_doc
     restart: unless-stopped
-    command: celery -A backend.celery_app worker -Q rag,celery,default -c 2 --loglevel=INFO -n rag@%h
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
-      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
-    volumes:
-      - ./data:/app/data
-      - ./exports:/app/exports
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - grader_network
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 512M
-
-  # LLM Worker: Quiz generation, chat, topic extraction
-  worker-llm:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: grader_worker_llm
-    restart: unless-stopped
-    command: celery -A backend.celery_app worker -Q llm -c 1 --loglevel=INFO -n llm@%h
+    command: celery -A backend.celery_app worker --pool=threads -Q rag,llm,celery,default -c 3 --loglevel=INFO -n doc@%h
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -166,9 +136,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 4G
         reservations:
-          memory: 512M
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping -d doc@$$HOSTNAME --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
 
   # Canvas Worker: Canvas API operations
   worker-canvas:

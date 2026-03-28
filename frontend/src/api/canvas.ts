@@ -3,7 +3,6 @@
 // ============================================================================
 
 import { apiClient } from './client';
-import { authApi } from './auth';
 import type {
   CanvasCoursesResponse,
   CanvasFilesResponse,
@@ -15,149 +14,87 @@ import type {
   QTIImportResponse,
 } from '../types/canvas';
 
-// Cache for Canvas token to avoid repeated API calls
-let cachedToken: { token: string; baseUrl: string; expiresAt: number } | null = null;
-
 /**
- * Get Canvas headers from backend (fetches decrypted token)
- * Caches the token for 5 minutes to reduce API calls
- * Exported so canvasQuiz.ts can share the same cache.
+ * Legacy helper kept for transition compatibility.
+ * Canvas tokens are now resolved server-side, so no custom headers are sent.
  */
 export async function getCanvasHeaders(): Promise<Record<string, string>> {
-  const now = Date.now();
-  
-  // Return cached token if still valid
-  if (cachedToken && cachedToken.expiresAt > now) {
-    return {
-      'X-Canvas-Token': cachedToken.token,
-      'X-Canvas-Base-Url': cachedToken.baseUrl,
-    };
-  }
-
-  try {
-    const { access_token, canvas_domain } = await authApi.getActiveCanvasToken();
-    
-    // Cache for 5 minutes
-    cachedToken = {
-      token: access_token,
-      baseUrl: canvas_domain,
-      expiresAt: now + 5 * 60 * 1000,
-    };
-
-    return {
-      'X-Canvas-Token': access_token,
-      'X-Canvas-Base-Url': canvas_domain,
-    };
-  } catch {
-    throw new Error('Canvas access token not configured. Please add a token in Settings.');
-  }
+  return {};
 }
 
 /**
- * Clear the cached Canvas token (call when token is updated)
+ * No-op legacy cache clearer.
  */
-export function clearCanvasTokenCache(): void {
-  cachedToken = null;
-}
+export function clearCanvasTokenCache(): void {}
 
-/**
- * Fetch user's courses from Canvas
- */
 export async function fetchCourses(): Promise<CanvasCoursesResponse> {
   try {
-    const headers = await getCanvasHeaders();
-    const response = await apiClient.get<CanvasCoursesResponse>(
-      '/api/canvas/courses',
-      { headers }
-    );
+    const response = await apiClient.get<CanvasCoursesResponse>('/api/canvas/courses');
     return response.data;
   } catch (error: unknown) {
-    const err = error as { response?: { data?: { error?: string }; status?: number }; message?: string };
+    const err = error as { response?: { data?: { detail?: string; error?: string }; status?: number }; message?: string };
     if (err.response?.status === 401) {
       return {
         success: false,
         courses: [],
-        error: 'Invalid or expired Canvas access token',
+        error: err.response?.data?.detail || 'Canvas access token not configured',
       };
     }
     return {
       success: false,
       courses: [],
-      error: err.response?.data?.error || err.message || 'Failed to fetch courses',
+      error: err.response?.data?.detail || err.response?.data?.error || err.message || 'Failed to fetch courses',
     };
   }
 }
 
-/**
- * Fetch files from a specific course
- */
 export async function fetchCourseFiles(courseId: number): Promise<CanvasFilesResponse> {
   try {
-    const headers = await getCanvasHeaders();
     const response = await apiClient.get<CanvasFilesResponse>(
       `/api/canvas/courses/${courseId}/files`,
-      { headers }
     );
     return response.data;
   } catch (error: unknown) {
-    const err = error as { response?: { data?: { error?: string }; status?: number }; message?: string };
-    if (err.response?.status === 401) {
-      return {
-        success: false,
-        files: [],
-        course_id: courseId,
-        error: 'Invalid or expired Canvas access token',
-      };
-    }
+    const err = error as { response?: { data?: { detail?: string; error?: string }; status?: number }; message?: string };
     return {
       success: false,
       files: [],
       course_id: courseId,
-      error: err.response?.data?.error || err.message || 'Failed to fetch files',
+      error: err.response?.data?.detail || err.response?.data?.error || err.message || 'Failed to fetch files',
     };
   }
 }
 
-/**
- * Download a single file with MD5 deduplication
- */
 export async function downloadFile(
   request: FileDownloadRequest
 ): Promise<FileDownloadResponse> {
   try {
-    const headers = await getCanvasHeaders();
     const response = await apiClient.post<FileDownloadResponse>(
       '/api/canvas/download',
       request,
-      { headers }
     );
     return response.data;
   } catch (error: unknown) {
-    const err = error as { response?: { data?: { error?: string } }; message?: string };
+    const err = error as { response?: { data?: { detail?: string; error?: string } }; message?: string };
     return {
       success: false,
       file_id: request.file_id,
       filename: request.filename,
       status: 'failed',
-      error: err.response?.data?.error || err.message || 'Download failed',
+      error: err.response?.data?.detail || err.response?.data?.error || err.message || 'Download failed',
     };
   }
 }
 
-/**
- * Download multiple files with MD5 deduplication
- */
 export async function downloadFiles(
   request: BatchDownloadRequest
 ): Promise<BatchDownloadResponse> {
   try {
-    const headers = await getCanvasHeaders();
     const response = await apiClient.post<BatchDownloadResponse>(
       '/api/canvas/download/batch',
       request,
-      { 
-        headers,
-        timeout: 300000, // 5 minutes for batch downloads
+      {
+        timeout: 300000,
       }
     );
     return response.data;
@@ -173,15 +110,10 @@ export async function downloadFiles(
   }
 }
 
-/**
- * Stream download a single file (for progress tracking)
- * Returns an async generator that yields download progress
- */
 export async function* downloadFileWithProgress(
   request: FileDownloadRequest,
   _onProgress?: (progress: number) => void
 ): AsyncGenerator<FileDownloadResponse> {
-  // Initial status: queued
   yield {
     success: true,
     file_id: request.file_id,
@@ -189,7 +121,6 @@ export async function* downloadFileWithProgress(
     status: 'queued',
   };
 
-  // Status: downloading
   yield {
     success: true,
     file_id: request.file_id,
@@ -200,7 +131,7 @@ export async function* downloadFileWithProgress(
   try {
     const result = await downloadFile(request);
     yield result;
-  } catch (error) {
+  } catch {
     yield {
       success: false,
       file_id: request.file_id,
@@ -211,37 +142,22 @@ export async function* downloadFileWithProgress(
   }
 }
 
-/**
- * Import QTI zip file into Canvas as a new Question Bank
- * Uses Content Migration API flow
- */
 export async function importQTIToCanvas(
   request: QTIImportRequest
 ): Promise<QTIImportResponse> {
   try {
-    const headers = await getCanvasHeaders();
     const response = await apiClient.post<QTIImportResponse>(
       '/api/canvas/import-qti-bank',
       request,
-      { 
-        headers,
-        timeout: 300000, // 5 minutes for full import process
-      }
+      { timeout: 120000 }
     );
     return response.data;
   } catch (error: unknown) {
-    const err = error as { response?: { data?: { error?: string; detail?: string }; status?: number }; message?: string };
-    if (err.response?.status === 401) {
-      return {
-        success: false,
-        status: 'failed',
-        error: 'Invalid or expired Canvas access token',
-      };
-    }
+    const err = error as { response?: { data?: { detail?: string; error?: string } }; message?: string };
     return {
       success: false,
       status: 'failed',
-      error: err.response?.data?.error || err.response?.data?.detail || err.message || 'Failed to import QTI to Canvas',
+      error: err.response?.data?.detail || err.response?.data?.error || err.message || 'Failed to import QTI package',
     };
   }
 }
@@ -254,6 +170,7 @@ export const canvasApi = {
   downloadFileWithProgress,
   importQTIToCanvas,
   clearCanvasTokenCache,
+  getCanvasHeaders,
 };
 
 export default canvasApi;

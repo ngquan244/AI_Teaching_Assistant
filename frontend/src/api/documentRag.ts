@@ -123,7 +123,6 @@ export interface QuizQuestion {
     D: string;
   };
   correct_answer: string;
-  explanation?: string;
 }
 
 export interface GenerateQuizRequest {
@@ -137,12 +136,14 @@ export interface GenerateQuizRequest {
 
 export interface GenerateQuizResponse {
   success: boolean;
+  partial?: boolean;
   questions: QuizQuestion[];
   topic: string;
   num_questions_requested: number;
   num_questions_generated: number;
   context_used?: string;
   raw_response?: string;
+  message?: string;
   error?: string;
 }
 

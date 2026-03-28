@@ -69,6 +69,16 @@ def _signup_lockout_ip_key(ip: str) -> str:
     return f"signup_lockout:ip:{ip}"
 
 
+def _refresh_user_key(user_id: str) -> str:
+    """Redis key for refresh-token rate limiting by user."""
+    return f"refresh_rate:user:{user_id}"
+
+
+def _refresh_ip_key(ip: str) -> str:
+    """Redis key for refresh-token rate limiting by IP."""
+    return f"refresh_rate:ip:{ip}"
+
+
 async def is_login_locked_out(ip: str, email: str) -> tuple[bool, int]:
     """
     Check if login is currently locked out for this IP or email.
@@ -271,3 +281,49 @@ async def reset_signup_attempts(ip: str) -> None:
         await pipe.execute()
     except Exception as e:
         logger.error(f"Signup rate limiter reset failed: {type(e).__name__}: {e}")
+
+
+# =============================================================================
+# Refresh Token Rate Limiting
+# =============================================================================
+
+async def record_refresh_attempt(
+    *,
+    ip: str,
+    user_id: Optional[str] = None,
+) -> tuple[bool, int]:
+    """
+    Record a refresh attempt.
+
+    Returns:
+        Tuple of (allowed, retry_after_seconds)
+    """
+    try:
+        redis_client = await _get_redis()
+        max_attempts = settings.REFRESH_RATE_LIMIT_MAX_ATTEMPTS
+        window = settings.REFRESH_RATE_LIMIT_WINDOW_SECONDS
+        key = _refresh_user_key(user_id) if user_id else _refresh_ip_key(ip)
+
+        pipe = redis_client.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, window)
+        pipe.ttl(key)
+        results = await pipe.execute()
+
+        attempts = int(results[0] or 0)
+        retry_after = max(int(results[2] or 0), 1)
+
+        if attempts > max_attempts:
+            logger.warning(
+                "Refresh rate limit exceeded: scope=%s attempts=%s retry_after=%ss",
+                f"user:{user_id}" if user_id else f"ip:{ip}",
+                attempts,
+                retry_after,
+            )
+            return False, retry_after
+
+        return True, 0
+    except Exception as e:
+        logger.error(f"Refresh rate limiter failed: {type(e).__name__}: {e}")
+        # Fail-open: this limiter is loop protection, not a hard auth dependency.
+        return True, 0

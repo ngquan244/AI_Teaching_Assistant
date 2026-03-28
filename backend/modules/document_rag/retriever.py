@@ -6,6 +6,7 @@ Includes both single-collection and multi-collection retrievers.
 """
 
 import logging
+from collections import defaultdict
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 from langchain_core.documents import Document
@@ -311,6 +312,120 @@ class MultiCollectionRetriever:
             self._log_retrieved_documents(all_documents[:10])
         
         return all_documents
+
+    def retrieve_with_budget(
+        self,
+        query: str,
+        max_total_docs: int,
+        target_file_hashes: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        round_one_cap: int = 2,
+        round_n_cap: int = 1,
+    ) -> List[Document]:
+        """
+        Retrieve documents with a global budget instead of a fixed per-collection k.
+
+        Strategy:
+        - Single collection: allow that collection to use the whole budget.
+        - Multiple collections: fetch a per-collection candidate pool, then allocate
+          results using a round-based soft cap (2 docs in round 1, then 1 doc/round).
+        """
+        max_total_docs = max(1, max_total_docs)
+
+        self.collection_manager.registry.reload()
+        resolved_hashes = self.resolve_target_file_hashes(target_file_hashes, user_id)
+
+        if not resolved_hashes:
+            logger.warning("No files to query - index is empty")
+            return []
+
+        if len(resolved_hashes) == 1:
+            file_hash = resolved_hashes[0]
+            docs = self.collection_manager.query_collection(
+                file_hash=file_hash,
+                query=query,
+                k=max_total_docs,
+            )
+            logger.info(
+                "Budgeted retrieval (single collection): requested=%s returned=%s",
+                max_total_docs,
+                len(docs),
+            )
+            return docs[:max_total_docs]
+
+        fetch_per_collection = min(
+            max_total_docs,
+            max(6, (max_total_docs // max(1, min(len(resolved_hashes), 6))) + 4),
+        )
+
+        per_collection_docs: Dict[str, List[Document]] = {}
+        for file_hash in resolved_hashes:
+            try:
+                docs = self.collection_manager.query_collection(
+                    file_hash=file_hash,
+                    query=query,
+                    k=fetch_per_collection,
+                )
+                per_collection_docs[file_hash] = docs
+            except Exception as e:
+                logger.warning(f"Error querying collection for {file_hash}: {e}")
+                per_collection_docs[file_hash] = []
+
+        selected = self._round_robin_allocate(
+            per_collection_docs=per_collection_docs,
+            max_total_docs=max_total_docs,
+            round_one_cap=round_one_cap,
+            round_n_cap=round_n_cap,
+        )
+
+        logger.info(
+            "Budgeted retrieval (multi collection): budget=%s selected=%s sources=%s",
+            max_total_docs,
+            len(selected),
+            len([docs for docs in per_collection_docs.values() if docs]),
+        )
+        return selected
+
+    def _round_robin_allocate(
+        self,
+        per_collection_docs: Dict[str, List[Document]],
+        max_total_docs: int,
+        round_one_cap: int = 2,
+        round_n_cap: int = 1,
+    ) -> List[Document]:
+        """Allocate a global budget across collections with soft round-based caps."""
+        selected: List[Document] = []
+        consumed: Dict[str, int] = defaultdict(int)
+        order = [file_hash for file_hash, docs in per_collection_docs.items() if docs]
+
+        if not order:
+            return []
+
+        round_index = 0
+        while len(selected) < max_total_docs:
+            made_progress = False
+            cap = round_one_cap if round_index == 0 else round_n_cap
+
+            for file_hash in order:
+                docs = per_collection_docs[file_hash]
+                start = consumed[file_hash]
+                end = min(start + cap, len(docs))
+                if start >= end:
+                    continue
+
+                slice_docs = docs[start:end]
+                selected.extend(slice_docs)
+                consumed[file_hash] = end
+                made_progress = True
+
+                if len(selected) >= max_total_docs:
+                    return selected[:max_total_docs]
+
+            if not made_progress:
+                break
+            round_index += 1
+
+        return selected[:max_total_docs]
     
     def invoke(
         self,

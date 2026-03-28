@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 from celery import shared_task
 
 from backend.celery_app import RateLimitedCanvasTask
+from backend.services.canvas_connection import resolve_canvas_connection_sync
 from backend.services.job_service import get_sync_job_service
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,26 @@ def run_async(coro):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     return loop.run_until_complete(coro)
+
+
+def _resolve_canvas_credentials_for_worker(
+    *,
+    user_id: Optional[str],
+    canvas_domain: Optional[str] = None,
+    legacy_canvas_token: Optional[str] = None,
+    legacy_canvas_base_url: Optional[str] = None,
+    require: bool = True,
+    db_session=None,
+) -> tuple[str, str]:
+    token, base_url = resolve_canvas_connection_sync(
+        user_id=user_id,
+        canvas_domain_hint=canvas_domain,
+        legacy_token=legacy_canvas_token,
+        legacy_base_url=legacy_canvas_base_url,
+        require=require,
+        db=db_session,
+    )
+    return token, base_url
 
 
 @shared_task(
@@ -188,13 +209,16 @@ def download_files_batch(
 def import_qti(
     self,
     job_id: str,
-    canvas_token: str,
-    canvas_base_url: str,
     course_id: int,
     question_bank_name: str,
     qti_zip_base64: str,
     filename: str = "qti_import.zip",
     user_id: Optional[str] = None,
+    canvas_domain: Optional[str] = None,
+    canvas_token: Optional[str] = None,
+    canvas_base_url: Optional[str] = None,
+    token: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Import QTI package to Canvas as Question Bank.
@@ -238,9 +262,17 @@ def import_qti(
         # Start import
         job_service.update_progress(job_uuid, 20, "Creating Canvas migration")
         
+        effective_token, effective_base_url = _resolve_canvas_credentials_for_worker(
+            user_id=user_id,
+            canvas_domain=canvas_domain,
+            legacy_canvas_token=canvas_token or token,
+            legacy_canvas_base_url=canvas_base_url or base_url,
+            db_session=db_session,
+        )
+
         result = run_async(import_qti_to_canvas(
-            token=canvas_token,
-            base_url=canvas_base_url,
+            token=effective_token,
+            base_url=effective_base_url,
             course_id=course_id,
             question_bank_name=question_bank_name,
             qti_zip_content=qti_zip_content,
@@ -297,6 +329,16 @@ def download_and_index(
         job_service.start_job(job_uuid, f"Downloading {filename}")
         
         service = get_canvas_rag_service()
+        effective_canvas_token = canvas_token
+        if not effective_canvas_token and user_id:
+            try:
+                effective_canvas_token, _ = _resolve_canvas_credentials_for_worker(
+                    user_id=user_id,
+                    db_session=db_session,
+                    require=False,
+                )
+            except Exception:
+                effective_canvas_token = None
         
         # Step 1: Download
         job_service.update_progress(job_uuid, 20, "Downloading file")
@@ -305,7 +347,7 @@ def download_and_index(
             filename=filename,
             course_id=course_id,
             file_id=file_id,
-            canvas_token=canvas_token,
+            canvas_token=effective_canvas_token,
             user_id=user_id,
         ))
         
@@ -354,14 +396,17 @@ def download_and_index(
 def create_canvas_quiz(
     self,
     job_id: str,
-    canvas_token: str,
-    canvas_base_url: str,
     course_id: int,
     quiz_params: Dict[str, Any],
     direct_questions: List[Dict[str, Any]] | None = None,
     source_questions: List[Dict[str, Any]] | None = None,
     default_points: float = 1.0,
     user_id: Optional[str] = None,
+    canvas_domain: Optional[str] = None,
+    canvas_token: Optional[str] = None,
+    canvas_base_url: Optional[str] = None,
+    token: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a full Canvas quiz (async Celery task version).
@@ -378,9 +423,17 @@ def create_canvas_quiz(
         
         job_service.update_progress(job_uuid, 10, "Building quiz on Canvas")
         
+        effective_token, effective_base_url = _resolve_canvas_credentials_for_worker(
+            user_id=user_id,
+            canvas_domain=canvas_domain,
+            legacy_canvas_token=canvas_token or token,
+            legacy_canvas_base_url=canvas_base_url or base_url,
+            db_session=db_session,
+        )
+
         result = run_async(build_full_quiz(
-            token=canvas_token,
-            base_url=canvas_base_url,
+            token=effective_token,
+            base_url=effective_base_url,
             course_id=course_id,
             quiz_params=quiz_params,
             direct_questions=direct_questions,

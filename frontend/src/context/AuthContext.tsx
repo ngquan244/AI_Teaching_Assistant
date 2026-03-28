@@ -25,7 +25,7 @@ interface AuthState {
 interface AuthContextType extends AuthState {
   login: (data: LoginRequest) => Promise<void>;
   signup: (data: SignupRequest) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -122,14 +122,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   /**
    * Logout and clear state
    */
-  const logout = (): void => {
-    removeAllTokens();
-    setState({
-      user: null,
-      canvasTokens: [],
-      isAuthenticated: false,
-      isLoading: false,
-    });
+  const logout = async (): Promise<void> => {
+    try {
+      await authApi.logout();
+    } finally {
+      removeAllTokens();
+      setState({
+        user: null,
+        canvasTokens: [],
+        isAuthenticated: false,
+        isLoading: false,
+      });
+    }
   };
 
   /**

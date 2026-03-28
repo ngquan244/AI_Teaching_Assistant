@@ -136,12 +136,16 @@ class Settings(BaseSettings):
     LOGIN_RATE_LIMIT_MAX_ATTEMPTS: int = 5  # Max login attempts per window
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300  # 5-minute window
     LOGIN_LOCKOUT_DURATION_SECONDS: int = 900  # 15-minute lockout after max attempts
+    REFRESH_RATE_LIMIT_MAX_ATTEMPTS: int = 20  # Soft loop protection
+    REFRESH_RATE_LIMIT_WINDOW_SECONDS: int = 300  # 5-minute window
     TOKEN_BLACKLIST_REDIS_DB: int = 2  # Redis DB for token blacklist
     
     # ==========================================================================
     # Encryption Configuration (for Canvas tokens)
     # ==========================================================================
     ENCRYPTION_KEY: str = _DEV_ENCRYPTION_KEY  # Override in .env for production
+    DEFAULT_CANVAS_BASE_URL: str = "https://lms.uet.vnu.edu.vn"
+    CANVAS_SERVER_SIDE_MODE: str = "dual"  # dual | server_only
     
     # ==========================================================================
     # Signup Configuration
@@ -162,6 +166,17 @@ class Settings(BaseSettings):
         if v not in allowed:
             raise ValueError(f"SIGNUP_MODE must be one of {allowed}, got '{v}'")
         return v
+
+    @field_validator("CANVAS_SERVER_SIDE_MODE")
+    @classmethod
+    def validate_canvas_server_side_mode(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        allowed = {"dual", "server_only"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"CANVAS_SERVER_SIDE_MODE must be one of {allowed}, got '{v}'"
+            )
+        return normalized
     
     # ==========================================================================
     # Password Hashing Configuration

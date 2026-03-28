@@ -7,9 +7,12 @@ This module should be imported as:
     from backend.celery_app import celery_app
 
 Workers should be started with:
-    celery -A backend.celery_app worker -Q rag -c 4 --loglevel=info
-    celery -A backend.celery_app worker -Q llm -c 2 --loglevel=info
-    celery -A backend.celery_app worker -Q canvas -c 2 --loglevel=info
+    celery -A backend.celery_app worker --pool=threads -Q rag,llm,celery,default -c 3 --loglevel=info
+    celery -A backend.celery_app worker -Q canvas -c 4 --loglevel=info
+
+NOTE: --pool=threads is REQUIRED for the doc worker to share in-memory state
+      across rag and llm queues. Without it, Celery defaults to prefork on
+      Linux, creating separate child processes with isolated singletons.
 """
 import logging
 from celery import Celery
@@ -90,7 +93,7 @@ celery_app.conf.update(
     
     # Result backend settings
     result_expires=86400,  # 24 hours
-    result_extended=True,  # Store task name, args, kwargs in result
+    result_extended=False,  # Avoid persisting task args/kwargs that may contain sensitive data
     
     # Task execution settings
     task_acks_late=True,  # Acknowledge after task completes (safer for retries)

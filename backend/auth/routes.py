@@ -20,6 +20,7 @@ from backend.core.security import (
     create_access_token,
     create_refresh_token,
     verify_access_token,
+    verify_refresh_token,
 )
 from backend.auth.schemas import (
     SignupRequest,
@@ -45,8 +46,10 @@ from backend.auth.rate_limiter import (
     is_signup_locked_out,
     record_failed_signup,
     reset_signup_attempts,
+    record_refresh_attempt,
 )
 from backend.core.exceptions import UnauthorizedException
+from backend.services.url_safety import validate_canvas_origin_url
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +286,7 @@ async def login(
 )
 async def refresh_token(
     request: RefreshTokenRequest,
+    http_request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RefreshTokenResponse:
     """
@@ -293,6 +297,19 @@ async def refresh_token(
     
     - **refresh_token**: Current valid refresh token
     """
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    refresh_token_data = verify_refresh_token(request.refresh_token)
+    allowed, retry_after = await record_refresh_attempt(
+        ip=client_ip,
+        user_id=refresh_token_data.user_id if refresh_token_data else None,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many refresh attempts. Please try again shortly.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     auth_service = AuthService(db)
     
     user, new_access_token, new_refresh_token = await auth_service.refresh_tokens(
@@ -468,6 +485,17 @@ async def get_active_canvas_token(
         canvas_domain: Optional filter by domain
     """
     from backend.core.exceptions import NotFoundException
+
+    if settings.CANVAS_SERVER_SIDE_MODE == "server_only":
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This endpoint has been disabled. Canvas tokens are now used server-side only.",
+        )
+
+    logger.warning(
+        "Deprecated endpoint /auth/canvas-tokens/active used by user=%s",
+        current_user.id,
+    )
     
     auth_service = AuthService(db)
     
@@ -481,7 +509,7 @@ async def get_active_canvas_token(
         )
     
     # Use provided domain or get from first token
-    domain = canvas_domain or tokens[0].canvas_domain
+    domain = validate_canvas_origin_url(canvas_domain) if canvas_domain else tokens[0].canvas_domain
     
     decrypted = await auth_service.get_decrypted_canvas_token(
         user_id=current_user.id,

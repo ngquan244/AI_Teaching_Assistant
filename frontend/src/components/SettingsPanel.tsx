@@ -38,8 +38,6 @@ const SettingsPanel: React.FC = () => {
   const [canvasToken, setCanvasToken] = useState('');
   const [canvasUrl, setCanvasUrl] = useState(DEFAULT_CANVAS_URL);
   const [showToken, setShowToken] = useState(false);
-  const [decryptedToken, setDecryptedToken] = useState<string>('');
-  const [isFetchingToken, setIsFetchingToken] = useState(false);
   const [canvasSaved, setCanvasSaved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,7 +114,6 @@ const SettingsPanel: React.FC = () => {
       setCanvasSaved(true);
       setCanvasToken(''); // Clear input after save
       setIsEditMode(false); // Exit edit mode
-      setDecryptedToken(''); // Clear decrypted token cache
       setShowToken(false); // Reset show state
       setTimeout(() => setCanvasSaved(false), 3000);
     } catch (err: unknown) {
@@ -141,7 +138,6 @@ const SettingsPanel: React.FC = () => {
       setCanvasToken('');
       setCanvasUrl(DEFAULT_CANVAS_URL);
       setIsEditMode(false);
-      setDecryptedToken(''); // Clear decrypted token cache
       setShowToken(false); // Reset show state
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to clear Canvas settings';
@@ -155,7 +151,6 @@ const SettingsPanel: React.FC = () => {
     setIsEditMode(true);
     setError(null);
     setCanvasToken(''); // Reset token input when entering edit mode
-    setDecryptedToken(''); // Clear decrypted token cache
     setShowToken(false); // Reset show state
   };
 
@@ -163,31 +158,10 @@ const SettingsPanel: React.FC = () => {
     setIsEditMode(false);
     setError(null);
     setCanvasToken('');
-    setDecryptedToken(''); // Clear decrypted token cache
     setShowToken(false); // Reset show state
     // Reset URL to active token's domain
     if (activeToken) {
       setCanvasUrl(activeToken.canvas_domain);
-    }
-  };
-
-  const handleToggleTokenVisibility = async () => {
-    if (!showToken && !decryptedToken && canvasConfigured) {
-      // Fetch the decrypted token from backend
-      setIsFetchingToken(true);
-      try {
-        const result = await authApi.getActiveCanvasToken();
-        setDecryptedToken(result.access_token);
-        setShowToken(true);
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to fetch token';
-        setError(errorMessage);
-        setTimeout(() => setError(null), 3000);
-      } finally {
-        setIsFetchingToken(false);
-      }
-    } else {
-      setShowToken(!showToken);
     }
   };
 
@@ -256,30 +230,7 @@ const SettingsPanel: React.FC = () => {
                     </div>
                     <div className="info-row">
                       <span className="info-label">Access Token:</span>
-                      <div className="token-display-wrapper">
-                        <input
-                          type={showToken ? 'text' : 'password'}
-                          value={showToken && decryptedToken ? decryptedToken : '••••••••••••••••••••••••••'}
-                          className="input-field token-display"
-                          readOnly
-                          disabled
-                        />
-                        <button
-                          type="button"
-                          className="token-toggle-btn"
-                          onClick={handleToggleTokenVisibility}
-                          title={showToken ? 'Hide' : 'Show'}
-                          disabled={isFetchingToken}
-                        >
-                          {isFetchingToken ? (
-                            <Loader2 size={16} className="spin" />
-                          ) : showToken ? (
-                            <EyeOff size={16} />
-                          ) : (
-                            <Eye size={16} />
-                          )}
-                        </button>
-                      </div>
+                      <span className="info-value">Stored securely on server</span>
                     </div>
                     <div className="info-row">
                       <span className="info-label">Loại xác thực:</span>

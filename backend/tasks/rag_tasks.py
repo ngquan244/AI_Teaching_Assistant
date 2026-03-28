@@ -11,8 +11,10 @@ from typing import Optional, Dict, Any
 from celery import shared_task
 
 from backend.celery_app import BaseTaskWithRetry
+from backend.core.config import settings
+from backend.core.security import decrypt_token
+from backend.database.models import AppSetting
 from backend.services.job_service import get_sync_job_service
-from backend.database.models import JobStatus
 from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,25 @@ def _get_canvas_rag_service():
     """Get Canvas RAG service instance."""
     from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
     return get_canvas_rag_service()
+
+
+def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[str]:
+    """Resolve Groq key inside the worker without storing it in job payloads."""
+    if groq_api_key:
+        return groq_api_key
+
+    try:
+        with SessionLocal() as db:
+            record = db.get(AppSetting, "GROQ_API_KEY")
+            if record and record.value:
+                encrypted = record.value.get("encrypted")
+                if encrypted:
+                    return decrypt_token(encrypted)
+    except Exception as exc:
+        logger.warning("Failed to resolve Groq API key from DB in worker: %s", exc)
+
+    env_key = settings.GROQ_API_KEY
+    return env_key.strip() if env_key and env_key.strip() else None
 
 
 @shared_task(
@@ -261,8 +282,13 @@ def extract_topics(
         job_service.start_job(job_uuid, "Extracting topics")
         
         rag_service = _get_rag_service()
+        effective_groq_key = _resolve_groq_api_key_sync(groq_api_key)
         with SessionLocal() as rag_db:
-            result = rag_service.extract_topics(user_id=user_id, db_session=rag_db, groq_api_key=groq_api_key)
+            result = rag_service.extract_topics(
+                user_id=user_id,
+                db_session=rag_db,
+                groq_api_key=effective_groq_key,
+            )
         
         job_service.complete_job(job_uuid, result)
         return result

@@ -10,6 +10,7 @@ Supports Groq Cloud LLM provider.
 import os
 import uuid
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
@@ -66,6 +67,8 @@ class RAGService:
     """
     
     _instance: Optional["RAGService"] = None
+    _instance_lock = threading.Lock()
+    _init_lock = threading.Lock()
     
     def __init__(
         self,
@@ -107,10 +110,16 @@ class RAGService:
         self._initialized = False
     
     def _ensure_initialized(self):
-        """Ensure all components are initialized."""
+        """Ensure all components are initialized (double-checked locking)."""
         if self._initialized:
             return
-        
+        with self._init_lock:
+            if self._initialized:
+                return
+            self._do_initialize()
+
+    def _do_initialize(self):
+        """Actual initialization — must be called under _init_lock."""
         logger.info("Initializing RAG components with per-file collection manager...")
         
         # Initialize per-file collection manager (replaces global vectorstore)
@@ -153,9 +162,11 @@ class RAGService:
     
     @classmethod
     def get_instance(cls) -> "RAGService":
-        """Get singleton instance of RAG Service."""
+        """Get singleton instance of RAG Service (double-checked locking)."""
         if cls._instance is None:
-            cls._instance = RAGService()
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = RAGService()
         return cls._instance
     
     def ingest_document(
@@ -375,6 +386,9 @@ class RAGService:
             - context: (optional) Retrieved context
         """
         self._ensure_initialized()
+        
+        # Sync registry state for cross-process freshness (fast mtime check).
+        self._collection_manager.ensure_fresh_state()
         
         logger.debug(f"Processing query: {question} (user={user_id})")
         
@@ -699,10 +713,9 @@ class RAGService:
         """
         self._ensure_initialized()
         
-        # CRITICAL: Reload registry from disk before retrieval.
-        # In multi-process Docker (backend + worker-llm), the worker's in-memory
-        # registry may be stale from startup. Without reload, query_collection()
-        # falls back to generating wrong collection names → 0 docs retrieved.
+        # Sync registry state. With --pool=threads this is a fast mtime check (no-op
+        # when state is already fresh). Kept as defense-in-depth for backend process
+        # isolation and future-proofing.
         self._collection_manager.ensure_fresh_state()
         
         # Handle both single topic and multiple topics
@@ -721,7 +734,7 @@ class RAGService:
         quiz_logger.info(f"generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
         
         # Validate num_questions
-        num_questions = max(1, min(30, num_questions))
+        num_questions = max(1, min(50, num_questions))
         
         # Check if index has documents
         stats = self.get_index_stats(user_id=user_id, db_session=db_session)
@@ -761,40 +774,38 @@ class RAGService:
             
             n_resolved = len(target_hashes) if target_hashes is not None else 'all'
             
-            # Temporarily override the quiz generator's LLM if a DB key was provided
-            _original_provider = None
+            # Use a local QuizGenerator if a custom API key was provided,
+            # avoiding shared singleton mutation (thread-safety fix).
+            quiz_gen = self._quiz_generator
             if groq_api_key:
                 from .llm_providers import LLMFactory as _LLMFactory
-                _original_provider = self._quiz_generator._llm_provider
-                _temp_provider = _LLMFactory.create(groq_api_key=groq_api_key)
-                self._quiz_generator.set_llm_provider(_temp_provider)
+                quiz_gen = QuizGenerator(
+                    retriever=self._multi_retriever,
+                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
+                )
             
-            try:
-                # If multiple topics, use the new multi-topic method
-                if len(topic_list) > 1:
-                    result = self._quiz_generator.generate_quiz_multi_topics(
-                        topics=topic_list,
-                        num_questions=num_questions,
-                        difficulty=difficulty,
-                        language=language,
-                        k=k,
-                        target_file_hashes=target_hashes,
-                        user_id=user_id
-                    )
-                else:
-                    # Single topic - use existing method
-                    result = self._quiz_generator.generate_quiz(
-                        topic=topic_list[0],
-                        num_questions=num_questions,
-                        difficulty=difficulty,
-                        language=language,
-                        k=k,
-                        target_file_hashes=target_hashes,
-                        user_id=user_id
-                    )
-            finally:
-                if _original_provider is not None:
-                    self._quiz_generator.set_llm_provider(_original_provider)
+            # If multiple topics, use the new multi-topic method
+            if len(topic_list) > 1:
+                result = quiz_gen.generate_quiz_multi_topics(
+                    topics=topic_list,
+                    num_questions=num_questions,
+                    difficulty=difficulty,
+                    language=language,
+                    k=k,
+                    target_file_hashes=target_hashes,
+                    user_id=user_id
+                )
+            else:
+                # Single topic - use existing method
+                result = quiz_gen.generate_quiz(
+                    topic=topic_list[0],
+                    num_questions=num_questions,
+                    difficulty=difficulty,
+                    language=language,
+                    k=k,
+                    target_file_hashes=target_hashes,
+                    user_id=user_id
+                )
             
             # Attach hash count for task-level summary logging
             result["_resolved_hashes"] = n_resolved
@@ -819,6 +830,9 @@ class RAGService:
         """
         self._ensure_initialized()
         
+        # Sync registry state for cross-process freshness (fast mtime check).
+        self._collection_manager.ensure_fresh_state()
+        
         logger.info(f"Extracting topics from indexed documents (user={user_id})")
         
         stats = self.get_index_stats(user_id=user_id, db_session=db_session)
@@ -830,16 +844,15 @@ class RAGService:
             }
         
         try:
-            _original_provider = None
+            # Use a local QuizGenerator if a custom API key was provided
+            quiz_gen = self._quiz_generator
             if groq_api_key:
                 from .llm_providers import LLMFactory as _LLMFactory
-                _original_provider = self._quiz_generator._llm_provider
-                self._quiz_generator.set_llm_provider(_LLMFactory.create(groq_api_key=groq_api_key))
-            try:
-                result = self._quiz_generator.extract_topics(max_topics=max_topics)
-            finally:
-                if _original_provider is not None:
-                    self._quiz_generator.set_llm_provider(_original_provider)
+                quiz_gen = QuizGenerator(
+                    retriever=self._multi_retriever,
+                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
+                )
+            result = quiz_gen.extract_topics(max_topics=max_topics)
             return result
             
         except Exception as e:

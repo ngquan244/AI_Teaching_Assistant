@@ -28,6 +28,7 @@ from backend.core.exceptions import (
     NotFoundException,
 )
 from backend.core.config import settings
+from backend.services.url_safety import validate_canvas_origin_url
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class AuthService:
             encrypted = encrypt_token(canvas_access_token)
             canvas_token = CanvasToken(
                 user_id=user.id,
-                canvas_domain=canvas_domain.strip(),
+                canvas_domain=validate_canvas_origin_url(canvas_domain),
                 access_token_encrypted=encrypted,
                 token_type=TokenType.PAT,
                 label="Primary Canvas Account",
@@ -220,6 +221,7 @@ class AuthService:
             select(CanvasToken)
             .where(CanvasToken.user_id == user_id)
             .where(CanvasToken.revoked_at.is_(None))
+            .order_by(CanvasToken.created_at.desc())
         )
         return list(result.scalars().all())
     
@@ -277,7 +279,7 @@ class AuthService:
         
         token = CanvasToken(
             user_id=user_id,
-            canvas_domain=canvas_domain.strip(),
+            canvas_domain=validate_canvas_origin_url(canvas_domain),
             access_token_encrypted=encrypted,
             token_type=token_type,
             label=label,
