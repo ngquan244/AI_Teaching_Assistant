@@ -3391,6 +3391,189 @@ body {
 }
 
 /* ============================================================================
+   Canvas Import Modal (.cim)
+   ============================================================================ */
+.modal-content.cim {
+  max-width: 520px;
+}
+
+/* -- Form layout -- */
+.cim .cim-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.cim .cim-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cim .cim-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.cim .cim-label svg {
+  color: var(--primary-light);
+  flex-shrink: 0;
+}
+
+/* Info chip (connection / QTI status) */
+.cim .cim-info-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.cim .cim-info-chip.ok svg { color: var(--success); }
+.cim .cim-info-chip.warn svg { color: #f59e0b; }
+
+/* Select + button row */
+.cim .cim-select-row {
+  display: flex;
+  gap: 8px;
+}
+
+.cim .cim-select {
+  flex: 1;
+  min-width: 0;           /* key: prevents overflow */
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  appearance: auto;
+}
+
+.cim .cim-select:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.cim .cim-select.err {
+  border-color: var(--danger);
+}
+
+.cim .cim-load-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.5rem 0.85rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.cim .cim-load-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+  color: var(--text-primary);
+}
+
+.cim .cim-load-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Text input */
+.cim .cim-input {
+  width: 100%;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.cim .cim-input:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.cim .cim-input.err {
+  border-color: var(--danger);
+}
+
+/* Inline error / hint */
+.cim .cim-err {
+  color: var(--danger);
+  font-size: 0.8rem;
+  margin: 2px 0 0;
+}
+
+.cim .cim-hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 2px 0 0;
+}
+
+/* -- Progress / result -- */
+.cim .cim-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 2.5rem 1rem;
+  gap: 10px;
+}
+
+.cim .cim-progress-spinner { color: var(--primary); }
+.cim .cim-progress-success { color: var(--success); }
+.cim .cim-progress-error   { color: var(--danger); }
+
+.cim .cim-progress-label {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cim .cim-progress-msg {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.cim .cim-progress-err {
+  color: var(--danger);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.cim .cim-progress-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+/* ============================================================================
    Canvas Panel Styles - Dark Glassmorphism Theme
    ============================================================================ */
 .canvas-panel {

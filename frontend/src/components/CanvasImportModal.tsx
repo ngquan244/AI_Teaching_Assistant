@@ -5,10 +5,11 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
-  ChevronDown,
+  RefreshCw,
   BookOpen,
   Server,
   PenSquare,
+  Package,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { fetchCourses, importQTIToCanvas } from '../api/canvas';
@@ -153,209 +154,163 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
     }
   };
 
-  const getStatusIcon = () => {
-    switch (importStatus) {
-      case 'creating_migration':
-      case 'uploading_to_s3':
-      case 'processing':
-        return <Loader2 size={48} className="spin" style={{ color: '#3b82f6' }} />;
-      case 'completed':
-        return <CheckCircle size={48} style={{ color: '#10b981' }} />;
-      case 'failed':
-        return <AlertCircle size={48} style={{ color: '#ef4444' }} />;
-      default:
-        return null;
-    }
-  };
-
   if (!isOpen) return null;
 
+  const isProcessing = importStatus === 'creating_migration' || importStatus === 'uploading_to_s3' || importStatus === 'processing';
+
   return (
-    <div className="canvas-import-modal-overlay" onClick={onClose}>
-      <div className="canvas-import-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content cim" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
         <div className="modal-header">
           <h2>
-            <Upload size={24} />
+            <Upload size={20} />
             Xuất câu hỏi lên Canvas
           </h2>
-          <button className="close-btn" onClick={onClose}>
+          <button className="btn-icon" onClick={onClose}>
             <X size={20} />
           </button>
         </div>
 
+        {/* Body */}
         <div className="modal-body">
+          {/* ---- PROGRESS / RESULT STATE ---- */}
           {importStatus !== 'idle' && (
-            <div className="import-progress-section">
-              <div className="progress-icon">{getStatusIcon()}</div>
-              <div className="progress-status">
-                <span className={`status-badge ${importStatus}`}>
-                  {importStatus === 'creating_migration' && 'Đang khởi tạo...'}
-                  {importStatus === 'uploading_to_s3' && 'Đang tải lên...'}
-                  {importStatus === 'processing' && 'Đang xử lý...'}
-                  {importStatus === 'completed' && 'Hoàn tất'}
-                  {importStatus === 'failed' && 'Thất bại'}
-                </span>
-              </div>
-              <p className="progress-message">{importMessage}</p>
-              {importError && <p className="error-message">{importError}</p>}
+            <div className="cim-progress">
+              {isProcessing && <Loader2 size={44} className="spin cim-progress-spinner" />}
+              {importStatus === 'completed' && <CheckCircle size={44} className="cim-progress-success" />}
+              {importStatus === 'failed' && <AlertCircle size={44} className="cim-progress-error" />}
+
+              <span className="cim-progress-label">
+                {isProcessing && 'Đang xử lý...'}
+                {importStatus === 'completed' && 'Hoàn tất!'}
+                {importStatus === 'failed' && 'Thất bại'}
+              </span>
+
+              <p className="cim-progress-msg">{importMessage}</p>
+              {importError && <p className="cim-progress-err">{importError}</p>}
 
               {importStatus === 'completed' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
-                  <button className="btn btn-primary" onClick={onClose}>
-                    Đóng
-                  </button>
+                <div className="cim-progress-actions">
+                  <button className="btn-primary" onClick={onClose}>Đóng</button>
                   {onNavigateToQuizBuilder && (
                     <button
-                      className="btn btn-secondary"
-                      onClick={() => {
-                        onClose();
-                        onNavigateToQuizBuilder();
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(139, 92, 246, 0.1))',
-                        border: '1px solid rgba(56, 189, 248, 0.3)',
-                        color: '#38bdf8',
-                      }}
+                      className="btn-secondary"
+                      onClick={() => { onClose(); onNavigateToQuizBuilder(); }}
                     >
                       <PenSquare size={16} />
-                      Tạo Quiz từ Bank này →
+                      Tạo Quiz từ Bank này
                     </button>
                   )}
                 </div>
               )}
               {importStatus === 'failed' && (
-                <button className="btn btn-secondary" onClick={() => setImportStatus('idle')}>
-                  Thử lại
+                <button className="btn-secondary" onClick={() => setImportStatus('idle')}>
+                  <RefreshCw size={14} /> Thử lại
                 </button>
               )}
             </div>
           )}
 
+          {/* ---- FORM STATE ---- */}
           {importStatus === 'idle' && (
-            <>
-              <div className="form-group">
-                <label>
-                  <Server size={16} />
-                  Canvas Connection
+            <div className="cim-form">
+              {/* Canvas Connection */}
+              <div className="cim-field">
+                <label className="cim-label">
+                  <Server size={15} /> Canvas Connection
                 </label>
-                <div className="qti-status">
-                  {activeToken ? (
-                    <>
-                      <CheckCircle size={16} style={{ color: '#10b981' }} />
-                      <span>{activeToken.canvas_domain}</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertCircle size={16} style={{ color: '#f59e0b' }} />
-                      <span>Chưa có Canvas token trong Cài đặt</span>
-                    </>
-                  )}
+                <div className={`cim-info-chip ${activeToken ? 'ok' : 'warn'}`}>
+                  {activeToken ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
+                  <span>{activeToken ? activeToken.canvas_domain : 'Chưa có Canvas token'}</span>
                 </div>
-                {validationErrors.canvas && (
-                  <span className="error-text">{validationErrors.canvas}</span>
-                )}
-                {!isAuthenticated && (
-                  <span className="info-text">Vui lòng đăng nhập và thêm Canvas token ở phần Cài đặt</span>
-                )}
+                {validationErrors.canvas && <p className="cim-err">{validationErrors.canvas}</p>}
+                {!isAuthenticated && <p className="cim-hint">Vui lòng đăng nhập và thêm Canvas token ở phần Cài đặt</p>}
               </div>
 
-              <div className="form-group">
-                <label>
-                  <BookOpen size={16} />
-                  Khóa học
+              {/* Course */}
+              <div className="cim-field">
+                <label className="cim-label">
+                  <BookOpen size={15} /> Khóa học
                 </label>
-                <div className="course-select-wrapper">
+                <div className="cim-select-row">
                   <select
+                    className={`cim-select ${validationErrors.course ? 'err' : ''}`}
                     value={selectedCourseId || ''}
                     onChange={(e) => setSelectedCourseId(Number(e.target.value) || null)}
-                    className={validationErrors.course ? 'error' : ''}
                     disabled={courses.length === 0}
                   >
                     <option value="">
                       {courses.length > 0 ? 'Chọn khóa học...' : 'Tải danh sách trước'}
                     </option>
-                    {courses.map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.name} ({course.course_code})
-                      </option>
+                    {courses.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.course_code})</option>
                     ))}
                   </select>
                   <button
                     type="button"
-                    className="btn btn-sm btn-secondary load-courses-btn"
+                    className="cim-load-btn"
                     onClick={handleFetchCourses}
                     disabled={isLoadingCourses || !activeToken}
                   >
-                    {isLoadingCourses ? (
-                      <Loader2 size={14} className="spin" />
-                    ) : (
-                      <ChevronDown size={14} />
-                    )}
-                    {isLoadingCourses ? 'Đang tải...' : 'Tải danh sách'}
+                    {isLoadingCourses
+                      ? <><Loader2 size={14} className="spin" /> Đang tải…</>
+                      : <><RefreshCw size={14} /> Tải danh sách</>
+                    }
                   </button>
                 </div>
-                {coursesError && <span className="error-text">{coursesError}</span>}
-                {validationErrors.course && (
-                  <span className="error-text">{validationErrors.course}</span>
-                )}
+                {coursesError && <p className="cim-err">{coursesError}</p>}
+                {validationErrors.course && <p className="cim-err">{validationErrors.course}</p>}
               </div>
 
-              <div className="form-group">
-                <label>
-                  <BookOpen size={16} />
-                  Tên ngân hàng câu hỏi
+              {/* Bank name */}
+              <div className="cim-field">
+                <label className="cim-label">
+                  <BookOpen size={15} /> Tên ngân hàng câu hỏi
                 </label>
                 <input
                   type="text"
+                  className={`cim-input ${validationErrors.bankName ? 'err' : ''}`}
                   value={questionBankName}
                   onChange={(e) => setQuestionBankName(e.target.value)}
                   placeholder="VD: AI-TA Bank - Chương 1"
-                  className={validationErrors.bankName ? 'error' : ''}
                 />
-                {validationErrors.bankName && (
-                  <span className="error-text">{validationErrors.bankName}</span>
-                )}
+                {validationErrors.bankName && <p className="cim-err">{validationErrors.bankName}</p>}
               </div>
 
-              <div className="form-group qti-info">
-                <label>Gói QTI</label>
-                <div className="qti-status">
-                  {qtiZipBlob ? (
-                    <>
-                      <CheckCircle size={16} style={{ color: '#10b981' }} />
-                      <span>Sẵn sàng ({(qtiZipBlob.size / 1024).toFixed(1)} KB)</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertCircle size={16} style={{ color: '#f59e0b' }} />
-                      <span>Chưa có gói nào</span>
-                    </>
-                  )}
+              {/* QTI status */}
+              <div className="cim-field">
+                <label className="cim-label">
+                  <Package size={15} /> Gói QTI
+                </label>
+                <div className={`cim-info-chip ${qtiZipBlob ? 'ok' : 'warn'}`}>
+                  {qtiZipBlob ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
+                  <span>
+                    {qtiZipBlob
+                      ? `Sẵn sàng (${(qtiZipBlob.size / 1024).toFixed(1)} KB)`
+                      : 'Chưa có gói nào'}
+                  </span>
                 </div>
-                {validationErrors.zip && (
-                  <span className="error-text">{validationErrors.zip}</span>
-                )}
+                {validationErrors.zip && <p className="cim-err">{validationErrors.zip}</p>}
               </div>
-
-              <div className="form-actions">
-                <button className="btn btn-secondary" onClick={onClose}>
-                  Hủy
-                </button>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleImport}
-                  disabled={!activeToken || !qtiZipBlob}
-                >
-                  <Upload size={16} />
-                  Import lên Canvas
-                </button>
-              </div>
-            </>
+            </div>
           )}
         </div>
+
+        {/* Footer */}
+        {importStatus === 'idle' && (
+          <div className="modal-footer">
+            <button className="btn-secondary" onClick={onClose}>Hủy</button>
+            <button
+              className="btn-primary"
+              onClick={handleImport}
+              disabled={!activeToken || !qtiZipBlob}
+            >
+              <Upload size={16} />
+              Import lên Canvas
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
