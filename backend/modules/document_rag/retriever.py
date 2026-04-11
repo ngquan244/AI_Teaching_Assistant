@@ -251,6 +251,7 @@ class MultiCollectionRetriever:
         search_type: Optional[str] = None,
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
     ) -> List[Document]:
         """
         Retrieve relevant documents from target collections.
@@ -261,6 +262,8 @@ class MultiCollectionRetriever:
             search_type: Search type to use
             target_file_hashes: Explicit list of file hashes to query
             user_id: User ID to scope the query (used when target_file_hashes is empty)
+            hash_to_collection_name: Optional mapping of file_hash -> collection_name
+                from DB. When present, bypasses registry lookup in query_collection.
             
         Returns:
             List of relevant Document objects from all target collections
@@ -294,6 +297,8 @@ class MultiCollectionRetriever:
         
         all_documents = []
         
+        _override_map = hash_to_collection_name or {}
+
         for file_hash in resolved_hashes:
             try:
                 docs = self.collection_manager.query_collection(
@@ -301,6 +306,7 @@ class MultiCollectionRetriever:
                     query=query,
                     k=k,
                     user_id=user_id,
+                    override_collection_name=_override_map.get(file_hash),
                 )
                 all_documents.extend(docs)
                 logger.debug(f"Retrieved {len(docs)} docs from collection for {file_hash[:8]}")
@@ -323,6 +329,7 @@ class MultiCollectionRetriever:
         user_id: Optional[str] = None,
         round_one_cap: int = 2,
         round_n_cap: int = 1,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
     ) -> List[Document]:
         """
         Retrieve documents with a global budget instead of a fixed per-collection k.
@@ -341,6 +348,8 @@ class MultiCollectionRetriever:
             logger.warning("No files to query - index is empty")
             return []
 
+        _override_map = hash_to_collection_name or {}
+
         if len(resolved_hashes) == 1:
             file_hash = resolved_hashes[0]
             docs = self.collection_manager.query_collection(
@@ -348,6 +357,7 @@ class MultiCollectionRetriever:
                 query=query,
                 k=max_total_docs,
                 user_id=user_id,
+                override_collection_name=_override_map.get(file_hash),
             )
             logger.info(
                 "Budgeted retrieval (single collection): requested=%s returned=%s",
@@ -369,6 +379,7 @@ class MultiCollectionRetriever:
                     query=query,
                     k=fetch_per_collection,
                     user_id=user_id,
+                    override_collection_name=_override_map.get(file_hash),
                 )
                 per_collection_docs[file_hash] = docs
             except Exception as e:

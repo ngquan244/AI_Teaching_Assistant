@@ -1223,6 +1223,7 @@ Return ONLY valid JSON, no additional text.""")
         max_total_docs: int,
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
     ) -> List[Document]:
         max_total_docs = max(1, max_total_docs)
 
@@ -1232,12 +1233,15 @@ Return ONLY valid JSON, no additional text.""")
                 max_total_docs=max_total_docs,
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
+                hash_to_collection_name=hash_to_collection_name,
             )
 
         retrieve_kwargs: Dict[str, Any] = {"k": max_total_docs}
         if hasattr(self.retriever, "resolve_target_file_hashes"):
             retrieve_kwargs["target_file_hashes"] = target_file_hashes
             retrieve_kwargs["user_id"] = user_id
+            if hash_to_collection_name:
+                retrieve_kwargs["hash_to_collection_name"] = hash_to_collection_name
         return self.retriever.retrieve(query, **retrieve_kwargs)
 
     def _select_context_documents(
@@ -2533,6 +2537,7 @@ Return ONLY valid JSON, no additional text.""")
         k: int = 10,
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Generate quiz questions based on a topic.
@@ -2561,6 +2566,7 @@ Return ONLY valid JSON, no additional text.""")
             max_total_docs=raw_budget,
             target_file_hashes=target_file_hashes,
             user_id=user_id,
+            hash_to_collection_name=hash_to_collection_name,
         )
         raw_documents = self._annotate_documents(raw_documents, retrieval_topic=topic)
 
@@ -2604,6 +2610,7 @@ Return ONLY valid JSON, no additional text.""")
         k: int = 8,
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Generate quiz questions based on multiple topics.
@@ -2652,6 +2659,7 @@ Return ONLY valid JSON, no additional text.""")
                 max_total_docs=topic_budget,
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
+                hash_to_collection_name=hash_to_collection_name,
             )
             topic_documents = self._annotate_documents(topic_documents, retrieval_topic=topic)
             if topic_documents:
