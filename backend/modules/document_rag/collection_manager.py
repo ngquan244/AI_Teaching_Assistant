@@ -173,10 +173,25 @@ class CollectionRegistry:
             self._registry = {}
 
     def reload(self):
-        """Reload registry from disk, picking up cross-process changes."""
+        """Reload registry from disk, picking up cross-process changes.
+        
+        Atomic: loads into a temporary dict first. The live _registry is only
+        replaced when the load succeeds, preventing an empty registry on I/O
+        errors (which would cascade into destructive orphan cleanup).
+        """
         with self._lock:
-            self._registry.clear()
-            self._load()
+            try:
+                data = read_json_file(self.registry_path, dict)
+                if data:
+                    self._refresh_from_data(data)
+                    logger.info(f"Reloaded collection registry with {len(self._registry)} entries")
+                elif self.registry_path.exists():
+                    # File exists but is empty / empty dict — that IS the truth.
+                    self._registry = {}
+                    self._last_mtime = self.registry_path.stat().st_mtime
+                # else: file doesn't exist — keep current registry untouched
+            except Exception as e:
+                logger.warning(f"Could not reload collection registry (keeping previous state): {e}")
     
     @staticmethod
     def _make_key(file_hash: str, user_id: Optional[str] = None) -> str:
@@ -439,6 +454,24 @@ class PerFileCollectionManager:
             
             # Get all registered collection names
             registered_names = {meta.collection_name for meta in self.registry.get_all()}
+
+            # Safety guard: if registry is empty but collection directories exist
+            # on disk, a failed reload likely wiped the in-memory registry.
+            # Deleting everything would cause permanent data loss — abort instead.
+            if not registered_names:
+                collection_dirs = [
+                    item for item in self.persist_directory.iterdir()
+                    if item.is_dir() and (item.name.startswith('canvas_') or item.name.startswith('doc_'))
+                ]
+                if collection_dirs:
+                    logger.warning(
+                        "Orphan cleanup SKIPPED: registry is empty but %d collection "
+                        "directories exist on disk — possible failed reload. "
+                        "Dirs: %s",
+                        len(collection_dirs),
+                        [d.name for d in collection_dirs[:10]],
+                    )
+                    return
             
             # Find directories that look like collections
             for item in self.persist_directory.iterdir():
@@ -699,6 +732,7 @@ class PerFileCollectionManager:
         k: int = 4,
         course_id: Optional[int] = None,
         user_id: Optional[str] = None,
+        override_collection_name: Optional[str] = None,
         **kwargs
     ) -> List[Document]:
         """
@@ -709,38 +743,57 @@ class PerFileCollectionManager:
             query: Search query
             k: Number of results to return
             course_id: Optional Canvas course ID
+            override_collection_name: If provided, skip registry lookup and use
+                this collection name directly (e.g. from the DB row).
             
         Returns:
             List of relevant Document objects
         """
-        # First try to get collection name and course_id from registry
-        # This ensures we use the correct collection name even if course_id isn't passed
-        meta = self.registry.get(file_hash, user_id=user_id)
-        if not meta:
-            # Registry may be stale in multi-process Docker (e.g., worker-llm
-            # hasn't seen backend's ingest). Reload once from disk before
-            # falling back to generated name, which would produce the WRONG
-            # name (doc_* instead of canvas_*) and create an empty collection.
-            self.registry.reload()
-            meta = self.registry.get(file_hash, user_id=user_id)
-        if meta:
-            collection_name = meta.collection_name
-            actual_course_id = meta.course_id
-        else:
-            # Fallback to generating collection name
-            logger.warning(
-                f"Registry miss for {file_hash[:8]} even after reload — "
-                f"falling back to generated name (course_id={course_id})"
-            )
-            collection_name = self.get_collection_name(file_hash, course_id, user_id=user_id)
+        # --- Resolution path: determine collection_name ---
+        if override_collection_name:
+            # Caller already knows the authoritative name (from DB).
+            collection_name = override_collection_name
             actual_course_id = course_id
+            logger.debug(
+                "query_collection %s: using override_collection_name=%s",
+                file_hash[:8], collection_name,
+            )
+        else:
+            # First try to get collection name and course_id from registry
+            # This ensures we use the correct collection name even if course_id isn't passed
+            meta = self.registry.get(file_hash, user_id=user_id)
+            if not meta:
+                # Registry may be stale in multi-process Docker (e.g., worker-llm
+                # hasn't seen backend's ingest). Reload once from disk before
+                # falling back to generated name, which would produce the WRONG
+                # name (doc_* instead of canvas_*) and create an empty collection.
+                self.registry.reload()
+                meta = self.registry.get(file_hash, user_id=user_id)
+            if meta:
+                collection_name = meta.collection_name
+                actual_course_id = meta.course_id
+                logger.debug(
+                    "query_collection %s: resolved via registry -> %s",
+                    file_hash[:8], collection_name,
+                )
+            else:
+                # Fallback to generating collection name
+                logger.warning(
+                    "query_collection %s: registry miss even after reload — "
+                    "falling back to generated name (course_id=%s). "
+                    "This may produce the WRONG name for Canvas documents!",
+                    file_hash[:8], course_id,
+                )
+                collection_name = self.get_collection_name(file_hash, course_id, user_id=user_id)
+                actual_course_id = course_id
         
         if collection_name not in self._collections:
             # Try to load the collection
             try:
+                _filename = meta.filename if (not override_collection_name and meta) else "unknown"
                 collection, _ = self.get_or_create_collection(
                     file_hash,
-                    meta.filename if meta else "unknown",
+                    _filename,
                     actual_course_id,
                     user_id=user_id,
                 )

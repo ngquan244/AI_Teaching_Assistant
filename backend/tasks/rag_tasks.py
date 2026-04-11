@@ -352,10 +352,12 @@ def canvas_index_file(
             return {"success": False, "error": error}
         
         # Ingest into per-file collection with course_id for naming
+        groq_key = _resolve_groq_api_key_sync()
         with SessionLocal() as rag_db:
             result = service.ingest_document(
                 str(file_path), course_id=course_id,
                 user_id=user_id, db_session=rag_db,
+                groq_api_key=groq_key,
             )
         
         if result.get("success"):
@@ -398,8 +400,12 @@ def canvas_extract_topics(
     try:
         job_service.start_job(job_uuid, "Extracting topics from Canvas file")
         
+        groq_key = _resolve_groq_api_key_sync()
         service = _get_canvas_rag_service()
-        result = service.extract_topics_for_file(filename, num_topics, user_id=user_id)
+        result = service.extract_topics_for_file(
+            filename, num_topics, user_id=user_id,
+            groq_api_key=groq_key,
+        )
         
         job_service.complete_job(job_uuid, result)
         return result

@@ -792,6 +792,7 @@ class RAGService:
         try:
             # Resolve target file hashes from selected_documents
             target_hashes = None
+            hash_to_collection: Dict[str, str] = {}
             if selected_documents:
                 target_hashes = []
                 if db_session and user_id:
@@ -803,6 +804,11 @@ class RAGService:
                             source=RAGSourceType.UPLOAD,
                         )
                         target_hashes = [r.file_hash for r in rows]
+                        hash_to_collection = {
+                            r.file_hash: r.collection_name
+                            for r in rows
+                            if r.collection_name
+                        }
                         quiz_logger.info(f"DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
                     except Exception as e:
                         logger.warning(f"DB get_by_filenames failed in generate_quiz: {e}")
@@ -819,6 +825,12 @@ class RAGService:
                     for meta in all_registry:
                         if meta.filename in selected_documents:
                             target_hashes.append(meta.file_hash)
+                    if not hash_to_collection:
+                        hash_to_collection = {
+                            m.file_hash: m.collection_name
+                            for m in all_registry
+                            if m.filename in selected_documents and m.collection_name
+                        }
                 quiz_logger.info(f"Resolved {len(target_hashes)} hashes from {len(selected_documents)} selected_documents: {selected_documents} -> {[h[:8] for h in target_hashes]}")
             else:
                 quiz_logger.warning(f"selected_documents is None/empty ({selected_documents!r}) — will query ALL collections!")
@@ -844,7 +856,8 @@ class RAGService:
                     language=language,
                     k=k,
                     target_file_hashes=target_hashes,
-                    user_id=user_id
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection or None,
                 )
             else:
                 # Single topic - use existing method
@@ -855,7 +868,8 @@ class RAGService:
                     language=language,
                     k=k,
                     target_file_hashes=target_hashes,
-                    user_id=user_id
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection or None,
                 )
             
             # Attach hash count for task-level summary logging

@@ -434,6 +434,7 @@ class CanvasRAGService:
         course_id: Optional[int] = None,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a Canvas PDF document into a per-file collection.
@@ -444,6 +445,7 @@ class CanvasRAGService:
             course_id: Canvas course ID for collection naming
             user_id: User ID for per-user scoping
             db_session: Sync DB session for metadata persistence
+            groq_api_key: Optional fresh API key for topic extraction
         """
         self._ensure_initialized()
         
@@ -548,6 +550,7 @@ class CanvasRAGService:
                             filename=filename,
                             course_id=course_id,
                             user_id=user_id,
+                            groq_api_key=groq_api_key,
                         )
                         has_topics = len(topics_extracted) > 0
                         if has_topics and db_session and user_id:
@@ -624,6 +627,7 @@ class CanvasRAGService:
                         chunks=chunks,
                         course_id=course_id,
                         user_id=user_id,
+                        groq_api_key=groq_api_key,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to extract topics: {e}")
@@ -695,6 +699,7 @@ class CanvasRAGService:
         chunks: Optional[List[Document]] = None,
         course_id: Optional[int] = None,
         user_id: Optional[str] = None,
+        groq_api_key: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Extract topics from document and save to Canvas topic storage.
         
@@ -704,6 +709,8 @@ class CanvasRAGService:
             num_topics: Number of topics to extract
             chunks: Pre-loaded chunks (optional, used during indexing)
             course_id: Canvas course ID for collection lookup
+            groq_api_key: Optional fresh API key (from DB/settings); when
+                provided a temporary LLM is used instead of the cached singleton.
         """
         try:
             # If chunks not provided, get from per-file collection
@@ -743,8 +750,15 @@ Nội dung tài liệu:
 
 Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
 
-            # Use invoke method (not generate)
-            response_msg = self._llm_provider.invoke(prompt)
+            # Use a fresh LLM when a key is explicitly provided (e.g. resolved
+            # from DB) so that admin-panel key changes take effect without
+            # restarting the worker.
+            llm = self._llm_provider
+            if groq_api_key:
+                from .llm_providers import LLMFactory as _LLMFactory
+                llm = _LLMFactory.create(groq_api_key=groq_api_key)
+
+            response_msg = llm.invoke(prompt)
             response = response_msg.content if hasattr(response_msg, 'content') else str(response_msg)
             
             logger.info(f"LLM response for topics: {response[:200]}...")
@@ -780,6 +794,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         num_topics: int = 10,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract topics for a specific file by filename."""
         self._ensure_initialized()
@@ -829,6 +844,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 num_topics,
                 course_id=course_id,
                 user_id=user_id,
+                groq_api_key=groq_api_key,
             )
             if topics and db_session and user_id:
                 try:
@@ -1191,6 +1207,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             self._collection_manager.ensure_fresh_state()
 
             target_hashes = None
+            hash_to_collection: Dict[str, str] = {}
             if selected_documents:
                 target_hashes = []
                 if db_session and user_id:
@@ -1200,6 +1217,11 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                             source=RAGSourceType.CANVAS,
                         )
                         target_hashes = [r.file_hash for r in rows]
+                        hash_to_collection = {
+                            r.file_hash: r.collection_name
+                            for r in rows
+                            if r.collection_name
+                        }
                         quiz_logger.info(f"Canvas DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
                     except Exception as e:
                         logger.warning(f"Canvas DB get_by_filenames failed: {e}")
@@ -1208,6 +1230,12 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 if not target_hashes:
                     matching = self._collection_manager.registry.get_by_filenames(selected_documents, user_id=user_id)
                     target_hashes = [m.file_hash for m in matching]
+                    if not hash_to_collection:
+                        hash_to_collection = {
+                            m.file_hash: m.collection_name
+                            for m in matching
+                            if m.collection_name
+                        }
                     quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
                 quiz_logger.info(f"Canvas resolved {len(target_hashes)} hashes from {len(selected_documents)} docs: {selected_documents} -> {[h[:8] for h in target_hashes]}")
             elif db_session and user_id:
@@ -1218,6 +1246,11 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         source=RAGSourceType.CANVAS,
                     )
                     target_hashes = [row.file_hash for row in rows]
+                    hash_to_collection = {
+                        row.file_hash: row.collection_name
+                        for row in rows
+                        if row.collection_name
+                    }
                 except Exception as e:
                     logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
                     quiz_logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
@@ -1246,7 +1279,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     language=language,
                     k=k,
                     target_file_hashes=target_hashes,
-                    user_id=user_id
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection or None,
                 )
             else:
                 # Single topic
@@ -1257,7 +1291,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     language=language,
                     k=k,
                     target_file_hashes=target_hashes,
-                    user_id=user_id
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection or None,
                 )
 
             result["_resolved_hashes"] = n_resolved

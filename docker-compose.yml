@@ -34,6 +34,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     
+    ports:
+      - "127.0.0.1:5432:5432"
     # Health check for container orchestration
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-grader_user} -d ${POSTGRES_DB:-grader_db}"]
@@ -95,17 +97,72 @@ services:
   # Celery Workers - Process background jobs
   # ===========================================================================
   
-  # Document Worker: RAG indexing + LLM quiz generation (shared process, thread pool)
-  # CRITICAL: --pool=threads ensures all tasks share the same process memory.
-  # Without it, Celery defaults to prefork on Linux, forking separate child
-  # processes with isolated singletons — defeating the purpose of this merge.
-  worker-doc:
+  # RAG Worker: Document indexing, embedding, topic extraction
+  # --pool=threads required for thread-safety of shared singletons within this worker.
+  # Cross-process state (worker-rag ↔ worker-llm) is handled via PostgreSQL
+  # (hash_to_collection_name) and atomic registry.json reload — see WORKER_SPLIT_PLAN.md.
+  worker-rag:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: grader_worker_doc
+    container_name: grader_worker_rag
     restart: unless-stopped
-    command: celery -A backend.celery_app worker --pool=threads -Q rag,llm,celery,default -c 3 --loglevel=INFO -n doc@%h
+    command: >-
+      celery -A backend.celery_app worker
+      --pool=threads
+      -Q rag,celery,default
+      -c 2
+      --loglevel=INFO
+      -n rag@%h
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-grader_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
+      - POSTGRES_DB=${POSTGRES_DB:-grader_db}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - grader_network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping -d rag@$$HOSTNAME --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+
+  # LLM Worker: Quiz generation, RAG query with LLM, topic extraction (LLM-heavy)
+  # Separate process from worker-rag. Collection names resolved from PostgreSQL
+  # via hash_to_collection_name — no dependency on worker-rag's in-memory state.
+  worker-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grader_worker_llm
+    restart: unless-stopped
+    command: >-
+      celery -A backend.celery_app worker
+      --pool=threads
+      -Q llm
+      -c 2
+      --loglevel=INFO
+      -n llm@%h
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -119,6 +176,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./exports:/app/exports
+      - ./logs:/app/logs
     depends_on:
       redis:
         condition: service_healthy
@@ -129,11 +187,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 3G
         reservations:
-          memory: 1G
+          memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping -d doc@$$HOSTNAME --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping -d llm@$$HOSTNAME --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 3
@@ -158,6 +216,8 @@ services:
       - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50}
     volumes:
       - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
     depends_on:
       redis:
         condition: service_healthy
@@ -171,6 +231,12 @@ services:
           memory: 512M
         reservations:
           memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app inspect ping -d canvas@$$HOSTNAME --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
 
   # ===========================================================================
   # Flower - Celery monitoring dashboard (optional)

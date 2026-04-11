@@ -28,9 +28,26 @@ from backend.services.canvas_permission import canvas_permission
 from backend.services.canvas_service import fetch_canvas_courses
 from backend.services.job_service import JobService
 from backend.services.url_safety import validate_download_url
+from backend.core.config import settings
+from backend.core.security import decrypt_token
+from backend.database.models import AppSetting
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _resolve_groq_api_key(db_session) -> Optional[str]:
+    """Resolve the latest Groq API key from DB or env."""
+    try:
+        record = db_session.get(AppSetting, "GROQ_API_KEY")
+        if record and record.value:
+            encrypted = record.value.get("encrypted")
+            if encrypted:
+                return decrypt_token(encrypted)
+    except Exception:
+        pass
+    env_key = settings.GROQ_API_KEY
+    return env_key.strip() if env_key and env_key.strip() else None
 
 
 class CanvasDownloadRequest(BaseModel):
@@ -301,11 +318,13 @@ async def extract_topics_for_canvas_file(
     def _do_extract():
         service = get_canvas_rag_service()
         with SessionLocal() as db:
+            groq_key = _resolve_groq_api_key(db)
             return service.extract_topics_for_file(
                 filename,
                 num_topics,
                 user_id=user_id,
                 db_session=db,
+                groq_api_key=groq_key,
             )
 
     return await asyncio.to_thread(_do_extract)

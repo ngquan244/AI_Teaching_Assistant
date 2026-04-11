@@ -144,7 +144,11 @@ services:
   # ===========================================================================
   # Celery Workers — Production overrides
   # ===========================================================================
-  worker-doc:
+  worker-rag:
+    env_file:
+      - .env
+
+  worker-llm:
     env_file:
       - .env
 
