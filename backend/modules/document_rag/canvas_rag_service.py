@@ -216,6 +216,7 @@ class CanvasRAGService:
         self._quiz_generator: Optional[QuizGenerator] = None
         self._llm_provider: Optional[BaseLLM] = None
         self._topic_storage: Optional[CanvasTopicStorage] = None
+        self._metadata_registry: Optional[CollectionRegistry] = None
         
         self._initialized = False
     
@@ -236,6 +237,18 @@ class CanvasRAGService:
             if self._topic_storage is not None:
                 return
             self._topic_storage = CanvasTopicStorage(str(self.CANVAS_RAG_DIR))
+
+    def _ensure_metadata_only(self):
+        """Lightweight init: topic storage + collection registry (no embedding/LLM)."""
+        self._ensure_topic_storage()
+        if self._metadata_registry is not None:
+            return
+        with self._init_lock:
+            if self._metadata_registry is not None:
+                return
+            self._metadata_registry = CollectionRegistry(
+                str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
+            )
 
     def _do_initialize(self):
         """Actual initialization — must be called under _init_lock."""
@@ -969,12 +982,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
-        """List all indexed Canvas documents."""
-        if self._topic_storage is None:
-            self._topic_storage = CanvasTopicStorage(str(self.CANVAS_RAG_DIR))
-        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
-            str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
-        )
+        """List all indexed Canvas documents (lightweight — no embedding/LLM init)."""
+        self._ensure_metadata_only()
+        registry = self._collection_manager.registry if self._collection_manager else self._metadata_registry
         
         # ---- DB-backed path ----
         db_documents = []
@@ -1049,18 +1059,24 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         }
     
     def list_downloaded_files(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """List downloaded Canvas files for a specific user."""
-        self._ensure_initialized()
+        """List downloaded Canvas files for a specific user (lightweight — no embedding/LLM init)."""
+        self._ensure_metadata_only()
         
         try:
             files = []
             indexed_registry = self._load_indexed_registry(user_id)
             
-            # Also get indexed files from collection_manager
+            # Also get indexed files from collection_manager (if already initialized)
             collection_indexed_files = set()
             try:
-                for file_info in self._collection_manager.get_indexed_files(user_id=user_id):
-                    collection_indexed_files.add(file_info.get("filename", ""))
+                cm = self._collection_manager
+                if cm is not None:
+                    for file_info in cm.get_indexed_files(user_id=user_id):
+                        collection_indexed_files.add(file_info.get("filename", ""))
+                else:
+                    # Use lightweight registry instead
+                    for meta in self._metadata_registry.get_all(user_id=user_id):
+                        collection_indexed_files.add(meta.original_filename or "")
             except Exception as e:
                 logger.warning(f"Could not get collection manager files: {e}")
             
@@ -1103,10 +1119,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
-        """Get Canvas index statistics for a specific user."""
-        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
-            str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
-        )
+        """Get Canvas index statistics for a specific user (lightweight — no embedding/LLM init)."""
+        self._ensure_metadata_only()
+        registry = self._collection_manager.registry if self._collection_manager else self._metadata_registry
         
         try:
             if db_session and user_id:
