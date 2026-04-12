@@ -25,7 +25,8 @@ from .vectorstore import ChromaVectorStore
 from .collection_manager import (
     PerFileCollectionManager,
     get_uploads_collection_manager,
-    CollectionNameGenerator
+    CollectionNameGenerator,
+    CollectionRegistry,
 )
 from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
@@ -400,17 +401,56 @@ class RAGService:
             - sources: List of source citations
             - context: (optional) Retrieved context
         """
+        retrieval = self.retrieve_documents_for_query(
+            question=question,
+            k=k,
+            file_hashes=file_hashes,
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+
+        if not retrieval.get("success"):
+            return {
+                "success": False,
+                "answer": retrieval.get(
+                    "answer",
+                    f"Lỗi khi xử lý câu hỏi: {retrieval.get('error', 'Unknown error')}",
+                ),
+                "sources": [],
+                "error": retrieval.get("error", "Query failed"),
+            }
+
+        try:
+            result = self._rag_chain.query_from_documents(
+                question=question,
+                documents=retrieval["documents"],
+                return_context=return_context,
+            )
+            result["success"] = True
+            result["collections_queried"] = retrieval.get("collections_queried", 0)
+            return result
+        except Exception as e:
+            logger.error(f"Error processing query: {e}")
+            return {
+                "success": False,
+                "answer": f"Lỗi khi xử lý câu hỏi: {str(e)}",
+                "sources": [],
+                "error": str(e)
+            }
+
+    def _resolve_query_target_hashes(
+        self,
+        file_hashes: Optional[List[str]] = None,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> List[str]:
+        """Resolve the authoritative set of upload collections to query."""
         self._ensure_initialized()
-        
-        # Sync registry state for cross-process freshness (fast mtime check).
         self._collection_manager.ensure_fresh_state()
-        
-        logger.debug(f"Processing query: {question} (user={user_id})")
-        
-        # Determine which collections to query
-        target_hashes = file_hashes or []
-        
-        # If filenames provided, resolve to file hashes
+        target_hashes = list(file_hashes or [])
+
         if selected_documents and not target_hashes:
             if db_session and user_id:
                 try:
@@ -431,8 +471,7 @@ class RAGService:
                         continue
                     if meta.filename in selected_documents:
                         target_hashes.append(meta.file_hash)
-        
-        # If no specific files selected, query all indexed files for this user
+
         if not target_hashes:
             if db_session and user_id:
                 try:
@@ -455,8 +494,29 @@ class RAGService:
             for h in legacy_hashes:
                 if h not in existing:
                     target_hashes.append(h)
-        
-        # Check if there are indexed documents
+        return target_hashes
+
+    def retrieve_documents_for_query(
+        self,
+        question: str,
+        k: Optional[int] = None,
+        file_hashes: Optional[List[str]] = None,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve query documents without executing the LLM step locally."""
+        self._ensure_initialized()
+        self._collection_manager.ensure_fresh_state()
+
+        logger.debug(f"Processing query retrieval: {question} (user={user_id})")
+        target_hashes = self._resolve_query_target_hashes(
+            file_hashes=file_hashes,
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+
         if not target_hashes:
             return {
                 "success": False,
@@ -464,31 +524,19 @@ class RAGService:
                 "sources": [],
                 "error": "No documents indexed"
             }
-        
+
         logger.debug(f"Querying {len(target_hashes)} collections")
-        
-        try:
-            # Pass target_file_hashes directly — no mutable state
-            result = self._rag_chain.query(
-                question=question,
-                k=k,
-                return_context=return_context,
-                target_file_hashes=target_hashes,
-                user_id=user_id
-            )
-            
-            result["success"] = True
-            result["collections_queried"] = len(target_hashes)
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error processing query: {e}")
-            return {
-                "success": False,
-                "answer": f"Lỗi khi xử lý câu hỏi: {str(e)}",
-                "sources": [],
-                "error": str(e)
-            }
+        documents = self._multi_retriever.retrieve(
+            question,
+            k=k,
+            target_file_hashes=target_hashes,
+            user_id=user_id,
+        )
+        return {
+            "success": True,
+            "documents": documents,
+            "collections_queried": len(target_hashes),
+        }
     
     def get_index_stats(
         self,
@@ -505,7 +553,9 @@ class RAGService:
         Returns:
             Dictionary with index statistics (aggregated across all per-file collections)
         """
-        self._ensure_initialized()
+        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
+            str(Path(self.persist_directory) / "collection_registry.json")
+        )
         
         # Prefer DB source when available, merge with legacy
         db_indexed = []
@@ -533,9 +583,17 @@ class RAGService:
         # Always merge with legacy to show pre-migration files
         seen_hashes = {f["file_hash"] for f in db_indexed}
         legacy_files = [
-            file_info
-            for file_info in self._collection_manager.get_indexed_files(user_id=user_id)
-            if self._is_upload_collection_entry(file_info)
+            {
+                "filename": meta.filename,
+                "file_hash": meta.file_hash,
+                "collection_name": meta.collection_name,
+                "chunk_count": meta.chunk_count,
+                "indexed_at": meta.created_at,
+                "updated_at": meta.updated_at,
+                "user_id": meta.user_id,
+            }
+            for meta in registry.get_all(user_id=user_id)
+            if self._is_upload_collection_entry(meta)
         ]
         for f in legacy_files:
             if f.get("file_hash") not in seen_hashes:
@@ -755,14 +813,126 @@ class RAGService:
             user_id: User ID for per-user scoping
             db_session: Sync DB session for metadata lookup
         """
+        retrieval = self.retrieve_documents_for_quiz(
+            topic=topic,
+            topics=topics,
+            num_questions=num_questions,
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        if not retrieval.get("success"):
+            return {
+                "success": retrieval.get("success", False),
+                "questions": retrieval.get("questions", []),
+                "error": retrieval.get("error") or retrieval.get("message", "Quiz retrieval failed"),
+                "message": retrieval.get("message"),
+            }
+
+        try:
+            # Use a local QuizGenerator if a custom API key was provided,
+            # avoiding shared singleton mutation (thread-safety fix).
+            quiz_gen = self._quiz_generator
+            if groq_api_key:
+                from .llm_providers import LLMFactory as _LLMFactory
+                quiz_gen = QuizGenerator(
+                    retriever=self._multi_retriever,
+                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
+                )
+
+            result = quiz_gen.generate_quiz_from_documents(
+                topic=retrieval["topic"],
+                topics=retrieval["topics"],
+                raw_documents=retrieval["documents"],
+                num_questions=num_questions,
+                difficulty=difficulty,
+                language=language,
+            )
+            result["_resolved_hashes"] = retrieval.get("_resolved_hashes", "all")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error generating quiz: {e}")
+            return {
+                "success": False,
+                "questions": [],
+                "error": f"Lỗi khi tạo quiz: {str(e)}"
+            }
+
+    def _resolve_quiz_targets(
+        self,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> tuple[Optional[List[str]], Dict[str, str]]:
+        """Resolve selected upload documents to authoritative collection names."""
+        target_hashes: Optional[List[str]] = None
+        hash_to_collection: Dict[str, str] = {}
+
+        if not selected_documents:
+            quiz_logger.warning(f"selected_documents is None/empty ({selected_documents!r}) — will query ALL collections!")
+            return target_hashes, hash_to_collection
+
+        target_hashes = []
+        if db_session and user_id:
+            try:
+                rows = SyncRAGCollectionRepository.get_by_filenames(
+                    db_session,
+                    selected_documents,
+                    uuid.UUID(user_id),
+                    source=RAGSourceType.UPLOAD,
+                )
+                target_hashes = [r.file_hash for r in rows]
+                hash_to_collection = {
+                    r.file_hash: r.collection_name
+                    for r in rows
+                    if r.collection_name
+                }
+                quiz_logger.info(f"DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
+            except Exception as e:
+                logger.warning(f"DB get_by_filenames failed in generate_quiz: {e}")
+                quiz_logger.warning(f"DB get_by_filenames failed: {e}")
+                db_session.rollback()
+
+        if not target_hashes:
+            all_registry = [
+                meta
+                for meta in self._collection_manager.registry.get_all(user_id=user_id)
+                if self._is_upload_collection_entry(meta)
+            ]
+            quiz_logger.info(
+                f"DB returned 0 rows, falling back to registry ({len(all_registry)} entries): "
+                f"{[(m.filename, m.file_hash[:8]) for m in all_registry]}"
+            )
+            for meta in all_registry:
+                if meta.filename in selected_documents:
+                    target_hashes.append(meta.file_hash)
+            if not hash_to_collection:
+                hash_to_collection = {
+                    m.file_hash: m.collection_name
+                    for m in all_registry
+                    if m.filename in selected_documents and m.collection_name
+                }
+
+        quiz_logger.info(
+            f"Resolved {len(target_hashes)} hashes from {len(selected_documents)} selected_documents: "
+            f"{selected_documents} -> {[h[:8] for h in target_hashes]}"
+        )
+        return target_hashes, hash_to_collection
+
+    def retrieve_documents_for_quiz(
+        self,
+        topic: str = None,
+        topics: List[str] = None,
+        num_questions: int = 5,
+        selected_documents: List[str] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve quiz documents without executing the LLM step locally."""
         self._ensure_initialized()
-        
-        # Sync registry state. With --pool=threads this is a fast mtime check (no-op
-        # when state is already fresh). Kept as defense-in-depth for backend process
-        # isolation and future-proofing.
         self._collection_manager.ensure_fresh_state()
-        
-        # Handle both single topic and multiple topics
+
         if topics and len(topics) > 0:
             topic_list = topics
         elif topic:
@@ -773,14 +943,11 @@ class RAGService:
                 "questions": [],
                 "error": "Cần có ít nhất một chủ đề để tạo quiz"
             }
-        
-        logger.info(f"Generating quiz: topics={topic_list}, num_questions={num_questions}, difficulty={difficulty}")
+
+        logger.info(f"Generating quiz: topics={topic_list}, num_questions={num_questions}")
         quiz_logger.info(f"generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
-        
-        # Validate num_questions
+
         num_questions = max(1, min(50, num_questions))
-        
-        # Check if index has documents
         stats = self.get_index_stats(user_id=user_id, db_session=db_session)
         if stats["total_documents"] == 0:
             return {
@@ -788,101 +955,30 @@ class RAGService:
                 "questions": [],
                 "error": "Chưa có tài liệu nào được index. Vui lòng upload và build index trước."
             }
-        
-        try:
-            # Resolve target file hashes from selected_documents
-            target_hashes = None
-            hash_to_collection: Dict[str, str] = {}
-            if selected_documents:
-                target_hashes = []
-                if db_session and user_id:
-                    try:
-                        rows = SyncRAGCollectionRepository.get_by_filenames(
-                            db_session,
-                            selected_documents,
-                            uuid.UUID(user_id),
-                            source=RAGSourceType.UPLOAD,
-                        )
-                        target_hashes = [r.file_hash for r in rows]
-                        hash_to_collection = {
-                            r.file_hash: r.collection_name
-                            for r in rows
-                            if r.collection_name
-                        }
-                        quiz_logger.info(f"DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
-                    except Exception as e:
-                        logger.warning(f"DB get_by_filenames failed in generate_quiz: {e}")
-                        quiz_logger.warning(f"DB get_by_filenames failed: {e}")
-                        db_session.rollback()
-                # Fallback to in-memory registry
-                if not target_hashes:
-                    all_registry = [
-                        meta
-                        for meta in self._collection_manager.registry.get_all(user_id=user_id)
-                        if self._is_upload_collection_entry(meta)
-                    ]
-                    quiz_logger.info(f"DB returned 0 rows, falling back to registry ({len(all_registry)} entries): {[(m.filename, m.file_hash[:8]) for m in all_registry]}")
-                    for meta in all_registry:
-                        if meta.filename in selected_documents:
-                            target_hashes.append(meta.file_hash)
-                    if not hash_to_collection:
-                        hash_to_collection = {
-                            m.file_hash: m.collection_name
-                            for m in all_registry
-                            if m.filename in selected_documents and m.collection_name
-                        }
-                quiz_logger.info(f"Resolved {len(target_hashes)} hashes from {len(selected_documents)} selected_documents: {selected_documents} -> {[h[:8] for h in target_hashes]}")
-            else:
-                quiz_logger.warning(f"selected_documents is None/empty ({selected_documents!r}) — will query ALL collections!")
-            
-            n_resolved = len(target_hashes) if target_hashes is not None else 'all'
-            
-            # Use a local QuizGenerator if a custom API key was provided,
-            # avoiding shared singleton mutation (thread-safety fix).
-            quiz_gen = self._quiz_generator
-            if groq_api_key:
-                from .llm_providers import LLMFactory as _LLMFactory
-                quiz_gen = QuizGenerator(
-                    retriever=self._multi_retriever,
-                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
-                )
-            
-            # If multiple topics, use the new multi-topic method
-            if len(topic_list) > 1:
-                result = quiz_gen.generate_quiz_multi_topics(
-                    topics=topic_list,
-                    num_questions=num_questions,
-                    difficulty=difficulty,
-                    language=language,
-                    k=k,
-                    target_file_hashes=target_hashes,
-                    user_id=user_id,
-                    hash_to_collection_name=hash_to_collection or None,
-                )
-            else:
-                # Single topic - use existing method
-                result = quiz_gen.generate_quiz(
-                    topic=topic_list[0],
-                    num_questions=num_questions,
-                    difficulty=difficulty,
-                    language=language,
-                    k=k,
-                    target_file_hashes=target_hashes,
-                    user_id=user_id,
-                    hash_to_collection_name=hash_to_collection or None,
-                )
-            
-            # Attach hash count for task-level summary logging
-            result["_resolved_hashes"] = n_resolved
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating quiz: {e}")
-            return {
-                "success": False,
-                "questions": [],
-                "error": f"Lỗi khi tạo quiz: {str(e)}"
-            }
+
+        target_hashes, hash_to_collection = self._resolve_quiz_targets(
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        prepared = self._quiz_generator.prepare_quiz_documents(
+            topic=topic,
+            topics=topic_list,
+            num_questions=num_questions,
+            target_file_hashes=target_hashes,
+            user_id=user_id,
+            hash_to_collection_name=hash_to_collection or None,
+        )
+        if not prepared.get("success"):
+            return prepared
+
+        return {
+            "success": True,
+            "topic": prepared["topic"],
+            "topics": prepared["topics"],
+            "documents": prepared["raw_documents"],
+            "_resolved_hashes": len(target_hashes) if target_hashes is not None else "all",
+        }
     
     def extract_topics(self, max_topics: int = 10, user_id: Optional[str] = None, db_session: Optional[Session] = None, groq_api_key: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1115,7 +1211,9 @@ class RAGService:
             user_id: User ID for per-user scoping
             db_session: Sync DB session for metadata lookup
         """
-        self._ensure_initialized()
+        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
+            str(Path(self.persist_directory) / "collection_registry.json")
+        )
         
         if db_session and user_id:
             # DB path — single authoritative query
@@ -1150,9 +1248,12 @@ class RAGService:
                 docs_dict[d["filename"]] = d
         
         indexed_files = [
-            file_info
-            for file_info in self._collection_manager.get_indexed_files(user_id=user_id)
-            if self._is_upload_collection_entry(file_info)
+            {
+                "filename": meta.filename,
+                "file_hash": meta.file_hash,
+            }
+            for meta in registry.get_all(user_id=user_id)
+            if self._is_upload_collection_entry(meta)
         ]
         for file_info in indexed_files:
             filename = file_info.get("filename", "unknown")

@@ -28,7 +28,8 @@ from .vectorstore import ChromaVectorStore
 from .collection_manager import (
     PerFileCollectionManager,
     get_canvas_collection_manager,
-    CollectionNameGenerator
+    CollectionNameGenerator,
+    CollectionRegistry,
 )
 from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
@@ -960,7 +961,11 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """List all indexed Canvas documents."""
-        self._ensure_initialized()
+        if self._topic_storage is None:
+            self._topic_storage = CanvasTopicStorage(str(self.CANVAS_RAG_DIR))
+        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
+            str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
+        )
         
         # ---- DB-backed path ----
         db_documents = []
@@ -1010,20 +1015,20 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         # Source 2: Get from collection_manager (per-file collections)
         # This catches files indexed via collection_manager but not in indexed_registry
         try:
-            indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
-            for file_info in indexed_files:
-                file_hash = file_info.get("file_hash")
+            indexed_files = registry.get_all(user_id=user_id)
+            for meta in indexed_files:
+                file_hash = meta.file_hash
                 if file_hash and file_hash not in seen_hashes:
-                    filename = file_info.get("filename", "unknown")
+                    filename = meta.filename or "unknown"
                     topics = self._topic_storage.get_topics(file_hash, user_id=user_id) or []
                     documents.append({
                         "filename": filename,
                         "original_filename": filename,
                         "file_hash": file_hash,
-                        "indexed_at": file_info.get("indexed_at"),
-                        "chunks_added": file_info.get("chunk_count", 0),
+                        "indexed_at": meta.created_at,
+                        "chunks_added": meta.chunk_count,
                         "topic_count": len(topics),
-                        "course_id": file_info.get("course_id")
+                        "course_id": meta.course_id
                     })
         except Exception as e:
             logger.warning(f"Could not get files from collection_manager: {e}")
@@ -1090,7 +1095,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """Get Canvas index statistics for a specific user."""
-        self._ensure_initialized()
+        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
+            str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
+        )
         
         try:
             if db_session and user_id:
@@ -1106,10 +1113,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     "unique_files": len(rows),
                 }
 
-            indexed_files = self._collection_manager.get_indexed_files(user_id=user_id)
+            indexed_files = registry.get_all(user_id=user_id)
             return {
                 "total_documents": len(indexed_files),
-                "total_chunks": sum(file_info.get("chunk_count", 0) for file_info in indexed_files),
+                "total_chunks": sum(meta.chunk_count or 0 for meta in indexed_files),
                 "collection_name": "per-file-canvas-collections",
                 "unique_files": len(indexed_files)
             }
@@ -1133,8 +1140,99 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """Query the Canvas document knowledge base."""
+        retrieval = self.retrieve_documents_for_query(
+            question=question,
+            k=k,
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        if not retrieval.get("success"):
+            return {
+                "success": False,
+                "answer": retrieval.get(
+                    "answer",
+                    f"Lỗi khi xử lý câu hỏi: {retrieval.get('error', 'Unknown error')}",
+                ),
+                "sources": [],
+                "error": retrieval.get("error", "Query failed"),
+            }
+
+        result = self._rag_chain.query_from_documents(
+            question=question,
+            documents=retrieval["documents"],
+            return_context=return_context,
+        )
+        result["success"] = True
+        result["collections_queried"] = retrieval.get("collections_queried", 0)
+        return result
+    
+    def generate_quiz(
+        self,
+        topics: List[str],
+        num_questions: int = 5,
+        difficulty: str = "medium",
+        language: str = "vi",
+        k: int = 10,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+        groq_api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate quiz from Canvas documents."""
+        retrieval = self.retrieve_documents_for_quiz(
+            topics=topics,
+            num_questions=num_questions,
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        if not retrieval.get("success"):
+            return {
+                "success": retrieval.get("success", False),
+                "questions": retrieval.get("questions", []),
+                "error": retrieval.get("error") or retrieval.get("message", "Quiz retrieval failed"),
+                "message": retrieval.get("message"),
+            }
+
+        try:
+            # Use a local QuizGenerator if a custom API key was provided,
+            # avoiding shared singleton mutation (thread-safety fix).
+            quiz_gen = self._quiz_generator
+            if groq_api_key:
+                from .llm_providers import LLMFactory as _LLMFactory
+                quiz_gen = QuizGenerator(
+                    retriever=self._multi_retriever,
+                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
+                )
+
+            result = quiz_gen.generate_quiz_from_documents(
+                topic=retrieval["topic"],
+                topics=retrieval["topics"],
+                raw_documents=retrieval["documents"],
+                num_questions=num_questions,
+                difficulty=difficulty,
+                language=language,
+            )
+            result["_resolved_hashes"] = retrieval.get("_resolved_hashes", "all")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error generating Canvas quiz: {e}")
+            return {
+                "success": False,
+                "questions": [],
+                "error": f"Lỗi khi tạo quiz: {str(e)}"
+            }
+
+    def _resolve_query_target_hashes(
+        self,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Optional[List[str]]:
+        """Resolve authoritative Canvas file hashes for retrieval."""
         self._ensure_initialized()
-        # Sync registry state for cross-process freshness (fast mtime check).
         self._collection_manager.ensure_fresh_state()
 
         target_hashes = None
@@ -1166,145 +1264,140 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             except Exception as e:
                 logger.warning(f"Canvas DB get_all failed during query: {e}")
                 db_session.rollback()
+        return target_hashes
 
-        return self._rag_chain.query(
-            question,
-            k=k,
-            return_context=return_context,
-            target_file_hashes=target_hashes,
-            user_id=user_id,
-        )
-    
-    def generate_quiz(
+    def retrieve_documents_for_query(
         self,
-        topics: List[str],
-        num_questions: int = 5,
-        difficulty: str = "medium",
-        language: str = "vi",
-        k: int = 10,
+        question: str,
+        k: int = 6,
         selected_documents: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
-        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate quiz from Canvas documents."""
+        """Retrieve Canvas query documents without executing the LLM step locally."""
+        target_hashes = self._resolve_query_target_hashes(
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        documents = self._multi_retriever.retrieve(
+            question,
+            k=k,
+            target_file_hashes=target_hashes,
+            user_id=user_id,
+        )
+        return {
+            "success": True,
+            "documents": documents,
+            "collections_queried": len(target_hashes) if target_hashes is not None else 0,
+        }
+
+    def _resolve_quiz_targets(
+        self,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> tuple[Optional[List[str]], Dict[str, str]]:
+        """Resolve selected Canvas docs to authoritative collection names."""
+        target_hashes: Optional[List[str]] = None
+        hash_to_collection: Dict[str, str] = {}
+
+        if selected_documents:
+            target_hashes = []
+            if db_session and user_id:
+                try:
+                    rows = SyncRAGCollectionRepository.get_by_filenames(
+                        db_session, selected_documents, _uuid.UUID(user_id),
+                        source=RAGSourceType.CANVAS,
+                    )
+                    target_hashes = [r.file_hash for r in rows]
+                    hash_to_collection = {
+                        r.file_hash: r.collection_name
+                        for r in rows
+                        if r.collection_name
+                    }
+                    quiz_logger.info(f"Canvas DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
+                except Exception as e:
+                    logger.warning(f"Canvas DB get_by_filenames failed: {e}")
+                    quiz_logger.warning(f"Canvas DB get_by_filenames failed: {e}")
+                    db_session.rollback()
+            if not target_hashes:
+                matching = self._collection_manager.registry.get_by_filenames(selected_documents, user_id=user_id)
+                target_hashes = [m.file_hash for m in matching]
+                if not hash_to_collection:
+                    hash_to_collection = {
+                        m.file_hash: m.collection_name
+                        for m in matching
+                        if m.collection_name
+                    }
+                quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
+            quiz_logger.info(f"Canvas resolved {len(target_hashes)} hashes from {len(selected_documents)} docs: {selected_documents} -> {[h[:8] for h in target_hashes]}")
+        elif db_session and user_id:
+            try:
+                rows = SyncRAGCollectionRepository.get_all(
+                    db_session,
+                    _uuid.UUID(user_id),
+                    source=RAGSourceType.CANVAS,
+                )
+                target_hashes = [row.file_hash for row in rows]
+                hash_to_collection = {
+                    row.file_hash: row.collection_name
+                    for row in rows
+                    if row.collection_name
+                }
+            except Exception as e:
+                logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
+                quiz_logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
+                db_session.rollback()
+        else:
+            quiz_logger.warning(f"canvas selected_documents is None/empty ({selected_documents!r}) — will query all user-scoped collections!")
+
+        return target_hashes, hash_to_collection
+
+    def retrieve_documents_for_quiz(
+        self,
+        topics: List[str],
+        num_questions: int = 5,
+        selected_documents: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve Canvas quiz documents without executing the LLM step locally."""
         self._ensure_initialized()
-        
+        self._collection_manager.ensure_fresh_state()
+
         if not topics or len(topics) == 0:
             return {
                 "success": False,
                 "questions": [],
                 "error": "Cần có ít nhất một chủ đề để tạo quiz"
             }
-        
+
         logger.info(f"Generating Canvas quiz: topics={topics}, num_questions={num_questions}")
         quiz_logger.info(f"canvas generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
-        
-        try:
-            # Sync registry state. With --pool=threads this is a fast mtime check (no-op
-            # when state is already fresh). Kept as defense-in-depth for backend process
-            # isolation and future-proofing.
-            self._collection_manager.ensure_fresh_state()
 
-            target_hashes = None
-            hash_to_collection: Dict[str, str] = {}
-            if selected_documents:
-                target_hashes = []
-                if db_session and user_id:
-                    try:
-                        rows = SyncRAGCollectionRepository.get_by_filenames(
-                            db_session, selected_documents, _uuid.UUID(user_id),
-                            source=RAGSourceType.CANVAS,
-                        )
-                        target_hashes = [r.file_hash for r in rows]
-                        hash_to_collection = {
-                            r.file_hash: r.collection_name
-                            for r in rows
-                            if r.collection_name
-                        }
-                        quiz_logger.info(f"Canvas DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
-                    except Exception as e:
-                        logger.warning(f"Canvas DB get_by_filenames failed: {e}")
-                        quiz_logger.warning(f"Canvas DB get_by_filenames failed: {e}")
-                        db_session.rollback()
-                if not target_hashes:
-                    matching = self._collection_manager.registry.get_by_filenames(selected_documents, user_id=user_id)
-                    target_hashes = [m.file_hash for m in matching]
-                    if not hash_to_collection:
-                        hash_to_collection = {
-                            m.file_hash: m.collection_name
-                            for m in matching
-                            if m.collection_name
-                        }
-                    quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
-                quiz_logger.info(f"Canvas resolved {len(target_hashes)} hashes from {len(selected_documents)} docs: {selected_documents} -> {[h[:8] for h in target_hashes]}")
-            elif db_session and user_id:
-                try:
-                    rows = SyncRAGCollectionRepository.get_all(
-                        db_session,
-                        _uuid.UUID(user_id),
-                        source=RAGSourceType.CANVAS,
-                    )
-                    target_hashes = [row.file_hash for row in rows]
-                    hash_to_collection = {
-                        row.file_hash: row.collection_name
-                        for row in rows
-                        if row.collection_name
-                    }
-                except Exception as e:
-                    logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
-                    quiz_logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
-                    db_session.rollback()
-            else:
-                quiz_logger.warning(f"canvas selected_documents is None/empty ({selected_documents!r}) — will query all user-scoped collections!")
+        target_hashes, hash_to_collection = self._resolve_quiz_targets(
+            selected_documents=selected_documents,
+            user_id=user_id,
+            db_session=db_session,
+        )
+        prepared = self._quiz_generator.prepare_quiz_documents(
+            topics=topics,
+            num_questions=num_questions,
+            target_file_hashes=target_hashes,
+            user_id=user_id,
+            hash_to_collection_name=hash_to_collection or None,
+        )
+        if not prepared.get("success"):
+            return prepared
 
-            n_resolved = len(target_hashes) if target_hashes is not None else 'all'
-
-            # Use a local QuizGenerator if a custom API key was provided,
-            # avoiding shared singleton mutation (thread-safety fix).
-            quiz_gen = self._quiz_generator
-            if groq_api_key:
-                from .llm_providers import LLMFactory as _LLMFactory
-                quiz_gen = QuizGenerator(
-                    retriever=self._multi_retriever,
-                    llm_provider=_LLMFactory.create(groq_api_key=groq_api_key),
-                )
-
-            # If multiple topics, use the multi-topic method
-            if len(topics) > 1:
-                result = quiz_gen.generate_quiz_multi_topics(
-                    topics=topics,
-                    num_questions=num_questions,
-                    difficulty=difficulty,
-                    language=language,
-                    k=k,
-                    target_file_hashes=target_hashes,
-                    user_id=user_id,
-                    hash_to_collection_name=hash_to_collection or None,
-                )
-            else:
-                # Single topic
-                result = quiz_gen.generate_quiz(
-                    topic=topics[0],
-                    num_questions=num_questions,
-                    difficulty=difficulty,
-                    language=language,
-                    k=k,
-                    target_file_hashes=target_hashes,
-                    user_id=user_id,
-                    hash_to_collection_name=hash_to_collection or None,
-                )
-
-            result["_resolved_hashes"] = n_resolved
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating Canvas quiz: {e}")
-            return {
-                "success": False,
-                "questions": [],
-                "error": f"Lỗi khi tạo quiz: {str(e)}"
-            }
+        return {
+            "success": True,
+            "topic": prepared["topic"],
+            "topics": prepared["topics"],
+            "documents": prepared["raw_documents"],
+            "_resolved_hashes": len(target_hashes) if target_hashes is not None else "all",
+        }
     
     def reset_index(self) -> Dict[str, Any]:
         """Reset Canvas index and clear all data."""

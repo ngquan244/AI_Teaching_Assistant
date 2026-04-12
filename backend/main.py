@@ -53,31 +53,8 @@ async def lifespan(app: FastAPI):
     for directory in [settings.EXPORTS_DIR, settings.DATA_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
     
-    # ── Preload BAAI/bge-m3 embedding model ──────────────────────────
-    try:
-        app_logger.info("Preloading embedding model (BAAI/bge-m3)...")
-        from backend.modules.document_rag.collection_manager import (
-            get_uploads_collection_manager,
-            get_canvas_collection_manager,
-        )
-        get_uploads_collection_manager()
-        get_canvas_collection_manager()
-        app_logger.info("Embedding model preloaded successfully ✓")
-    except Exception as e:
-        app_logger.warning(f"Could not preload embedding model (non-fatal): {e}")
-    
-    # ── Preload RAG & Canvas RAG services ─────────────────────────────
-    try:
-        app_logger.info("Preloading RAG services...")
-        from backend.modules.document_rag.rag_service import RAGService
-        from backend.modules.document_rag.canvas_rag_service import CanvasRAGService
-        rag = RAGService.get_instance()
-        rag._ensure_initialized()
-        canvas_rag = CanvasRAGService.get_instance()
-        canvas_rag._ensure_initialized()
-        app_logger.info("RAG services preloaded successfully ✓")
-    except Exception as e:
-        app_logger.warning(f"Could not preload RAG services (non-fatal): {e}")
+    # ── RAG preload intentionally disabled in backend ─────────────────
+    app_logger.info("Skipping backend RAG/embedding preload; worker-rag owns embedding initialization")
 
     # ── Seed guide documents if DB table is empty ─────────────────────
     try:

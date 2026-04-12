@@ -10,28 +10,18 @@ import uuid
 from typing import Optional, Dict, Any, List
 
 from celery import shared_task
+from celery.result import allow_join_result
 
 from backend.celery_app import RateLimitedLLMTask
 from backend.core.config import settings
 from backend.core.security import decrypt_token
 from backend.core.logger import quiz_logger, celery_logger, logger as app_logger
 from backend.database.models import AppSetting
+from backend.modules.document_rag.document_payload import deserialize_documents
 from backend.services.job_service import get_sync_job_service
 from backend.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-
-def _get_rag_service():
-    """Get RAG service instance."""
-    from backend.modules.document_rag import RAGService
-    return RAGService.get_instance()
-
-
-def _get_canvas_rag_service():
-    """Get Canvas RAG service instance."""
-    from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
-    return get_canvas_rag_service()
 
 
 def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[str]:
@@ -51,6 +41,32 @@ def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[s
 
     env_key = settings.GROQ_API_KEY
     return env_key.strip() if env_key and env_key.strip() else None
+
+
+def _wait_for_rag_task(task, *, args: Optional[List[Any]] = None, kwargs: Optional[Dict[str, Any]] = None, timeout: int = 180) -> Dict[str, Any]:
+    """Run a rag-queue subtask and wait for its result from the llm worker."""
+    async_result = task.apply_async(args=args or [], kwargs=kwargs or {}, queue="rag")
+    with allow_join_result():
+        return async_result.get(
+            timeout=timeout,
+            propagate=True,
+            disable_sync_subtasks=False,
+        )
+
+
+def _build_quiz_generator(groq_api_key: Optional[str] = None):
+    from backend.modules.document_rag.quiz_generator import QuizGenerator
+    from backend.modules.document_rag.llm_providers import LLMFactory
+
+    llm_provider = LLMFactory.create(groq_api_key=groq_api_key) if groq_api_key else LLMFactory.create()
+    return QuizGenerator(retriever=None, llm_provider=llm_provider)
+
+
+def _build_rag_chain():
+    from backend.modules.document_rag.rag_chain import RAGChain
+    from backend.modules.document_rag.llm_providers import LLMFactory
+
+    return RAGChain(retriever=None, llm_provider=LLMFactory.create())
 
 
 @shared_task(
@@ -97,30 +113,43 @@ def generate_quiz(
     try:
         job_service.start_job(job_uuid, "Retrieving context")
         quiz_logger.info(f"Task received: job={job_id}, topics={topics}, selected_documents={selected_documents}, user_id={user_id}, source={source}")
-        
-        # Get appropriate RAG service
-        if source == "canvas":
-            rag_service = _get_canvas_rag_service()
+
+        from backend.tasks import rag_tasks
+
+        retrieval = _wait_for_rag_task(
+            rag_tasks.retrieve_quiz_context,
+            kwargs={
+                "topics": topics,
+                "num_questions": num_questions,
+                "selected_documents": selected_documents,
+                "user_id": user_id,
+                "source": source,
+            },
+            timeout=120,
+        )
+
+        if not retrieval.get("success"):
+            result = {
+                "success": False,
+                "questions": retrieval.get("questions", []),
+                "message": retrieval.get("message"),
+                "error": retrieval.get("error") or retrieval.get("message") or "Quiz retrieval failed",
+                "_resolved_hashes": retrieval.get("_resolved_hashes", "?"),
+            }
         else:
-            rag_service = _get_rag_service()
-        
-        # Update progress
-        job_service.update_progress(job_uuid, 20, "Generating quiz questions")
-        
-        # Generate quiz
-        effective_groq_key = _resolve_groq_api_key_sync(groq_api_key)
-        with SessionLocal() as rag_db:
-            result = rag_service.generate_quiz(
-                topics=topics,
+            job_service.update_progress(job_uuid, 55, "Generating quiz questions")
+            effective_groq_key = _resolve_groq_api_key_sync(groq_api_key)
+            documents = deserialize_documents(retrieval.get("documents", []))
+            quiz_generator = _build_quiz_generator(effective_groq_key)
+            result = quiz_generator.generate_quiz_from_documents(
+                topic=retrieval["topic"],
+                topics=retrieval["topics"],
+                raw_documents=documents,
                 num_questions=num_questions,
                 difficulty=difficulty,
                 language=language,
-                k=k,
-                selected_documents=selected_documents,
-                user_id=user_id,
-                db_session=rag_db,
-                groq_api_key=effective_groq_key,
             )
+            result["_resolved_hashes"] = retrieval.get("_resolved_hashes", "?")
         
         duration = round(time.time() - t0, 1)
         n_resolved = result.get("_resolved_hashes", "?")
@@ -194,22 +223,41 @@ def rag_query(
     
     try:
         job_service.start_job(job_uuid, "Processing query")
-        
-        if source == "canvas":
-            rag_service = _get_canvas_rag_service()
-        else:
-            rag_service = _get_rag_service()
-        
         job_service.update_progress(job_uuid, 30, "Retrieving context")
-        
-        with SessionLocal() as rag_db:
-            result = rag_service.query(
+
+        from backend.tasks import rag_tasks
+
+        retrieval = _wait_for_rag_task(
+            rag_tasks.retrieve_query_context,
+            kwargs={
+                "question": question,
+                "k": k,
+                "source": source,
+                "user_id": user_id,
+            },
+            timeout=90,
+        )
+
+        if not retrieval.get("success"):
+            result = {
+                "success": False,
+                "answer": retrieval.get(
+                    "answer",
+                    "Không tìm thấy thông tin liên quan trong tài liệu.",
+                ),
+                "sources": [],
+                "error": retrieval.get("error", "Query failed"),
+            }
+        else:
+            documents = deserialize_documents(retrieval.get("documents", []))
+            rag_chain = _build_rag_chain()
+            result = rag_chain.query_from_documents(
                 question=question,
-                k=k,
+                documents=documents,
                 return_context=return_context,
-                user_id=user_id,
-                db_session=rag_db,
             )
+            result["success"] = True
+            result["collections_queried"] = retrieval.get("collections_queried", 0)
         
         if result.get("success"):
             job_service.complete_job(job_uuid, result)
@@ -247,14 +295,14 @@ def extract_document_topics(
     
     try:
         job_service.start_job(job_uuid, "Analyzing documents for topics")
-        
-        if source == "canvas":
-            rag_service = _get_canvas_rag_service()
-        else:
-            rag_service = _get_rag_service()
-        
-        with SessionLocal() as rag_db:
-            result = rag_service.extract_topics(user_id=user_id, db_session=rag_db)
+
+        from backend.tasks import rag_tasks
+
+        result = _wait_for_rag_task(
+            rag_tasks.extract_topics_payload,
+            kwargs={"source": source, "user_id": user_id},
+            timeout=180,
+        )
         
         job_service.complete_job(job_uuid, result)
         return result

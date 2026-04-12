@@ -12,6 +12,10 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 
 from .config import rag_config
+from .document_payload import (
+    extract_document_citations,
+    format_context_documents,
+)
 from .retriever import DocumentRetriever
 from .llm_providers import BaseLLM, LLMFactory
 
@@ -49,7 +53,7 @@ class RAGChain:
     
     def __init__(
         self,
-        retriever: DocumentRetriever,
+        retriever: Optional[DocumentRetriever],
         llm_provider: Optional[BaseLLM] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
@@ -81,6 +85,16 @@ class RAGChain:
         # Initialize LLM if provider was passed
         if self._llm_provider is None:
             self._init_llm()
+
+    def _format_context_documents(self, documents: List[Document]) -> str:
+        if self.retriever and hasattr(self.retriever, "format_context"):
+            return self.retriever.format_context(documents)
+        return format_context_documents(documents)
+
+    def _extract_document_citations(self, documents: List[Document]) -> List[Dict[str, Any]]:
+        if self.retriever and hasattr(self.retriever, "extract_citations"):
+            return self.retriever.extract_citations(documents)
+        return extract_document_citations(documents)
     
     def _init_llm(self):
         """Initialize LLM using factory."""
@@ -175,7 +189,7 @@ class RAGChain:
             }
         
         # Step 2: Format context
-        context = self.retriever.format_context(documents)
+        context = self._format_context_documents(documents)
         
         # Step 3: Build and run chain
         chain = self.prompt | self.llm
@@ -202,7 +216,7 @@ class RAGChain:
             }
         
         # Step 4: Extract citations
-        sources = self.retriever.extract_citations(documents)
+        sources = self._extract_document_citations(documents)
         
         # Build response
         result = {
@@ -242,7 +256,7 @@ class RAGChain:
             }
         
         # Format context
-        context = self.retriever.format_context(documents)
+        context = self._format_context_documents(documents)
         
         # Use custom prompt
         custom_prompt = ChatPromptTemplate.from_template(prompt_template)
@@ -262,11 +276,51 @@ class RAGChain:
                 "error": str(e)
             }
         
-        sources = self.retriever.extract_citations(documents)
-        
+        sources = self._extract_document_citations(documents)
+
         return {
             "answer": answer,
             "sources": sources
+        }
+
+    def query_from_documents(
+        self,
+        question: str,
+        documents: List[Document],
+        return_context: bool = False,
+    ) -> Dict[str, Any]:
+        """Execute the generation step against already-retrieved documents."""
+        if not documents:
+            return {
+                "answer": "Không tìm thấy thông tin liên quan trong tài liệu.",
+                "sources": [],
+                "context": "" if return_context else None,
+            }
+
+        context = self._format_context_documents(documents)
+        chain = self.prompt | self.llm
+
+        try:
+            response = chain.invoke({
+                "context": context,
+                "question": question,
+            })
+            answer = response.content if hasattr(response, "content") else str(response)
+        except Exception as e:
+            logger.error(f"Error generating answer: {e}")
+            return {
+                "answer": f"Lỗi khi tạo câu trả lời: {str(e)}",
+                "sources": [],
+                "context": context if return_context else None,
+                "error": str(e),
+            }
+
+        sources = self._extract_document_citations(documents)
+
+        return {
+            "answer": answer,
+            "sources": sources,
+            "context": context if return_context else None,
         }
     
     def check_connection(self) -> Dict[str, Any]:
