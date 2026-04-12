@@ -250,6 +250,25 @@ class CanvasRAGService:
                 str(self.CANVAS_CHROMA_DIR / "collection_registry.json")
             )
 
+    def _ensure_collection_manager(self):
+        """Medium-weight init: collection manager + topic storage (no LLM/retriever/chain).
+        
+        With lazy embeddings in PerFileCollectionManager, this does NOT load
+        the embedding model (~500 MB) — only the registry + directory structure.
+        Embeddings are loaded on-demand when get_or_create_collection() is called.
+        Safe to use in the backend process for delete/reset operations.
+        """
+        self._ensure_topic_storage()
+        if self._collection_manager is not None:
+            return
+        with self._init_lock:
+            if self._collection_manager is not None:
+                return
+            self._collection_manager = get_canvas_collection_manager()
+            # Also populate metadata registry from the manager's registry
+            if self._metadata_registry is None:
+                self._metadata_registry = self._collection_manager.registry
+
     def _do_initialize(self):
         """Actual initialization — must be called under _init_lock."""
         logger.info("Initializing Canvas RAG components with per-file collection manager...")
@@ -1425,7 +1444,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
     
     def reset_index(self) -> Dict[str, Any]:
         """Reset Canvas index and clear all data."""
-        self._ensure_initialized()
+        self._ensure_collection_manager()
         
         try:
             self._collection_manager.reset_all()
@@ -1476,7 +1495,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         Cleans up: ChromaDB collection, legacy vector store,
         indexed registry (JSON), topic storage, and PostgreSQL record.
         """
-        self._ensure_initialized()
+        self._ensure_collection_manager()
         
         try:
             hash_to_remove = None

@@ -453,6 +453,26 @@ export async function asyncIndexCanvasFile(
   }
 }
 
+/**
+ * Extract topics from a Canvas file asynchronously via Celery.
+ */
+export async function asyncExtractCanvasTopics(
+  filename: string,
+  numTopics: number = 8,
+): Promise<AsyncJobResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<AsyncJobResponse>(
+      `${API_BASE}/async/extract-topics`,
+      { filename, num_topics: numTopics },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+  }
+}
+
 export const canvasRagApi = {
   downloadCanvasFile,
   indexCanvasFile,
@@ -467,6 +487,7 @@ export const canvasRagApi = {
   removeCanvasFileIndex,
   asyncCanvasGenerateQuiz,
   asyncIndexCanvasFile,
+  asyncExtractCanvasTopics,
 };
 
 export default canvasRagApi;
