@@ -16,6 +16,7 @@ from backend.core.security import decrypt_token
 from backend.database.models import AppSetting
 from backend.services.job_service import get_sync_job_service
 from backend.database.base import SessionLocal
+from backend.modules.document_rag.document_payload import serialize_documents
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,121 @@ def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[s
 
     env_key = settings.GROQ_API_KEY
     return env_key.strip() if env_key and env_key.strip() else None
+
+
+@shared_task(
+    bind=True,
+    base=BaseTaskWithRetry,
+    name="backend.tasks.rag_tasks.retrieve_query_context",
+    queue="rag",
+    max_retries=2,
+)
+def retrieve_query_context(
+    self,
+    question: str,
+    k: Optional[int] = None,
+    source: str = "document",
+    user_id: Optional[str] = None,
+    file_hashes: Optional[list] = None,
+    selected_documents: Optional[list] = None,
+) -> Dict[str, Any]:
+    """Retrieve query documents on the rag worker and serialize them for transport."""
+    with SessionLocal() as rag_db:
+        if source == "canvas":
+            service = _get_canvas_rag_service()
+            result = service.retrieve_documents_for_query(
+                question=question,
+                k=k or 6,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
+        else:
+            service = _get_rag_service()
+            result = service.retrieve_documents_for_query(
+                question=question,
+                k=k,
+                file_hashes=file_hashes,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
+
+    if result.get("success"):
+        result["documents"] = serialize_documents(result.get("documents", []))
+    return result
+
+
+@shared_task(
+    bind=True,
+    base=BaseTaskWithRetry,
+    name="backend.tasks.rag_tasks.retrieve_quiz_context",
+    queue="rag",
+    max_retries=2,
+)
+def retrieve_quiz_context(
+    self,
+    topics: list,
+    num_questions: int = 5,
+    selected_documents: Optional[list] = None,
+    user_id: Optional[str] = None,
+    source: str = "document",
+) -> Dict[str, Any]:
+    """Retrieve quiz documents on the rag worker and serialize them for transport."""
+    with SessionLocal() as rag_db:
+        if source == "canvas":
+            service = _get_canvas_rag_service()
+            result = service.retrieve_documents_for_quiz(
+                topics=topics,
+                num_questions=num_questions,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
+        else:
+            service = _get_rag_service()
+            result = service.retrieve_documents_for_quiz(
+                topic=topics[0] if len(topics) == 1 else None,
+                topics=topics,
+                num_questions=num_questions,
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=rag_db,
+            )
+
+    if result.get("success"):
+        result["documents"] = serialize_documents(result.get("documents", []))
+    return result
+
+
+@shared_task(
+    bind=True,
+    base=BaseTaskWithRetry,
+    name="backend.tasks.rag_tasks.extract_topics_payload",
+    queue="rag",
+    max_retries=2,
+)
+def extract_topics_payload(
+    self,
+    source: str = "document",
+    user_id: Optional[str] = None,
+    groq_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run topic extraction on the rag worker without binding to a Job row."""
+    if source == "canvas":
+        return {
+            "success": False,
+            "error": "Canvas global topic extraction is not supported by this task",
+        }
+
+    effective_groq_key = _resolve_groq_api_key_sync(groq_api_key)
+    service = _get_rag_service()
+    with SessionLocal() as rag_db:
+        return service.extract_topics(
+            user_id=user_id,
+            db_session=rag_db,
+            groq_api_key=effective_groq_key,
+        )
 
 
 @shared_task(

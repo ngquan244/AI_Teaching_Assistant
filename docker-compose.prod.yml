@@ -23,11 +23,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-          cpus: '2'
-        reservations:
-          memory: 1G
+          memory: 512M
           cpus: '1'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
     
     # Enhanced logging for production
     logging:
@@ -147,14 +147,32 @@ services:
   worker-rag:
     env_file:
       - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+        reservations:
+          cpus: '0.5'
 
   worker-llm:
     env_file:
       - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+        reservations:
+          cpus: '0.25'
 
   worker-canvas:
     env_file:
       - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+        reservations:
+          cpus: '0.25'
 
   # Flower — internal only, access via SSH tunnel: ssh -L 5555:localhost:5555 root@VPS
   flower:

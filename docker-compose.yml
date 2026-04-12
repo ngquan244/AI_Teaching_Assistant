@@ -137,7 +137,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
         reservations:
           memory: 512M
     healthcheck:
@@ -187,7 +187,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          memory: 1G
         reservations:
           memory: 512M
     healthcheck:

@@ -21,6 +21,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from .config import rag_config
+from .document_payload import (
+    extract_document_citations,
+    format_context_documents,
+)
 from .retriever import DocumentRetriever
 from .llm_providers import BaseLLM, LLMFactory
 from backend.core.logger import quiz_logger
@@ -1244,6 +1248,16 @@ Return ONLY valid JSON, no additional text.""")
                 retrieve_kwargs["hash_to_collection_name"] = hash_to_collection_name
         return self.retriever.retrieve(query, **retrieve_kwargs)
 
+    def _format_context_documents(self, documents: List[Document]) -> str:
+        if self.retriever and hasattr(self.retriever, "format_context"):
+            return self.retriever.format_context(documents)
+        return format_context_documents(documents)
+
+    def _extract_document_citations(self, documents: List[Document]) -> List[Dict[str, Any]]:
+        if self.retriever and hasattr(self.retriever, "extract_citations"):
+            return self.retriever.extract_citations(documents)
+        return extract_document_citations(documents)
+
     def _select_context_documents(
         self,
         documents: List[Document],
@@ -1947,7 +1961,7 @@ Return ONLY valid JSON, no additional text.""")
         planned_calls: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         prompt = self.prompt_vi if language == "vi" else self.prompt_en
-        context = self.retriever.format_context(context_documents)
+        context = self._format_context_documents(context_documents)
         existing_limit, existing_chars = self._existing_question_prompt_budget(
             generation_mode=generation_mode,
             cost_protected=cost_protected,
@@ -2407,7 +2421,7 @@ Return ONLY valid JSON, no additional text.""")
                 "num_questions_generated": 0,
             }
 
-        sources = self.retriever.extract_citations(raw_documents)
+        sources = self._extract_document_citations(raw_documents)
         topics = topics or [topic]
         raw_document_count = raw_document_count or len(raw_documents)
         cost_protected = self._is_large_request(num_questions)
@@ -2429,7 +2443,7 @@ Return ONLY valid JSON, no additional text.""")
                     topics=topics,
                     final_budget=blueprint_context_budget,
                 )
-                blueprint_context = self.retriever.format_context(blueprint_context_documents)
+                blueprint_context = self._format_context_documents(blueprint_context_documents)
                 blueprint, blueprint_failure_reason = self._build_blueprint(
                     context=blueprint_context,
                     topic=topic,
@@ -2558,47 +2572,22 @@ Return ONLY valid JSON, no additional text.""")
             Dictionary with quiz questions and metadata
         """
         logger.info(f"Generating quiz: topic='{topic}', num_questions={num_questions}, difficulty={difficulty}")
-        
-        raw_budget = self._raw_pool_budget(num_questions)
-
-        raw_documents = self._retrieve_documents_with_budget(
-            query=topic,
-            max_total_docs=raw_budget,
+        prepared = self.prepare_quiz_documents(
+            topic=topic,
+            num_questions=num_questions,
             target_file_hashes=target_file_hashes,
             user_id=user_id,
             hash_to_collection_name=hash_to_collection_name,
         )
-        raw_documents = self._annotate_documents(raw_documents, retrieval_topic=topic)
-
-        if not raw_documents:
-            logger.warning("No documents retrieved for topic")
-            return {
-                "success": False,
-                "partial": False,
-                "questions": [],
-                "message": f"Không tìm thấy nội dung về '{topic}' trong tài liệu",
-                "sources": []
-            }
-        
-        raw_documents = self._dedupe_documents(raw_documents)
-        
-        if not raw_documents:
-            return {
-                "success": False,
-                "partial": False,
-                "questions": [],
-                "message": "Context rỗng, không thể tạo quiz",
-                "sources": []
-            }
-        
-        return self._generate_quiz_core_vnext(
-            topic=topic,
+        if not prepared.get("success"):
+            return prepared
+        return self.generate_quiz_from_documents(
+            topic=prepared["topic"],
+            topics=prepared["topics"],
+            raw_documents=prepared["raw_documents"],
             num_questions=num_questions,
             difficulty=difficulty,
             language=language,
-            raw_documents=raw_documents,
-            topics=[topic],
-            raw_document_count=len(raw_documents),
         )
     
     def generate_quiz_multi_topics(
@@ -2631,43 +2620,115 @@ Return ONLY valid JSON, no additional text.""")
             Dictionary with quiz questions and metadata
         """
         logger.info(f"Generating multi-topic quiz: topics={topics}, num_questions={num_questions}")
-        
-        if not topics:
+        prepared = self.prepare_quiz_documents(
+            topics=topics,
+            num_questions=num_questions,
+            target_file_hashes=target_file_hashes,
+            user_id=user_id,
+            hash_to_collection_name=hash_to_collection_name,
+        )
+        if not prepared.get("success"):
+            return prepared
+        return self.generate_quiz_from_documents(
+            topic=prepared["topic"],
+            topics=prepared["topics"],
+            raw_documents=prepared["raw_documents"],
+            num_questions=num_questions,
+            difficulty=difficulty,
+            language=language,
+        )
+
+    def prepare_quiz_documents(
+        self,
+        topic: Optional[str] = None,
+        topics: Optional[List[str]] = None,
+        num_questions: int = 5,
+        target_file_hashes: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve and normalize quiz documents without invoking the LLM."""
+        topic_list = [item for item in (topics or []) if str(item or "").strip()]
+        if not topic_list and topic and str(topic).strip():
+            topic_list = [str(topic).strip()]
+        if not topic_list:
             return {
                 "success": False,
                 "partial": False,
                 "questions": [],
                 "message": "Cần có ít nhất một chủ đề",
-                "sources": []
+                "sources": [],
             }
-        
+
+        if len(topic_list) == 1:
+            retrieval_topic = topic_list[0]
+            raw_budget = self._raw_pool_budget(num_questions)
+            raw_documents = self._retrieve_documents_with_budget(
+                query=retrieval_topic,
+                max_total_docs=raw_budget,
+                target_file_hashes=target_file_hashes,
+                user_id=user_id,
+                hash_to_collection_name=hash_to_collection_name,
+            )
+            raw_documents = self._annotate_documents(raw_documents, retrieval_topic=retrieval_topic)
+            if not raw_documents:
+                logger.warning("No documents retrieved for topic")
+                return {
+                    "success": False,
+                    "partial": False,
+                    "questions": [],
+                    "message": f"Không tìm thấy nội dung về '{retrieval_topic}' trong tài liệu",
+                    "sources": [],
+                }
+
+            raw_documents = self._dedupe_documents(raw_documents)
+            if not raw_documents:
+                return {
+                    "success": False,
+                    "partial": False,
+                    "questions": [],
+                    "message": "Context rỗng, không thể tạo quiz",
+                    "sources": [],
+                }
+
+            return {
+                "success": True,
+                "topic": retrieval_topic,
+                "topics": topic_list,
+                "raw_documents": raw_documents,
+                "raw_document_count": len(raw_documents),
+            }
+
         raw_budget = self._raw_pool_budget(num_questions)
         topic_budgets = self._allocate_topic_budgets(
-            topics=topics,
+            topics=topic_list,
             raw_budget=raw_budget,
             target_file_hashes=target_file_hashes,
             user_id=user_id,
         )
 
         all_documents: List[Document] = []
-        for topic in topics:
-            topic_budget = topic_budgets.get(topic, 1)
+        for retrieval_topic in topic_list:
+            topic_budget = topic_budgets.get(retrieval_topic, 1)
             if topic_budget <= 0:
                 continue
             topic_documents = self._retrieve_documents_with_budget(
-                query=topic,
+                query=retrieval_topic,
                 max_total_docs=topic_budget,
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
                 hash_to_collection_name=hash_to_collection_name,
             )
-            topic_documents = self._annotate_documents(topic_documents, retrieval_topic=topic)
+            topic_documents = self._annotate_documents(
+                topic_documents,
+                retrieval_topic=retrieval_topic,
+            )
             if topic_documents:
                 all_documents.extend(topic_documents)
                 logger.info(
                     "Retrieved %s documents for topic '%s' with budget=%s",
                     len(topic_documents),
-                    topic,
+                    retrieval_topic,
                     topic_budget,
                 )
 
@@ -2677,38 +2738,52 @@ Return ONLY valid JSON, no additional text.""")
                 "success": False,
                 "partial": False,
                 "questions": [],
-                "message": f"Không tìm thấy nội dung về các chủ đề: {', '.join(topics)}",
-                "sources": []
+                "message": f"Không tìm thấy nội dung về các chủ đề: {', '.join(topic_list)}",
+                "sources": [],
             }
-        
+
         unique_documents = self._dedupe_documents(all_documents)
         logger.info(f"Total unique documents in raw pool: {len(unique_documents)}")
-        
         if not unique_documents:
             return {
                 "success": False,
                 "partial": False,
                 "questions": [],
                 "message": "Context rỗng, không thể tạo quiz",
-                "sources": []
+                "sources": [],
             }
-        
-        # Step 3: Create combined topic string
-        topics_str = ", ".join(topics)
-        
+
+        return {
+            "success": True,
+            "topic": ", ".join(topic_list),
+            "topics": topic_list,
+            "raw_documents": unique_documents,
+            "raw_document_count": len(unique_documents),
+        }
+
+    def generate_quiz_from_documents(
+        self,
+        *,
+        topic: str,
+        topics: Optional[List[str]],
+        raw_documents: List[Document],
+        num_questions: int,
+        difficulty: str = "medium",
+        language: str = "vi",
+    ) -> Dict[str, Any]:
+        """Generate quiz questions from already-retrieved documents."""
+        prepared_topics = topics or [topic]
         result = self._generate_quiz_core_vnext(
-            topic=topics_str,
+            topic=topic,
             num_questions=num_questions,
             difficulty=difficulty,
             language=language,
-            raw_documents=unique_documents,
-            topics=topics,
-            raw_document_count=len(unique_documents),
+            raw_documents=raw_documents,
+            topics=prepared_topics,
+            raw_document_count=len(raw_documents),
         )
-        
-        if result.get("success"):
-            result["topics_used"] = topics
-        
+        if result.get("success") and len(prepared_topics) > 1:
+            result["topics_used"] = prepared_topics
         return result
     
     def _parse_quiz_response(self, content: str) -> Optional[Dict]:
@@ -3113,7 +3188,7 @@ Return ONLY valid JSON, no additional text.""")
             Dictionary with quiz questions and metadata
         """
         raw_documents = self._dedupe_documents(raw_documents)
-        sources = self.retriever.extract_citations(raw_documents)
+        sources = self._extract_document_citations(raw_documents)
         topics = topics or [topic]
         blueprint_context_budget = min(len(raw_documents), max(12, min(24, num_questions if num_questions < 24 else 24)))
         blueprint_context_documents = self._select_context_documents(
@@ -3121,7 +3196,7 @@ Return ONLY valid JSON, no additional text.""")
             topics=topics,
             final_budget=blueprint_context_budget,
         )
-        blueprint_context = self.retriever.format_context(blueprint_context_documents)
+        blueprint_context = self._format_context_documents(blueprint_context_documents)
         
         try:
             logger.info(f"Generating quiz with LLM (max_tokens={dynamic_max_tokens})...")
