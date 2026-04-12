@@ -438,8 +438,8 @@ class PerFileCollectionManager:
         # Collection cache (avoid repeated ChromaDB client creation)
         self._collections: Dict[str, Chroma] = {}
         
-        # Initialize shared embedding model
-        self._init_embeddings()
+        # Embedding model is loaded lazily on first access via property
+        self._embeddings_loaded = False
         
         # Clean up orphaned directories on startup
         self._cleanup_orphaned_directories()
@@ -552,7 +552,7 @@ class PerFileCollectionManager:
                     if ChromaVectorStore._embedding_model is not None:
                         logger.info("Reusing embedding model from ChromaVectorStore")
                         PerFileCollectionManager._embedding_model = ChromaVectorStore._embedding_model
-                        self.embeddings = PerFileCollectionManager._embedding_model
+                        self._embeddings_loaded = True
                         return
                 except ImportError:
                     pass
@@ -575,7 +575,14 @@ class PerFileCollectionManager:
                 except ImportError:
                     pass
             
-            self.embeddings = PerFileCollectionManager._embedding_model
+            self._embeddings_loaded = True
+    
+    @property
+    def embeddings(self) -> HuggingFaceEmbeddings:
+        """Lazy-loaded embedding model. Only loads on first access."""
+        if not self._embeddings_loaded:
+            self._init_embeddings()
+        return PerFileCollectionManager._embedding_model
     
     def _get_collection_lock(self, collection_name: str) -> threading.RLock:
         """Get or create a lock for a specific collection."""

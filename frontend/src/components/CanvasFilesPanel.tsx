@@ -43,7 +43,7 @@ import { canvasApi } from '../api/canvas';
 import {
   downloadCanvasFile,
   asyncIndexCanvasFile,
-  extractCanvasTopics,
+  asyncExtractCanvasTopics,
   listIndexedCanvasDocuments,
   listAllIndexedCanvasDocuments,
   getCanvasDocumentTopics,
@@ -533,9 +533,17 @@ const CanvasFilesPanel: React.FC = () => {
     setFileActionStates(prev => new Map(prev).set(filename, 'extracting'));
     
     try {
-      const result = await extractCanvasTopics(filename, 10);
-      
-      if (result.success) {
+      const asyncResp = await asyncExtractCanvasTopics(filename, 10);
+      const jobId = asyncResp.job_id;
+
+      // Poll until job completes
+      let jobResult = await getJob(jobId);
+      while (!TERMINAL_STATUSES.includes(jobResult.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        jobResult = await getJob(jobId);
+      }
+
+      if (jobResult.status === 'SUCCEEDED') {
         setFileActionStates(prev => {
           const newMap = new Map(prev);
           newMap.delete(filename);

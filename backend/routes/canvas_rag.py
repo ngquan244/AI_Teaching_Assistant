@@ -297,13 +297,14 @@ async def index_canvas_file(
     return await asyncio.to_thread(_do_ingest)
 
 
-@router.post("/extract-topics")
+@router.post("/extract-topics", deprecated=True)
 async def extract_topics_for_canvas_file(
     request: CanvasExtractTopicsRequest,
     http_request: Request,
     user: CurrentUser,
 ):
     """Extract topics from an indexed Canvas file."""
+    logger.warning("DEPRECATED sync endpoint /extract-topics called - migrate to /async/extract-topics")
     logger.info("Extracting topics for Canvas file: %s", request.filename)
     await _check_canvas_permission(
         http_request,
@@ -691,4 +692,58 @@ async def async_index_canvas_file(
         )
     except Exception:
         logger.exception("Error queueing canvas index job")
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
+
+
+@router.post("/async/extract-topics", response_model=AsyncJobResponse)
+async def async_extract_topics(
+    request: CanvasExtractTopicsRequest,
+    http_request: Request,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Extract topics from a Canvas file asynchronously (non-blocking).
+    Delegates heavy embedding work to the rag worker.
+    """
+    await _check_canvas_permission(
+        http_request,
+        filename=request.filename,
+        user_id=str(user.id),
+    )
+
+    try:
+        job_service = JobService(db)
+        payload = {
+            "filename": request.filename,
+            "num_topics": request.num_topics,
+            "user_id": str(user.id),
+        }
+
+        job = await job_service.create_job(
+            user_id=user.id,
+            job_type=JobType.CANVAS_EXTRACT_TOPICS,
+            payload=payload,
+        )
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.canvas_extract_topics,
+            args=[str(job.id), request.filename],
+            kwargs={
+                "num_topics": request.num_topics,
+                "user_id": str(user.id),
+            },
+        )
+        await job_service.set_celery_task_id(job.id, result.id)
+
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Topic extraction queued for {request.filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+    except Exception:
+        logger.exception("Error queueing canvas extract topics job")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
