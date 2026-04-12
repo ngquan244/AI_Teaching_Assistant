@@ -228,6 +228,15 @@ class CanvasRAGService:
                 return
             self._do_initialize()
 
+    def _ensure_topic_storage(self):
+        """Lightweight init: only topic storage, no embedding/ChromaDB/LLM."""
+        if self._topic_storage is not None:
+            return
+        with self._init_lock:
+            if self._topic_storage is not None:
+                return
+            self._topic_storage = CanvasTopicStorage(str(self.CANVAS_RAG_DIR))
+
     def _do_initialize(self):
         """Actual initialization — must be called under _init_lock."""
         logger.info("Initializing Canvas RAG components with per-file collection manager...")
@@ -884,8 +893,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
-        """Get topics for a Canvas document."""
-        self._ensure_initialized()
+        """Get topics for a Canvas document (lightweight — no embedding/LLM init)."""
+        self._ensure_topic_storage()
         
         topics = None
         if db_session and user_id:
@@ -925,8 +934,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
     ) -> Dict[str, Any]:
-        """Update topics for a Canvas document."""
-        self._ensure_initialized()
+        """Update topics for a Canvas document (lightweight — no embedding/LLM init)."""
+        self._ensure_topic_storage()
         
         topic_dicts = [{"name": t, "description": ""} for t in topics]
         
