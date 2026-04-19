@@ -508,6 +508,15 @@ QUESTION_FORMS = [
     "negative_form",
 ]
 
+# Hard-mode-only question forms requiring deeper reasoning
+HARD_QUESTION_FORMS = [
+    "multi_step_reasoning",
+    "calculation",
+    "scenario_application",
+]
+
+ALL_QUESTION_FORMS = QUESTION_FORMS + HARD_QUESTION_FORMS
+
 TRAP_TYPES = [
     "near_miss",
     "reversed_condition",
@@ -518,19 +527,112 @@ TRAP_TYPES = [
     "step_order_confusion",
 ]
 
+# Hard-mode-only trap types requiring analytical errors
+HARD_TRAP_TYPES = [
+    "plausible_miscalculation",
+    "incomplete_reasoning",
+    "overgeneralization",
+]
+
+ALL_TRAP_TYPES = TRAP_TYPES + HARD_TRAP_TYPES
+
 SUPPORTED_LEVELS = [
     "direct_source",
     "close_inference",
     "adjacent_in_scope",
 ]
 
+# Hard-mode-only support level: answer synthesises info from 2+ source chunks
+HARD_SUPPORTED_LEVELS = [
+    "cross_chunk_synthesis",
+]
+
+ALL_SUPPORTED_LEVELS = SUPPORTED_LEVELS + HARD_SUPPORTED_LEVELS
+
+# ---------------------------------------------------------------------------
+# Difficulty policies – control question form mix, support levels, grounding,
+# and prompt instructions per difficulty level.
+# ---------------------------------------------------------------------------
+DIFFICULTY_POLICIES: Dict[str, Dict[str, Any]] = {
+    "easy": {
+        "allowed_support_levels": ["direct_source"],
+        "preferred_question_forms": ["definition", "process", "negative_form", "condition"],
+        "allowed_question_forms": ["definition", "comparison", "cause_effect", "condition", "process", "negative_form"],
+        "allowed_trap_types": TRAP_TYPES,
+        "grounding": "strict",
+        "blueprint_instruction": (
+            "All slots must use support_level=direct_source only. "
+            "Prefer simple question forms: definition, process, negative_form, condition. "
+            "Coverage items should test recall of directly stated facts."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (easy):\n"
+            "- Questions must test direct recall of facts explicitly stated in the source.\n"
+            "- Do NOT require inference, comparison across sections, or multi-step reasoning.\n"
+            "- Distractors should be clearly wrong but plausible within the domain.\n"
+            "- Each question should be answerable by reading a single relevant paragraph."
+        ),
+    },
+    "medium": {
+        "allowed_support_levels": ["direct_source", "close_inference"],
+        "preferred_question_forms": QUESTION_FORMS,
+        "allowed_question_forms": QUESTION_FORMS,
+        "allowed_trap_types": TRAP_TYPES,
+        "grounding": "standard",
+        "blueprint_instruction": (
+            "Use a balanced mix of support_level=direct_source and close_inference. "
+            "Diversify question forms across definition, comparison, cause_effect, condition, "
+            "process, light_application, and negative_form."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (medium):\n"
+            "- Questions should test understanding and application of concepts from the source.\n"
+            "- Mix direct recall with light inference from nearby supported details.\n"
+            "- Distractors should be plausible alternatives that require careful reading to eliminate.\n"
+            "- Some questions may require connecting two closely related ideas from the source."
+        ),
+    },
+    "hard": {
+        "allowed_support_levels": ["direct_source", "close_inference", "cross_chunk_synthesis"],
+        "preferred_question_forms": [
+            "cause_effect", "comparison", "light_application",
+            "multi_step_reasoning", "calculation", "scenario_application",
+        ],
+        "allowed_question_forms": ALL_QUESTION_FORMS,
+        "allowed_trap_types": ALL_TRAP_TYPES,
+        "grounding": "relaxed_with_guardrails",
+        "blueprint_instruction": (
+            "Allocate at least 30%% of slots to support_level=cross_chunk_synthesis "
+            "(answer requires combining info from 2+ parts of the source). "
+            "Prefer advanced question forms: multi_step_reasoning, calculation, "
+            "scenario_application, cause_effect, comparison. "
+            "Coverage items should target deeper analysis, not surface-level recall."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (hard):\n"
+            "- Questions MUST require genuine analytical thinking, not just recall.\n"
+            "- For cross_chunk_synthesis slots: combine information from multiple parts of the source "
+            "to form a question that cannot be answered from a single paragraph alone.\n"
+            "- For multi_step_reasoning slots: require 2 or more logical steps to reach the answer.\n"
+            "- For calculation slots: apply a formula, method, or quantitative relationship from the source to derive the answer.\n"
+            "- For scenario_application slots: present a new but realistic scenario solvable using knowledge from the source.\n"
+            "- Distractors MUST be plausible analytical errors (e.g., reversed causality, incomplete reasoning, "
+            "overgeneralization, plausible miscalculation) — NOT simple factual alternatives.\n"
+            "- Do NOT create trick questions or ambiguous questions. The correct answer must still be "
+            "unambiguously derivable from the source material.\n"
+            "- Every correct answer must remain traceable to the source — no outside knowledge required."
+        ),
+    },
+}
+
 LARGE_REQUEST_QUESTION_THRESHOLD = 36
-BLUEPRINT_SKIP_QUESTION_THRESHOLD = 40
-BLUEPRINT_SKIP_TOPIC_THRESHOLD = 8
-MAX_LLM_CALLS_PER_LARGE_QUIZ_NO_BLUEPRINT = 6
-MAX_LLM_CALLS_PER_LARGE_QUIZ_WITH_BLUEPRINT = 7
-MAX_EST_COMPLETION_TOKENS_PER_LARGE_QUIZ = 15_000
+MAX_LLM_CALLS_PER_LARGE_QUIZ_NO_BLUEPRINT = 8
+MAX_LLM_CALLS_PER_LARGE_QUIZ_WITH_BLUEPRINT = 10
+MAX_EST_COMPLETION_TOKENS_PER_LARGE_QUIZ = 20_000
 PARTIAL_SUCCESS_RATIO = 0.95
+
+# Chunked blueprint: max slots per single blueprint LLM call
+BLUEPRINT_CHUNK_SIZE = 20
 
 QUIZ_GENERATION_PROMPT_VNEXT_VI = """You are an expert teacher creating professional multiple-choice quiz questions.
 
@@ -545,6 +647,8 @@ TOPIC / LEARNING SCOPE:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 ASSIGNED SLOTS:
 {slot_section}
 
@@ -558,9 +662,10 @@ GROUNDING POLICY:
 1. Every correct answer must stay anchored to the source material.
 2. support_level=direct_source means the answer is directly stated in the source.
 3. support_level=close_inference means the answer is a short inference from nearby supported details.
-4. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
-5. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
-6. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+4. support_level=cross_chunk_synthesis means the answer requires combining information from 2 or more distinct parts of the source material.
+5. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
+6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
+7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
 
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
@@ -568,6 +673,9 @@ QUESTION RULES:
 - Keep questions diverse, in-scope, and non-redundant.
 - Provide exactly 4 plausible options in the same domain and level of specificity.
 - Do not output explanations or feedback text.
+- question_form=multi_step_reasoning: require 2+ logical steps to reach the answer.
+- question_form=calculation: apply a formula or quantitative relationship from the source.
+- question_form=scenario_application: present a realistic new scenario solvable using source knowledge.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -598,6 +706,8 @@ TOPIC / LEARNING SCOPE:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 ASSIGNED SLOTS:
 {slot_section}
 
@@ -611,9 +721,10 @@ GROUNDING POLICY:
 1. Every correct answer must stay anchored to the source material.
 2. support_level=direct_source means the answer is directly stated in the source.
 3. support_level=close_inference means the answer is a short inference from nearby supported details.
-4. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
-5. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
-6. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+4. support_level=cross_chunk_synthesis means the answer requires combining information from 2 or more distinct parts of the source material.
+5. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
+6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
+7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
 
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
@@ -621,6 +732,9 @@ QUESTION RULES:
 - Keep questions diverse, in-scope, and non-redundant.
 - Provide exactly 4 plausible options in the same domain and level of specificity.
 - Do not output explanations or feedback text.
+- question_form=multi_step_reasoning: require 2+ logical steps to reach the answer.
+- question_form=calculation: apply a formula or quantitative relationship from the source.
+- question_form=scenario_application: present a realistic new scenario solvable using source knowledge.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -651,14 +765,18 @@ REQUESTED TOPICS:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 Create an exact slot blueprint for {num_questions} quiz questions.
 
 RULES:
 1. Normalize overlapping requested topics into topic groups when appropriate.
 2. Each slot must stay inside the supported learning scope.
-3. support_level may be only: direct_source or close_inference.
-4. Do NOT write full questions, answer options, correct answers, or explanations.
-5. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+3. support_level may be: direct_source, close_inference, or cross_chunk_synthesis (hard mode only).
+4. question_form may be: definition, comparison, cause_effect, condition, process, light_application, negative_form, multi_step_reasoning, calculation, scenario_application.
+5. trap_type may be: near_miss, reversed_condition, reversed_cause_effect, scope_confusion, true_but_not_answer, close_concept_confusion, step_order_confusion, plausible_miscalculation, incomplete_reasoning, overgeneralization.
+6. Do NOT write full questions, answer options, correct answers, or explanations.
+7. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -699,14 +817,18 @@ REQUESTED TOPICS:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 Create an exact slot blueprint for {num_questions} quiz questions.
 
 RULES:
 1. Normalize overlapping requested topics into topic groups when appropriate.
 2. Each slot must stay inside the supported learning scope.
-3. support_level may be only: direct_source or close_inference.
-4. Do NOT write full questions, answer options, correct answers, or explanations.
-5. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+3. support_level may be: direct_source, close_inference, or cross_chunk_synthesis (hard mode only).
+4. question_form may be: definition, comparison, cause_effect, condition, process, light_application, negative_form, multi_step_reasoning, calculation, scenario_application.
+5. trap_type may be: near_miss, reversed_condition, reversed_cause_effect, scope_confusion, true_but_not_answer, close_concept_confusion, step_order_confusion, plausible_miscalculation, incomplete_reasoning, overgeneralization.
+6. Do NOT write full questions, answer options, correct answers, or explanations.
+7. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -746,7 +868,8 @@ class QuizGenerator:
         llm_provider: Optional[BaseLLM] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        key_pool=None,
     ):
         """
         Initialize Quiz Generator.
@@ -757,8 +880,10 @@ class QuizGenerator:
             model: Model name override (legacy, for backwards compatibility)
             temperature: Generation temperature (lower = more focused)
             base_url: API base URL (legacy)
+            key_pool: Optional KeyPool for round-robin API key rotation
         """
         self.retriever = retriever
+        self._key_pool = key_pool
         
         # Store legacy params for backwards compatibility
         self._model_override = model
@@ -834,16 +959,55 @@ class QuizGenerator:
         return num_questions >= LARGE_REQUEST_QUESTION_THRESHOLD
 
     @staticmethod
+    def _plan_topic_group_batches(
+        slots: List[Dict[str, Any]],
+        max_batch: int = 15,
+        min_batch: int = 5,
+    ) -> List[List[Dict[str, Any]]]:
+        """Group *slots* by ``topic_group`` then split large groups.
+
+        Each batch targets a single topic group so the LLM context can be
+        narrowly focused.  Groups with more than *max_batch* slots are split
+        into sub-batches.  Very small groups (< min_batch) are merged with
+        the next small group if possible.
+        """
+        from collections import OrderedDict
+
+        groups: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+        for slot in slots:
+            gid = slot.get("topic_group", "G1")
+            groups.setdefault(gid, []).append(slot)
+
+        raw_batches: List[List[Dict[str, Any]]] = []
+        for _gid, group_slots in groups.items():
+            if len(group_slots) <= max_batch:
+                raw_batches.append(group_slots)
+            else:
+                # Split large group into sub-batches
+                count = math.ceil(len(group_slots) / max_batch)
+                base = len(group_slots) // count
+                rem = len(group_slots) % count
+                offset = 0
+                for i in range(count):
+                    size = base + (1 if i < rem else 0)
+                    raw_batches.append(group_slots[offset:offset + size])
+                    offset += size
+
+        # Merge tiny trailing batches when possible
+        merged: List[List[Dict[str, Any]]] = []
+        for batch in raw_batches:
+            if merged and len(merged[-1]) < min_batch and len(merged[-1]) + len(batch) <= max_batch:
+                merged[-1].extend(batch)
+            else:
+                merged.append(list(batch))
+
+        # Fallback: if somehow empty, return all slots as one batch
+        return merged if merged else [list(slots)]
+
+    @staticmethod
     def _should_skip_blueprint_for_request(num_questions: int, topics: List[str]) -> bool:
-        normalized_topics = [
-            re.sub(r"\s+", " ", str(topic or "").strip())
-            for topic in topics
-            if str(topic or "").strip()
-        ]
-        return (
-            num_questions >= BLUEPRINT_SKIP_QUESTION_THRESHOLD
-            or len(normalized_topics) >= BLUEPRINT_SKIP_TOPIC_THRESHOLD
-        )
+        """Blueprint is now always allowed; chunked blueprint handles large requests."""
+        return False
 
     @staticmethod
     def _max_total_llm_calls(num_questions: int, blueprint_attempted: bool) -> Optional[int]:
@@ -1370,14 +1534,13 @@ Return ONLY valid JSON, no additional text.""")
         raw_document_count: int,
         final_budget: int,
     ) -> bool:
-        if self._should_skip_blueprint_for_request(num_questions, topics):
-            return False
+        """Always use blueprint for multi-topic or larger quizzes."""
         normalized_topics = [
             re.sub(r"\s+", " ", str(topic or "").strip())
             for topic in topics
             if str(topic or "").strip()
         ]
-        if num_questions >= 20:
+        if num_questions >= 10:
             return True
         if len(normalized_topics) > 1:
             return True
@@ -1397,10 +1560,12 @@ Return ONLY valid JSON, no additional text.""")
         chain = prompt | llm_json
 
         try:
+            policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
             response = chain.invoke({
                 "context": context,
                 "topic": topic,
                 "difficulty": difficulty,
+                "difficulty_policy": policy["blueprint_instruction"],
                 "num_questions": num_questions,
             })
             content = response.content if hasattr(response, "content") else str(response)
@@ -1410,6 +1575,7 @@ Return ONLY valid JSON, no additional text.""")
                     blueprint=blueprint_data,
                     topic=topic,
                     num_questions=num_questions,
+                    difficulty=difficulty,
                 ), None
             logger.warning("Blueprint generation returned unparseable content; falling back to local slot planner")
             failure_reason = "parse_failed"
@@ -1421,7 +1587,77 @@ Return ONLY valid JSON, no additional text.""")
             blueprint={},
             topic=topic,
             num_questions=num_questions,
+            difficulty=difficulty,
         ), failure_reason
+
+    def _build_blueprint_chunked(
+        self,
+        context: str,
+        topic: str,
+        difficulty: str,
+        language: str,
+        num_questions: int,
+        topics: Optional[List[str]] = None,
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Build a blueprint in chunks for large quizzes.
+
+        When *num_questions* exceeds ``BLUEPRINT_CHUNK_SIZE`` the request is
+        split into several smaller calls whose results are merged and
+        re-normalized to the required total.  For small requests this simply
+        delegates to ``_build_blueprint``.
+        """
+        if num_questions <= BLUEPRINT_CHUNK_SIZE:
+            return self._build_blueprint(context, topic, difficulty, language, num_questions)
+
+        # Split the total into roughly-equal chunks capped at BLUEPRINT_CHUNK_SIZE
+        chunk_count = math.ceil(num_questions / BLUEPRINT_CHUNK_SIZE)
+        base = num_questions // chunk_count
+        remainder = num_questions % chunk_count
+        chunk_sizes = [
+            base + (1 if i < remainder else 0)
+            for i in range(chunk_count)
+        ]
+
+        merged_groups: List[Dict[str, Any]] = []
+        merged_slots: List[Dict[str, Any]] = []
+        seen_group_ids: set = set()
+        last_failure: Optional[str] = None
+
+        for chunk_idx, chunk_size in enumerate(chunk_sizes):
+            chunk_blueprint, failure = self._build_blueprint(
+                context, topic, difficulty, language, chunk_size,
+            )
+            if failure:
+                last_failure = failure
+
+            # Merge topic_groups (deduplicate by group_id)
+            for group in chunk_blueprint.get("topic_groups", []):
+                gid = group["group_id"]
+                if gid not in seen_group_ids:
+                    seen_group_ids.add(gid)
+                    merged_groups.append(group)
+
+            # Merge slots (re-number later)
+            merged_slots.extend(chunk_blueprint.get("slots", []))
+
+        # Re-normalize so we get exactly num_questions slots
+        merged_raw = {
+            "topic_groups": merged_groups,
+            "slots": merged_slots[:num_questions],
+            "notes": "",
+        }
+        normalized = self._normalize_blueprint(
+            blueprint=merged_raw,
+            topic=topic,
+            num_questions=num_questions,
+            difficulty=difficulty,
+        )
+        logger.info(
+            "Chunked blueprint: %d chunks, %d groups, %d slots (target=%d)",
+            chunk_count, len(normalized.get("topic_groups", [])),
+            len(normalized.get("slots", [])), num_questions,
+        )
+        return normalized, last_failure
 
     def _format_blueprint_section(self, blueprint: Optional[Dict[str, Any]]) -> str:
         if not blueprint or not blueprint.get("slots"):
@@ -1500,7 +1736,12 @@ Return ONLY valid JSON, no additional text.""")
         group: Dict[str, Any],
         ordinal: int,
         support_level: Optional[str] = None,
+        difficulty: str = "medium",
     ) -> Dict[str, Any]:
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
+        forms = policy["preferred_question_forms"]
+        traps = policy["allowed_trap_types"]
+        levels = policy["allowed_support_levels"]
         slot_number = slot_index + 1
         return {
             "slot_id": f"S{slot_number:02d}",
@@ -1508,9 +1749,9 @@ Return ONLY valid JSON, no additional text.""")
             "topic_group_label": group["label"],
             "source_topics": group.get("source_topics", [group["label"]]),
             "coverage_item": group["label"] if ordinal == 0 else f"{group['label']} focus {ordinal + 1}",
-            "support_level": support_level or ("direct_source" if slot_index % 3 != 2 else "close_inference"),
-            "question_form": QUESTION_FORMS[slot_index % len(QUESTION_FORMS)],
-            "trap_type": TRAP_TYPES[(slot_index + ordinal) % len(TRAP_TYPES)],
+            "support_level": support_level or levels[slot_index % len(levels)],
+            "question_form": forms[slot_index % len(forms)],
+            "trap_type": traps[(slot_index + ordinal) % len(traps)],
             "evidence_refs": group.get("evidence_refs", [])[:3],
         }
 
@@ -1519,7 +1760,13 @@ Return ONLY valid JSON, no additional text.""")
         blueprint: Dict[str, Any],
         topic: str,
         num_questions: int,
+        difficulty: str = "medium",
     ) -> Dict[str, Any]:
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
+        allowed_levels = set(policy["allowed_support_levels"])
+        allowed_forms = set(policy["allowed_question_forms"])
+        allowed_traps = set(policy["allowed_trap_types"])
+        preferred_forms = policy["preferred_question_forms"]
         requested_topics = [
             segment.strip()
             for segment in re.split(r"[,;\n]", topic)
@@ -1570,16 +1817,16 @@ Return ONLY valid JSON, no additional text.""")
             group = groups_by_id[topic_group]
 
             support_level = str(raw_slot.get("support_level") or "").strip()
-            if support_level not in ("direct_source", "close_inference"):
-                support_level = "direct_source" if len(slots) % 3 != 2 else "close_inference"
+            if support_level not in allowed_levels:
+                support_level = policy["allowed_support_levels"][len(slots) % len(policy["allowed_support_levels"])]
 
             question_form = str(raw_slot.get("question_form") or "").strip()
-            if question_form not in QUESTION_FORMS:
-                question_form = QUESTION_FORMS[len(slots) % len(QUESTION_FORMS)]
+            if question_form not in allowed_forms:
+                question_form = preferred_forms[len(slots) % len(preferred_forms)]
 
             trap_type = str(raw_slot.get("trap_type") or "").strip()
-            if trap_type not in TRAP_TYPES:
-                trap_type = TRAP_TYPES[len(slots) % len(TRAP_TYPES)]
+            if trap_type not in allowed_traps:
+                trap_type = policy["allowed_trap_types"][len(slots) % len(policy["allowed_trap_types"])]
 
             coverage_item = re.sub(r"\s+", " ", str(raw_slot.get("coverage_item") or "").strip()) or group["label"]
             evidence_refs = [
@@ -1611,7 +1858,7 @@ Return ONLY valid JSON, no additional text.""")
                 ),
             )
             ordinal = group_counts[target_group["group_id"]]
-            slots.append(self._build_fallback_slot(len(slots), target_group, ordinal))
+            slots.append(self._build_fallback_slot(len(slots), target_group, ordinal, difficulty=difficulty))
             group_counts[target_group["group_id"]] += 1
 
         return {
@@ -1959,6 +2206,7 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index: Optional[int] = None,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         prompt = self.prompt_vi if language == "vi" else self.prompt_en
         context = self._format_context_documents(context_documents)
@@ -1978,7 +2226,8 @@ Return ONLY valid JSON, no additional text.""")
             generation_mode=generation_mode,
             cost_protected=cost_protected,
         )
-        llm_json = self._llm_provider.get_llm(json_mode=True, max_tokens=max_tokens)
+        provider = llm_provider_override or self._llm_provider
+        llm_json = provider.get_llm(json_mode=True, max_tokens=max_tokens)
         chain = prompt | llm_json
 
         logger.info(
@@ -1994,10 +2243,12 @@ Return ONLY valid JSON, no additional text.""")
             max_tokens,
         )
 
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
         response = chain.invoke({
             "context": context,
             "topic": topic,
             "difficulty": difficulty,
+            "difficulty_policy": policy["generation_instruction"],
             "total_target": total_target,
             "batch_target": batch_target,
             "slot_section": slot_section,
@@ -2029,6 +2280,7 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index_start: int = 1,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         batch_results: List[Dict[str, Any]] = []
         malformed_count = 0
@@ -2057,6 +2309,7 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected=cost_protected,
             call_index=call_index_start,
             planned_calls=planned_calls,
+            llm_provider_override=llm_provider_override,
         )
         call_count += 1
         estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -2097,6 +2350,7 @@ Return ONLY valid JSON, no additional text.""")
                 cost_protected=cost_protected,
                 call_index=call_index_start + call_count,
                 planned_calls=planned_calls,
+                llm_provider_override=llm_provider_override,
             )
             call_count += 1
             estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -2138,6 +2392,7 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index: int = 1,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         if not missing_slots:
             return [], [], {
@@ -2175,6 +2430,7 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected=cost_protected,
             call_index=call_index,
             planned_calls=planned_calls,
+            llm_provider_override=llm_provider_override,
         )
         accepted_items, still_missing, normalized_failures = self._normalize_generated_batch(
             raw_items=raw_items,
@@ -2204,14 +2460,12 @@ Return ONLY valid JSON, no additional text.""")
         num_questions: int,
         cost_protected: bool = False,
         blueprint_attempted: bool = False,
+        key_pool: Optional["KeyPool"] = None,
     ) -> Dict[str, Any]:
         slots = blueprint.get("slots", [])[:num_questions]
-        batch_sizes = self._plan_batch_sizes(num_questions)
-        batch_plan: List[List[Dict[str, Any]]] = []
-        offset = 0
-        for batch_size in batch_sizes:
-            batch_plan.append(slots[offset:offset + batch_size])
-            offset += batch_size
+
+        # --- Topic-group-aligned batching ---
+        batch_plan = self._plan_topic_group_batches(slots)
 
         question_signatures: set[str] = set()
         option_signatures: set[Tuple[str, ...]] = set()
@@ -2232,21 +2486,40 @@ Return ONLY valid JSON, no additional text.""")
         for batch_index, batch_slots in enumerate(batch_plan, start=1):
             if not batch_slots:
                 continue
-            batch_questions, batch_missing, batch_stats = self._run_batch_generation(
-                raw_documents=raw_documents,
-                batch_slots=batch_slots,
-                topic=topic,
-                difficulty=difficulty,
-                language=language,
-                total_target=num_questions,
-                existing_questions=all_questions,
-                question_signatures=question_signatures,
-                option_signatures=option_signatures,
-                enable_retry=not cost_protected,
-                cost_protected=cost_protected,
-                call_index_start=total_generation_calls + 1,
-                planned_calls=planned_generation_calls,
-            )
+
+            # --- Key rotation: pick next key from pool for this batch ---
+            batch_llm_override: Optional[BaseLLM] = None
+            _current_key_info = None
+            if key_pool is not None:
+                _current_key_info = key_pool.next_key()
+                if _current_key_info is not None:
+                    batch_llm_override = LLMFactory.create(
+                        groq_api_key=_current_key_info["plain_key"],
+                    )
+
+            try:
+                batch_questions, batch_missing, batch_stats = self._run_batch_generation(
+                    raw_documents=raw_documents,
+                    batch_slots=batch_slots,
+                    topic=topic,
+                    difficulty=difficulty,
+                    language=language,
+                    total_target=num_questions,
+                    existing_questions=all_questions,
+                    question_signatures=question_signatures,
+                    option_signatures=option_signatures,
+                    enable_retry=not cost_protected,
+                    cost_protected=cost_protected,
+                    call_index_start=total_generation_calls + 1,
+                    planned_calls=planned_generation_calls,
+                    llm_provider_override=batch_llm_override,
+                )
+                if key_pool is not None and _current_key_info is not None:
+                    key_pool.mark_success(_current_key_info["id"])
+            except Exception:
+                if key_pool is not None and _current_key_info is not None:
+                    key_pool.mark_error(_current_key_info["id"])
+                raise
             total_malformed += batch_stats["malformed_count"]
             total_retries += batch_stats["retry_count"]
             total_generation_calls += batch_stats["call_count"]
@@ -2271,22 +2544,38 @@ Return ONLY valid JSON, no additional text.""")
 
         if remaining_slots:
             if max_generation_calls is None or total_generation_calls < max_generation_calls:
-                refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
-                    raw_documents=raw_documents,
-                    missing_slots=remaining_slots,
-                    topic=topic,
-                    difficulty=difficulty,
-                    language=language,
-                    total_target=num_questions,
-                    existing_questions=all_questions,
-                    question_signatures=question_signatures,
-                    option_signatures=option_signatures,
-                    generation_mode="global_refill_1",
-                    support_level_override=None,
-                    cost_protected=cost_protected,
-                    call_index=total_generation_calls + 1,
-                    planned_calls=planned_generation_calls,
-                )
+                refill_llm_override: Optional[BaseLLM] = None
+                _refill_key = None
+                if key_pool is not None:
+                    _refill_key = key_pool.next_key()
+                    if _refill_key is not None:
+                        refill_llm_override = LLMFactory.create(
+                            groq_api_key=_refill_key["plain_key"],
+                        )
+                try:
+                    refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
+                        raw_documents=raw_documents,
+                        missing_slots=remaining_slots,
+                        topic=topic,
+                        difficulty=difficulty,
+                        language=language,
+                        total_target=num_questions,
+                        existing_questions=all_questions,
+                        question_signatures=question_signatures,
+                        option_signatures=option_signatures,
+                        generation_mode="global_refill_1",
+                        support_level_override=None,
+                        cost_protected=cost_protected,
+                        call_index=total_generation_calls + 1,
+                        planned_calls=planned_generation_calls,
+                        llm_provider_override=refill_llm_override,
+                    )
+                    if key_pool is not None and _refill_key is not None:
+                        key_pool.mark_success(_refill_key["id"])
+                except Exception:
+                    if key_pool is not None and _refill_key is not None:
+                        key_pool.mark_error(_refill_key["id"])
+                    raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
                 total_retries += refill_stats["retry_count"]
@@ -2319,22 +2608,38 @@ Return ONLY valid JSON, no additional text.""")
                 budget_cap_hit = True
 
             if can_run_second_refill:
-                refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
-                    raw_documents=raw_documents,
-                    missing_slots=remaining_slots,
-                    topic=topic,
-                    difficulty=difficulty,
-                    language=language,
-                    total_target=num_questions,
-                    existing_questions=all_questions,
-                    question_signatures=question_signatures,
-                    option_signatures=option_signatures,
-                    generation_mode="global_refill_2",
-                    support_level_override="adjacent_in_scope",
-                    cost_protected=True,
-                    call_index=total_generation_calls + 1,
-                    planned_calls=planned_generation_calls,
-                )
+                refill2_llm_override: Optional[BaseLLM] = None
+                _refill2_key = None
+                if key_pool is not None:
+                    _refill2_key = key_pool.next_key()
+                    if _refill2_key is not None:
+                        refill2_llm_override = LLMFactory.create(
+                            groq_api_key=_refill2_key["plain_key"],
+                        )
+                try:
+                    refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
+                        raw_documents=raw_documents,
+                        missing_slots=remaining_slots,
+                        topic=topic,
+                        difficulty=difficulty,
+                        language=language,
+                        total_target=num_questions,
+                        existing_questions=all_questions,
+                        question_signatures=question_signatures,
+                        option_signatures=option_signatures,
+                        generation_mode="global_refill_2",
+                        support_level_override="adjacent_in_scope",
+                        cost_protected=True,
+                        call_index=total_generation_calls + 1,
+                        planned_calls=planned_generation_calls,
+                        llm_provider_override=refill2_llm_override,
+                    )
+                    if key_pool is not None and _refill2_key is not None:
+                        key_pool.mark_success(_refill2_key["id"])
+                except Exception:
+                    if key_pool is not None and _refill2_key is not None:
+                        key_pool.mark_error(_refill2_key["id"])
+                    raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
                 total_retries += refill_stats["retry_count"]
@@ -2444,12 +2749,13 @@ Return ONLY valid JSON, no additional text.""")
                     final_budget=blueprint_context_budget,
                 )
                 blueprint_context = self._format_context_documents(blueprint_context_documents)
-                blueprint, blueprint_failure_reason = self._build_blueprint(
+                blueprint, blueprint_failure_reason = self._build_blueprint_chunked(
                     context=blueprint_context,
                     topic=topic,
                     difficulty=difficulty,
                     language=language,
                     num_questions=num_questions,
+                    topics=topics,
                 )
                 if blueprint_failure_reason == "length_limit":
                     blueprint_skip_reason = "blueprint skipped due to length limit"
@@ -2468,6 +2774,7 @@ Return ONLY valid JSON, no additional text.""")
                     blueprint={},
                     topic=topic,
                     num_questions=num_questions,
+                    difficulty=difficulty,
                 )
 
             logger.info(
@@ -2488,6 +2795,7 @@ Return ONLY valid JSON, no additional text.""")
                 num_questions=num_questions,
                 cost_protected=cost_protected,
                 blueprint_attempted=blueprint_attempted,
+                key_pool=self._key_pool,
             )
             formatted_quiz = plan_result["questions"][:num_questions]
             remaining_slots = plan_result["remaining_slots"]

@@ -22,7 +22,7 @@ from backend.database.base import SessionLocal
 from backend.database.models.job import JobType
 from backend.database.models.rag_document import RAGSourceType
 from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
-from backend.modules.document_rag.rag_repository import SyncRAGCollectionRepository
+from backend.modules.document_rag.rag_repository import RAGCollectionRepository, SyncRAGCollectionRepository
 from backend.services.canvas_connection import resolve_canvas_connection_async
 from backend.services.canvas_permission import canvas_permission
 from backend.services.canvas_service import fetch_canvas_courses
@@ -104,7 +104,7 @@ class AsyncJobResponse(BaseModel):
 
 
 def _resolve_course_id_for_filename(filename: str, user_id: str) -> Optional[int]:
-    """Look up course_id for a filename from the rag_collections table."""
+    """Look up course_id for a filename from the rag_collections table (sync)."""
     try:
         with SessionLocal() as db:
             row = SyncRAGCollectionRepository.get_by_filename(
@@ -115,6 +115,21 @@ def _resolve_course_id_for_filename(filename: str, user_id: str) -> Optional[int
             )
             if row and row.course_id:
                 return row.course_id
+    except Exception:
+        pass
+    return None
+
+
+async def _resolve_course_id_for_filename_async(
+    filename: str, user_id: str, db: AsyncSession,
+) -> Optional[int]:
+    """Look up course_id for a filename (async — no thread hop)."""
+    try:
+        rows = await RAGCollectionRepository.get_by_filenames(
+            db, [filename], _uuid.UUID(user_id), source=RAGSourceType.CANVAS,
+        )
+        if rows and rows[0].course_id:
+            return rows[0].course_id
     except Exception:
         pass
     return None
@@ -135,16 +150,20 @@ async def _get_accessible_canvas_documents(
     user_id: str,
     selected_documents: Optional[List[str]] = None,
 ) -> tuple[List[dict], Optional[str], Optional[str]]:
-    docs = _list_canvas_documents_for_user(user_id)
-    if selected_documents is not None:
-        selected_set = set(selected_documents)
-        docs = [doc for doc in docs if doc.get("filename") in selected_set]
-
-    canvas_token, canvas_base_url = await resolve_canvas_connection_async(
+    # Run sync DB/file I/O off the event loop and resolve Canvas token concurrently
+    docs_future = asyncio.to_thread(_list_canvas_documents_for_user, user_id)
+    token_future = resolve_canvas_connection_async(
         user_id=user_id,
         request=request,
         require=False,
     )
+    docs, (canvas_token, canvas_base_url) = await asyncio.gather(
+        docs_future, token_future,
+    )
+
+    if selected_documents is not None:
+        selected_set = set(selected_documents)
+        docs = [doc for doc in docs if doc.get("filename") in selected_set]
 
     if not docs:
         return [], canvas_token, canvas_base_url
@@ -336,26 +355,45 @@ async def get_canvas_document_topics(
     filename: str,
     http_request: Request,
     user: CurrentUser,
+    db: AsyncSession = Depends(get_async_session),
 ):
     """Get topics for a Canvas document."""
-    await _check_canvas_permission(
-        http_request,
-        filename=filename,
-        user_id=str(user.id),
-    )
+    user_id = str(user.id)
+
+    # Permission check using async DB (avoids sync thread hop)
+    cid = await _resolve_course_id_for_filename_async(filename, user_id, db)
+    if cid is not None:
+        canvas_token, canvas_base_url = await resolve_canvas_connection_async(
+            user_id=user_id, request=http_request, require=False,
+        )
+        if canvas_token and canvas_base_url:
+            await canvas_permission.validate_course_access(canvas_base_url, canvas_token, cid)
+        elif cid is not None:
+            raise HTTPException(
+                status_code=403,
+                detail="Canvas token required to access course-scoped data. Please connect a Canvas token in Settings.",
+            )
+
     try:
-        user_id = str(user.id)
+        # Try async DB first — fast path, no thread hop
+        topics = await RAGCollectionRepository.get_topics_by_filename(
+            db, filename, _uuid.UUID(user_id), source=RAGSourceType.CANVAS,
+        )
+        if topics is not None:
+            names = [t["name"] if isinstance(t, dict) else t for t in topics]
+            return {"success": True, "topics": names, "filename": filename}
 
-        def _do_get_topics():
+        # Fallback to legacy file-based topic storage (sync)
+        def _fallback():
             service = get_canvas_rag_service()
-            with SessionLocal() as db:
-                return service.get_document_topics(
-                    filename,
-                    user_id=user_id,
-                    db_session=db,
-                )
+            service._ensure_topic_storage()
+            raw = service._topic_storage.get_topics_by_filename(filename, user_id=user_id)
+            if raw:
+                return [t["name"] if isinstance(t, dict) else t for t in raw]
+            return []
 
-        return await asyncio.to_thread(_do_get_topics)
+        names = await asyncio.to_thread(_fallback)
+        return {"success": True, "topics": names, "filename": filename}
     except Exception:
         logger.exception("Error getting Canvas document topics")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")

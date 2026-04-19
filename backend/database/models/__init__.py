@@ -20,7 +20,9 @@ from .invite_code import (
     InviteCode,
     InviteCodeUsage,
 )
+from .groq_api_key import GroqApiKey
 from .guide_document import GuideDocument
+from .saved_quiz import SavedQuiz, SavedQuizQuestion
 
 __all__ = [
     "User",
@@ -45,5 +47,8 @@ __all__ = [
     "AppSetting",
     "InviteCode",
     "InviteCodeUsage",
+    "GroqApiKey",
     "GuideDocument",
+    "SavedQuiz",
+    "SavedQuizQuestion",
 ]

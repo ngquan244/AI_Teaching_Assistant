@@ -117,16 +117,19 @@ class CanvasPermissionService:
     ) -> list[str]:
         """
         Given a list of course_ids, return only those the token can access.
-        Used by /indexed when no specific course_id is given.
+        Uses concurrent checks for faster filtering.
         """
-        accessible: list[str] = []
-        for cid in course_ids:
+        import asyncio
+
+        async def _check(cid: str) -> str | None:
             try:
                 await self.validate_course_access(canvas_base_url, canvas_token, cid)
-                accessible.append(cid)
+                return cid
             except HTTPException:
-                continue
-        return accessible
+                return None
+
+        results = await asyncio.gather(*[_check(cid) for cid in course_ids])
+        return [cid for cid in results if cid is not None]
 
     def invalidate_cache(self, canvas_token: Optional[str] = None):
         """Clear cache, optionally scoped to a single token."""

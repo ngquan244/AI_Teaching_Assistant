@@ -8,4 +8,5 @@ export { default as CanvasImportModal } from './CanvasImportModal';
 export { default as GuidePanel } from './GuidePanel';
 export { default as CanvasSimulationPanel } from './CanvasSimulationPanel';
 export { default as CanvasResultsPanel } from './CanvasResultsPanel';
+export { default as SavedQuizzesPanel } from './SavedQuizzesPanel';
 export { default as UserMenu } from './UserMenu';

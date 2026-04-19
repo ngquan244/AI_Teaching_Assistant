@@ -91,15 +91,24 @@ for _name in _NOISY_LOGGERS:
 
 
 # ── Named loggers ────────────────────────────────────────────────────
+# In dev / eager mode all worker tasks run inside the FastAPI process, so we
+# bump the per-logger console threshold to INFO. Otherwise the user sees
+# nothing on stdout while jobs silently churn through the dispatcher.
+_DEV_CONSOLE = (
+    settings.ENVIRONMENT == "development"
+    or getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False)
+)
+_DEFAULT_CONSOLE = logging.INFO if _DEV_CONSOLE else logging.WARNING
+
 # app — the only logger that shows INFO on console (startup, milestones)
 logger = setup_logger("app", f"app_{_TODAY}.log", console_level=logging.INFO)
 
-celery_logger = setup_logger("celery", f"celery_{_TODAY}.log")
-canvas_logger = setup_logger("canvas", f"canvas_{_TODAY}.log")
-agent_logger = setup_logger("agent", f"agent_{_TODAY}.log")
-tools_logger = setup_logger("tools", f"tools_{_TODAY}.log")
-grading_logger = setup_logger("grading", f"grading_{_TODAY}.log")
-quiz_logger = setup_logger("quiz_debug", f"quiz_debug_{_TODAY}.log")
+celery_logger = setup_logger("celery", f"celery_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
+canvas_logger = setup_logger("canvas", f"canvas_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
+agent_logger = setup_logger("agent", f"agent_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
+tools_logger = setup_logger("tools", f"tools_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
+grading_logger = setup_logger("grading", f"grading_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
+quiz_logger = setup_logger("quiz_debug", f"quiz_debug_{_TODAY}.log", console_level=_DEFAULT_CONSOLE)
 
 
 # ── Auto-cleanup old log files (> max_days) ───────────────────────────

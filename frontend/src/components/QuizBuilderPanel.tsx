@@ -23,10 +23,12 @@ import {
   Check,
   Plus,
   X,
+  Library,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import { canvasApi } from '../api/canvas';
+import { savedQuizApi } from '../api/savedQuiz';
 import type {
   CanvasCourse,
   CanvasQuizCreate,
@@ -82,6 +84,10 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
   // ---- Creation state ----
   const [isCreating, setIsCreating] = useState(false);
   const [result, setResult] = useState<CreateCanvasQuizResponse | null>(null);
+
+  // ---- Save to Kho Đề state ----
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   // ---- Accept injected questions ----
   useEffect(() => {
@@ -243,6 +249,46 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
       setResult({ success: false, error: String(err) });
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  // ---- Save to Kho Đề ----
+  const handleSaveToLibrary = async () => {
+    if (builderQuestions.length === 0) return;
+    setIsSaving(true);
+    setSaveSuccess(false);
+    try {
+      const questions = builderQuestions.map((q, idx) => {
+        const correctObj = q.correct ?? {};
+        const correctKeys = Object.keys(correctObj);
+        return {
+          question_number: idx + 1,
+          question_text: q.question,
+          options: q.options ?? {},
+          correct_answer: correctKeys[0] || 'A',
+          explanation: null as string | null,
+          question_type: correctKeys.length > 1 ? 'multiple_answers' : 'multiple_choice',
+          points: defaultPoints,
+        };
+      });
+      await savedQuizApi.create({
+        title: quizSettings.title || `Quiz ${new Date().toLocaleDateString('vi-VN')}`,
+        description: quizSettings.description || null,
+        course_id: selectedCourseId,
+        course_name: selectedCourseName || null,
+        difficulty: null,
+        language: 'vi',
+        source: 'quiz_builder',
+        source_job_id: null,
+        tags: [],
+        questions,
+      });
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error('[QuizBuilder] Save to library failed:', err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -775,6 +821,21 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
             )}
           </button>
         )}
+        <button
+          className={`qb-btn qb-btn-save-library ${saveSuccess ? 'qb-btn-save-success' : ''}`}
+          disabled={builderQuestions.length === 0 || isSaving}
+          onClick={handleSaveToLibrary}
+          title="Lưu vào Kho Đề Thi"
+        >
+          {isSaving ? (
+            <Loader2 size={15} className="spin" />
+          ) : saveSuccess ? (
+            <Check size={15} />
+          ) : (
+            <Library size={15} />
+          )}
+          <span>{saveSuccess ? 'Đã lưu!' : 'Lưu Kho Đề'}</span>
+        </button>
       </div>
 
       {/* ---- Scoped Styles ---- */}
@@ -1671,6 +1732,24 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
         }
         .qb-btn-new:hover {
           box-shadow: 0 4px 20px rgba(16,185,129,0.3) !important;
+        }
+        .qb-btn-save-library {
+          padding: 10px 18px;
+          border-radius: 10px;
+          background: rgba(129, 140, 248, 0.12);
+          color: #a5b4fc;
+          border: 1px solid rgba(129, 140, 248, 0.25);
+          margin-left: 8px;
+        }
+        .qb-btn-save-library:hover:not(:disabled) {
+          background: rgba(129, 140, 248, 0.2);
+          border-color: rgba(129, 140, 248, 0.4);
+          transform: translateY(-1px);
+        }
+        .qb-btn-save-success {
+          background: rgba(34, 197, 94, 0.15) !important;
+          color: #4ade80 !important;
+          border-color: rgba(34, 197, 94, 0.3) !important;
         }
         .qb-btn-primary {
           background: linear-gradient(135deg, #3b82f6, #8b5cf6);

@@ -27,6 +27,7 @@ import {
   XCircle,
   FolderOpen,
   Rocket,
+  Library,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
 
@@ -70,6 +71,7 @@ import {
   asyncCanvasGenerateQuiz,
 } from '../api/canvasRag';
 import CanvasImportModal from './CanvasImportModal';
+import { savedQuizApi } from '../api/savedQuiz';
 
 // Indexed document info
 interface IndexedDocument {
@@ -132,6 +134,10 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const [editingQuestionIndex, setEditingQuestionIndex] = useState<number | null>(null);
   const [editingQuestion, setEditingQuestion] = useState<QuizQuestion | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  
+  // Save to library states
+  const [isSavingToLibrary, setIsSavingToLibrary] = useState(false);
+  const [saveLibrarySuccess, setSaveLibrarySuccess] = useState(false);
   
   // Document and Topic selection states
   const [indexedDocuments, setIndexedDocuments] = useState<IndexedDocument[]>([]);
@@ -995,6 +1001,57 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       setQuizError('Lỗi khi download quiz');
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  // Save generated quiz to Kho Đề
+  const handleSaveToLibrary = async () => {
+    if (generatedQuiz.length === 0) return;
+    setIsSavingToLibrary(true);
+    setSaveLibrarySuccess(false);
+    try {
+      // Try to resolve course info from selected canvas documents
+      let courseId: number | null = null;
+      let courseName: string | null = null;
+      if (topicSource === 'canvas' && selectedTopics.length > 0) {
+        const firstDoc = canvasIndexedDocuments.find(
+          d => d.filename === selectedTopics[0].documentFilename,
+        );
+        if (firstDoc?.course_id) {
+          courseId = firstDoc.course_id;
+          courseName = firstDoc.course_name || courseNameMap[firstDoc.course_id] || null;
+        }
+      }
+
+      const questions = generatedQuiz.map((q, idx) => ({
+        question_number: idx + 1,
+        question_text: q.question,
+        options: q.options as Record<string, string>,
+        correct_answer: q.correct_answer ?? 'A',
+        explanation: null,
+        question_type: 'multiple_choice' as const,
+        points: 1.0,
+      }));
+
+      await savedQuizApi.create({
+        title: quizTopic || `Quiz ${new Date().toLocaleDateString('vi-VN')}`,
+        description: null,
+        course_id: courseId,
+        course_name: courseName,
+        difficulty: quizDifficulty,
+        language: quizLanguage,
+        source: topicSource === 'canvas' ? 'canvas_rag' : 'rag',
+        source_job_id: null,
+        tags: selectedTopics.map(t => t.topic),
+        questions,
+      });
+      setSaveLibrarySuccess(true);
+      setTimeout(() => setSaveLibrarySuccess(false), 3000);
+    } catch (err) {
+      console.error('[DocumentRAG] Save to library failed:', err);
+      setQuizError('Lỗi khi lưu vào Kho Đề');
+    } finally {
+      setIsSavingToLibrary(false);
     }
   };
 
@@ -1978,163 +2035,191 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       {showQuizModal && generatedQuiz.length > 0 && (
         <div className="modal-overlay" onClick={() => setShowQuizModal(false)}>
           <div className="quiz-modal" onClick={(e) => e.stopPropagation()}>
+            {/* ── Header ── */}
             <div className="quiz-modal-header">
-              <h3>
-                <HelpCircle size={20} />
-                Quiz: {selectedTopics.length > 0 ? selectedTopics.map(t => t.topic).slice(0, 2).join(', ') + (selectedTopics.length > 2 ? '...' : '') : quizTopic}
-              </h3>
-              <div className="quiz-modal-header-info">
-                <span className="quiz-count">{generatedQuiz.length} câu hỏi</span>
+              <div className="qm-header-left">
+                <div className="qm-icon-wrap">
+                  <BookOpen size={20} />
+                </div>
+                <div className="qm-header-text">
+                  <h3>
+                    {selectedTopics.length > 0
+                      ? selectedTopics.map(t => t.topic).slice(0, 2).join(', ') + (selectedTopics.length > 2 ? ` +${selectedTopics.length - 2}` : '')
+                      : quizTopic || 'Quiz'}
+                  </h3>
+                  <div className="qm-header-tags">
+                    <span className="qm-chip qm-chip-count">
+                      <HelpCircle size={12} /> {generatedQuiz.length} câu
+                    </span>
+                    <span className="qm-chip qm-chip-difficulty">
+                      {quizDifficulty === 'easy' ? '🟢 Dễ' : quizDifficulty === 'hard' ? '🔴 Khó' : '🟡 Trung bình'}
+                    </span>
+                    <span className="qm-chip qm-chip-lang">
+                      {quizLanguage === 'vi' ? '🇻🇳 Tiếng Việt' : '🇬🇧 English'}
+                    </span>
+                    {topicSource === 'canvas' && (
+                      <span className="qm-chip qm-chip-source">Canvas</span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <button className="modal-close" onClick={() => setShowQuizModal(false)}>
-                <X size={16} />
-                <span>Đóng</span>
+              <button className="qm-close-btn" onClick={() => setShowQuizModal(false)}>
+                <X size={18} />
               </button>
             </div>
             
+            {/* ── Body ── */}
             <div className="quiz-modal-body">
               {quizMessage && (
-                <div className="message info quiz-modal-message">
-                  <Info size={16} />
+                <div className="qm-alert">
+                  <Info size={15} />
                   {quizMessage}
                 </div>
               )}
 
               <div className="quiz-questions">
                 {generatedQuiz.map((q, idx) => (
-                  <div key={idx} className={`quiz-question ${editingQuestionIndex === idx ? 'editing' : ''}`}>
-                    <div className="question-header">
-                      <span className="question-number">Câu {q.question_number}</span>
-                      {editingQuestionIndex !== idx && (
-                        <button
-                          className="btn-edit-question"
-                          onClick={() => handleStartEdit(idx)}
-                          title="Chỉnh sửa câu hỏi"
-                        >
-                          <Edit2 size={14} strokeWidth={2} />
-                          <span>Chỉnh sửa</span>
-                        </button>
-                      )}
+                  <div key={idx} className={`qm-question ${editingQuestionIndex === idx ? 'qm-question-editing' : ''}`}>
+                    {/* Question top bar */}
+                    <div className="qm-q-header">
+                      <span className="qm-q-num">Câu {q.question_number}</span>
+                      <div className="qm-q-actions">
+                        {editingQuestionIndex === idx ? (
+                          <>
+                            <button className="qm-action-btn qm-action-cancel" onClick={handleCancelEdit} title="Hủy">
+                              <X size={14} /> Hủy
+                            </button>
+                            <button className="qm-action-btn qm-action-save" onClick={handleSaveQuestion} title="Lưu">
+                              <Check size={14} /> Lưu
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="qm-action-btn qm-action-edit"
+                            onClick={() => handleStartEdit(idx)}
+                            title="Chỉnh sửa"
+                          >
+                            <Pencil size={13} /> Sửa
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    
+
+                    {/* Question text */}
                     {editingQuestionIndex === idx && editingQuestion ? (
-                      <>
-                        <textarea
-                          className="edit-question-text"
-                          value={editingQuestion.question}
-                          onChange={(e) => handleEditQuestion('question', e.target.value)}
-                          rows={2}
-                        />
-                        
-                        <div className="question-options edit-mode">
-                          {Object.entries(editingQuestion.options).map(([key, value]) => (
-                            <div key={key} className="edit-option">
-                              <span className="option-key">{key}</span>
+                      <textarea
+                        className="qm-edit-textarea"
+                        value={editingQuestion.question}
+                        onChange={(e) => handleEditQuestion('question', e.target.value)}
+                        rows={2}
+                        autoFocus
+                      />
+                    ) : (
+                      <p className="qm-q-text">{q.question}</p>
+                    )}
+
+                    {/* Options */}
+                    <div className="qm-options">
+                      {(editingQuestionIndex === idx && editingQuestion
+                        ? Object.entries(editingQuestion.options)
+                        : Object.entries(q.options)
+                      ).map(([key, value]) => {
+                        const isCorrect = editingQuestionIndex === idx && editingQuestion
+                          ? editingQuestion.correct_answer === key
+                          : q.correct_answer === key;
+                        const isEditing = editingQuestionIndex === idx && editingQuestion;
+
+                        return (
+                          <div
+                            key={key}
+                            className={`qm-option ${isCorrect ? 'qm-option-correct' : ''} ${isEditing ? 'qm-option-editable' : ''}`}
+                          >
+                            <span className={`qm-option-letter ${isCorrect ? 'qm-letter-correct' : ''}`}>
+                              {key}
+                            </span>
+                            {isEditing ? (
                               <input
                                 type="text"
-                                className="edit-option-input"
+                                className="qm-option-input"
                                 value={value}
                                 onChange={(e) => handleEditQuestion('option', [key, e.target.value])}
                               />
-                              <label className="correct-label">
+                            ) : (
+                              <span className="qm-option-text">{value}</span>
+                            )}
+                            {isEditing ? (
+                              <label className="qm-radio-label" title="Đáp án đúng">
                                 <input
                                   type="radio"
                                   name={`correct-${idx}`}
-                                  checked={editingQuestion.correct_answer === key}
+                                  checked={isCorrect}
                                   onChange={() => handleEditQuestion('correct_answer', key)}
                                 />
-                                <span>Đúng</span>
+                                <span className={`qm-radio-dot ${isCorrect ? 'qm-radio-active' : ''}`} />
                               </label>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="question-edit-actions">
-                          <button
-                            className="btn btn-sm btn-secondary"
-                            onClick={handleCancelEdit}
-                          >
-                            <X size={14} />
-                            Hủy
-                          </button>
-                          <button
-                            className="btn btn-sm btn-success"
-                            onClick={handleSaveQuestion}
-                          >
-                            <Save size={14} />
-                            Lưu
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="question-text">{q.question}</div>
-                        
-                        <div className="question-options">
-                          {Object.entries(q.options).map(([key, value]) => (
-                            <div
-                              key={key}
-                              className={`option-label ${key === q.correct_answer ? 'correct-answer' : ''}`}
-                            >
-                              <span className="option-key">{key}</span>
-                              <span className="option-value">{value}</span>
-                              {key === q.correct_answer && (
-                                <Check size={14} className="correct-icon" style={{ color: '#10b981', marginLeft: 'auto' }} />
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
+                            ) : (
+                              isCorrect && <CheckCircle size={16} className="qm-correct-icon" />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
             
+            {/* ── Footer ── */}
             <div className="quiz-modal-footer">
-              <button 
-                className="btn btn-secondary" 
-                onClick={() => setShowQuizModal(false)}
-              >
-                Đóng
-              </button>
-              <button
-                className="btn btn-outline btn-download-local"
-                onClick={handleDownloadQTI}
-                disabled={isExporting || editingQuestionIndex !== null}
-                title="Download QTI package to local machine"
-              >
-                <Download size={16} />
-                Download
-              </button>
-              <button
-                className="btn btn-primary btn-export"
-                onClick={handleExportQTI}
-                disabled={isExporting || editingQuestionIndex !== null}
-              >
-                {isExporting ? (
-                  <><Loader2 size={16} className="spin" /> Đang chuẩn bị...</>
-                ) : (
-                  <><Upload size={16} /> Export to Canvas</>
-                )}
-              </button>
-              {onDeployToCanvas && (
-                <button
-                  className="btn btn-primary btn-deploy-canvas"
-                  onClick={() => {
-                    onDeployToCanvas(generatedQuiz);
-                    setShowQuizModal(false);
-                  }}
-                  disabled={generatedQuiz.length === 0}
-                  style={{
-                    background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                  }}
-                >
-                  <Rocket size={16} /> Tạo Canvas Quiz
+              <div className="qm-footer-left">
+                <button className="qm-footer-btn qm-btn-close" onClick={() => setShowQuizModal(false)}>
+                  Đóng
                 </button>
-              )}
+              </div>
+              <div className="qm-footer-right">
+                <button
+                  className="qm-footer-btn qm-btn-download"
+                  onClick={handleDownloadQTI}
+                  disabled={isExporting || editingQuestionIndex !== null}
+                  title="Download QTI ZIP"
+                >
+                  <Download size={15} /> Download
+                </button>
+                <button
+                  className="qm-footer-btn qm-btn-export"
+                  onClick={handleExportQTI}
+                  disabled={isExporting || editingQuestionIndex !== null}
+                >
+                  {isExporting ? (
+                    <><Loader2 size={15} className="spin" /> Đang chuẩn bị…</>
+                  ) : (
+                    <><Upload size={15} /> Export Canvas</>
+                  )}
+                </button>
+                {onDeployToCanvas && (
+                  <button
+                    className="qm-footer-btn qm-btn-deploy"
+                    onClick={() => { onDeployToCanvas(generatedQuiz); setShowQuizModal(false); }}
+                    disabled={generatedQuiz.length === 0}
+                  >
+                    <Rocket size={15} /> Quiz Builder
+                  </button>
+                )}
+                <button
+                  className={`qm-footer-btn qm-btn-save ${saveLibrarySuccess ? 'qm-btn-save-ok' : ''}`}
+                  onClick={handleSaveToLibrary}
+                  disabled={generatedQuiz.length === 0 || isSavingToLibrary}
+                  title="Lưu vào Kho Đề Thi"
+                >
+                  {isSavingToLibrary ? (
+                    <><Loader2 size={15} className="spin" /> Đang lưu…</>
+                  ) : saveLibrarySuccess ? (
+                    <><Check size={15} /> Đã lưu!</>
+                  ) : (
+                    <><Library size={15} /> Lưu Kho Đề</>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -5048,339 +5133,480 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           border-color: rgba(52, 211, 153, 0.3);
         }
 
-        /* Quiz Modal Styles */
+        /* ====== Quiz Modal — Redesigned ====== */
         .quiz-modal {
-          background: rgba(22, 33, 55, 0.97);
-          backdrop-filter: blur(20px);
-          border: 1px solid rgba(56, 189, 248, 0.25);
-          border-radius: 16px;
+          background: rgba(13, 20, 40, 0.98);
+          backdrop-filter: blur(24px);
+          border: 1px solid rgba(56, 189, 248, 0.18);
+          border-radius: 18px;
           width: 100%;
-          max-width: 800px;
-          max-height: 90vh;
+          max-width: 860px;
+          max-height: 92vh;
           display: flex;
           flex-direction: column;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(56, 189, 248, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+          box-shadow:
+            0 24px 80px rgba(0,0,0,0.55),
+            0 0 60px rgba(56, 189, 248, 0.06),
+            inset 0 1px 0 rgba(255,255,255,0.04);
           animation: slideUp 0.3s ease;
         }
 
+        /* ── Header ── */
         .quiz-modal-header {
           display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 20px 24px;
-          border-bottom: 1px solid rgba(56, 189, 248, 0.18);
-          background: rgba(15, 23, 42, 0.5);
-          border-radius: 16px 16px 0 0;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+          padding: 20px 28px;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.12);
+          background: linear-gradient(180deg, rgba(15,23,42,0.65) 0%, rgba(15,23,42,0.35) 100%);
+          border-radius: 18px 18px 0 0;
         }
-
-        .quiz-modal-header h3 {
+        .qm-header-left {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          flex: 1;
+          min-width: 0;
+        }
+        .qm-icon-wrap {
           display: flex;
           align-items: center;
-          gap: 10px;
-          margin: 0;
-          font-size: 1.1rem;
-          font-weight: 600;
-          color: #e2e8f0;
+          justify-content: center;
+          width: 40px; height: 40px;
+          border-radius: 10px;
+          background: linear-gradient(135deg, rgba(56,189,248,0.15) 0%, rgba(129,140,248,0.15) 100%);
+          color: #38bdf8;
+          flex-shrink: 0;
+        }
+        .qm-header-text {
+          min-width: 0;
           flex: 1;
+        }
+        .qm-header-text h3 {
+          margin: 0 0 6px;
+          font-size: 1.1rem;
+          font-weight: 700;
+          color: #f1f5f9;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-
-        .quiz-modal-header h3 svg {
-          color: #38bdf8;
-          flex-shrink: 0;
+        .qm-header-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
         }
-
-        .quiz-modal-header-info {
+        .qm-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 3px 10px;
+          border-radius: 20px;
+          font-size: 0.72rem;
+          font-weight: 600;
+          letter-spacing: 0.01em;
+        }
+        .qm-chip-count {
+          background: rgba(56, 189, 248, 0.12);
+          color: #38bdf8;
+        }
+        .qm-chip-difficulty {
+          background: rgba(251, 191, 36, 0.1);
+          color: #fbbf24;
+        }
+        .qm-chip-lang {
+          background: rgba(148, 163, 184, 0.1);
+          color: #94a3b8;
+        }
+        .qm-chip-source {
+          background: rgba(129, 140, 248, 0.12);
+          color: #a5b4fc;
+        }
+        .qm-close-btn {
           display: flex;
           align-items: center;
-          gap: 8px;
+          justify-content: center;
+          width: 34px; height: 34px;
+          border-radius: 8px;
+          border: 1px solid rgba(148, 163, 184, 0.15);
+          background: rgba(15, 23, 42, 0.5);
+          color: #94a3b8;
+          cursor: pointer;
+          transition: all 0.15s;
+          flex-shrink: 0;
+        }
+        .qm-close-btn:hover {
+          background: rgba(239, 68, 68, 0.12);
+          border-color: rgba(239, 68, 68, 0.3);
+          color: #f87171;
         }
 
-        .quiz-count {
-          padding: 4px 12px;
-          background: rgba(56, 189, 248, 0.12);
-          border-radius: 20px;
-          font-size: 0.8rem;
-          font-weight: 600;
-          color: #38bdf8;
-        }
-
+        /* ── Body ── */
         .quiz-modal-body {
           flex: 1;
           overflow-y: auto;
-          padding: 20px 24px;
+          padding: 24px 28px;
         }
-
-        .quiz-modal .quiz-questions {
+        .qm-alert {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 14px;
+          margin-bottom: 16px;
+          border-radius: 10px;
+          background: rgba(56, 189, 248, 0.06);
+          border: 1px solid rgba(56, 189, 248, 0.15);
+          color: #7dd3fc;
+          font-size: 0.84rem;
+        }
+        .quiz-questions {
           display: flex;
           flex-direction: column;
-          gap: 16px;
+          gap: 14px;
         }
 
-        .quiz-modal .quiz-question {
-          background: rgba(22, 33, 55, 0.65);
-          border: 1px solid rgba(56, 189, 248, 0.16);
-          border-radius: 12px;
-          padding: 16px;
+        /* ── Question card ── */
+        .qm-question {
+          background: rgba(22, 33, 55, 0.55);
+          border: 1px solid rgba(148, 163, 184, 0.1);
+          border-radius: 14px;
+          padding: 18px 20px;
           transition: all 0.2s ease;
         }
-
-        .quiz-modal .quiz-question:hover {
-          border-color: rgba(56, 189, 248, 0.3);
-          box-shadow: 0 2px 16px rgba(56, 189, 248, 0.1);
+        .qm-question:hover {
+          border-color: rgba(56, 189, 248, 0.22);
+          box-shadow: 0 2px 18px rgba(0, 0, 0, 0.15);
+        }
+        .qm-question-editing {
+          border-color: rgba(56, 189, 248, 0.4) !important;
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.08), 0 4px 20px rgba(0, 0, 0, 0.2) !important;
+          background: rgba(22, 33, 62, 0.7);
         }
 
-        .quiz-modal .quiz-question.editing {
-          border-color: rgba(56, 189, 248, 0.3);
-          box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.06);
-        }
-
-        .quiz-modal .question-header {
+        .qm-q-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          margin-bottom: 12px;
+          margin-bottom: 10px;
         }
-
-        .quiz-modal .question-number {
-          font-weight: 700;
+        .qm-q-num {
+          font-weight: 800;
+          font-size: 0.78rem;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
           color: #38bdf8;
-          font-size: 0.9rem;
-          padding: 4px 12px;
+          padding: 3px 10px;
           background: rgba(56, 189, 248, 0.1);
           border-radius: 6px;
         }
-
-        .quiz-modal .btn-edit-question {
+        .qm-q-actions {
           display: flex;
+          gap: 6px;
+        }
+        .qm-action-btn {
+          display: inline-flex;
           align-items: center;
           gap: 4px;
           padding: 4px 10px;
-          border: 1px solid rgba(56, 189, 248, 0.22);
-          border-radius: 6px;
-          background: rgba(22, 33, 55, 0.65);
-          color: #94a3b8;
-          font-size: 0.75rem;
+          border-radius: 7px;
+          font-size: 0.76rem;
+          font-weight: 600;
           cursor: pointer;
-          transition: all 0.2s ease;
+          border: 1px solid transparent;
+          transition: all 0.15s;
         }
-
-        .quiz-modal .btn-edit-question:hover {
-          border-color: #38bdf8;
+        .qm-action-edit {
+          background: rgba(148, 163, 184, 0.08);
+          color: #94a3b8;
+          border-color: rgba(148, 163, 184, 0.15);
+        }
+        .qm-action-edit:hover {
+          background: rgba(56, 189, 248, 0.1);
           color: #38bdf8;
-          background: rgba(56, 189, 248, 0.06);
+          border-color: rgba(56, 189, 248, 0.3);
+        }
+        .qm-action-cancel {
+          background: rgba(239, 68, 68, 0.08);
+          color: #f87171;
+          border-color: rgba(239, 68, 68, 0.2);
+        }
+        .qm-action-cancel:hover {
+          background: rgba(239, 68, 68, 0.15);
+        }
+        .qm-action-save {
+          background: rgba(34, 197, 94, 0.12);
+          color: #4ade80;
+          border-color: rgba(34, 197, 94, 0.25);
+        }
+        .qm-action-save:hover {
+          background: rgba(34, 197, 94, 0.2);
         }
 
-        .quiz-modal .question-text {
-          font-size: 0.95rem;
-          line-height: 1.6;
+        /* Question text */
+        .qm-q-text {
+          font-size: 0.94rem;
+          line-height: 1.65;
           color: #e2e8f0;
-          margin-bottom: 12px;
+          margin: 0 0 14px;
+        }
+        .qm-edit-textarea {
+          width: 100%;
+          padding: 10px 14px;
+          border: 2px solid rgba(56, 189, 248, 0.25);
+          border-radius: 10px;
+          background: rgba(15, 23, 42, 0.6);
+          color: #f1f5f9;
+          font-size: 0.92rem;
+          font-family: inherit;
+          line-height: 1.6;
+          resize: vertical;
+          outline: none;
+          transition: border-color 0.2s;
+          margin-bottom: 14px;
+        }
+        .qm-edit-textarea:focus {
+          border-color: #38bdf8;
         }
 
-        .quiz-modal .question-options {
+        /* ── Options ── */
+        .qm-options {
           display: flex;
           flex-direction: column;
-          gap: 8px;
+          gap: 7px;
         }
-
-        .quiz-modal .option-label {
+        .qm-option {
           display: flex;
           align-items: center;
           gap: 10px;
           padding: 10px 14px;
-          border: 1px solid rgba(56, 189, 248, 0.14);
-          border-radius: 8px;
-          background: rgba(15, 23, 42, 0.5);
-          transition: all 0.2s ease;
+          border: 1px solid rgba(148, 163, 184, 0.1);
+          border-radius: 10px;
+          background: rgba(15, 23, 42, 0.35);
+          transition: all 0.15s;
         }
-
-        .quiz-modal .option-label.correct-answer {
-          background: rgba(52, 211, 153, 0.08);
-          border-color: rgba(52, 211, 153, 0.2);
+        .qm-option:hover {
+          border-color: rgba(148, 163, 184, 0.2);
         }
-
-        .quiz-modal .option-key {
-          font-weight: 700;
+        .qm-option-correct {
+          background: rgba(34, 197, 94, 0.06);
+          border-color: rgba(34, 197, 94, 0.22);
+        }
+        .qm-option-correct:hover {
+          border-color: rgba(34, 197, 94, 0.35);
+        }
+        .qm-option-editable {
+          padding: 6px 10px;
+        }
+        .qm-option-letter {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 28px; height: 28px;
+          border-radius: 7px;
+          font-weight: 800;
+          font-size: 0.78rem;
+          background: rgba(56, 189, 248, 0.1);
           color: #38bdf8;
-          min-width: 24px;
+          flex-shrink: 0;
         }
-
-        .quiz-modal .option-value {
+        .qm-letter-correct {
+          background: rgba(34, 197, 94, 0.15);
+          color: #22c55e;
+        }
+        .qm-option-text {
           flex: 1;
+          font-size: 0.9rem;
           color: #cbd5e1;
-          font-size: 0.9rem;
+          line-height: 1.5;
         }
-
-        .quiz-modal .question-explanation {
-          margin-top: 12px;
-          padding: 12px;
-          background: rgba(251, 191, 36, 0.06);
-          border: 1px solid rgba(251, 191, 36, 0.2);
-          border-radius: 8px;
-          font-size: 0.85rem;
-          color: #fbbf24;
+        .qm-option-correct .qm-option-text {
+          color: #86efac;
         }
-
-        .quiz-modal .edit-question-text,
-        .quiz-modal .edit-option-input,
-        .quiz-modal .edit-explanation textarea {
-          width: 100%;
-          padding: 10px 12px;
-          border: 2px solid rgba(56, 189, 248, 0.15);
+        .qm-option-input {
+          flex: 1;
+          padding: 7px 12px;
+          border: 2px solid rgba(56, 189, 248, 0.2);
           border-radius: 8px;
-          font-size: 0.9rem;
-          font-family: inherit;
-          resize: vertical;
-          transition: border-color 0.2s ease;
-          color: #e2e8f0;
           background: rgba(15, 23, 42, 0.6);
-        }
-
-        .quiz-modal .edit-question-text:focus,
-        .quiz-modal .edit-option-input:focus,
-        .quiz-modal .edit-explanation textarea:focus {
+          color: #f1f5f9;
+          font-size: 0.88rem;
+          font-family: inherit;
           outline: none;
+          transition: border-color 0.2s;
+        }
+        .qm-option-input:focus {
           border-color: #38bdf8;
         }
-
-        .quiz-modal .edit-option {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-bottom: 8px;
+        .qm-correct-icon {
+          color: #22c55e;
+          flex-shrink: 0;
         }
 
-        .quiz-modal .correct-label {
+        /* Radio button for correct answer selection */
+        .qm-radio-label {
           display: flex;
           align-items: center;
-          gap: 4px;
-          font-size: 0.8rem;
-          color: #94a3b8;
           cursor: pointer;
+          flex-shrink: 0;
+        }
+        .qm-radio-label input[type="radio"] {
+          display: none;
+        }
+        .qm-radio-dot {
+          width: 20px; height: 20px;
+          border-radius: 50%;
+          border: 2px solid rgba(148, 163, 184, 0.3);
+          background: rgba(15, 23, 42, 0.5);
+          transition: all 0.15s;
+          position: relative;
+        }
+        .qm-radio-dot::after {
+          content: '';
+          position: absolute;
+          top: 50%; left: 50%;
+          transform: translate(-50%, -50%);
+          width: 8px; height: 8px;
+          border-radius: 50%;
+          background: transparent;
+          transition: background 0.15s;
+        }
+        .qm-radio-active {
+          border-color: #22c55e;
+          background: rgba(34, 197, 94, 0.1);
+        }
+        .qm-radio-active::after {
+          background: #22c55e;
+        }
+        .qm-radio-label:hover .qm-radio-dot:not(.qm-radio-active) {
+          border-color: rgba(148, 163, 184, 0.5);
         }
 
-        .quiz-modal .edit-explanation {
-          margin-top: 12px;
-        }
-
-        .quiz-modal .edit-explanation label {
-          display: block;
-          margin-bottom: 6px;
-          font-size: 0.85rem;
-          font-weight: 500;
-          color: #94a3b8;
-        }
-
-        .quiz-modal .question-edit-actions {
-          display: flex;
-          justify-content: flex-end;
-          gap: 8px;
-          margin-top: 12px;
-        }
-
-        .quiz-modal .question-edit-actions .btn {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          padding: 6px 12px;
-          border-radius: 6px;
-          font-size: 0.8rem;
-          font-weight: 500;
-          cursor: pointer;
-        }
-
-        .quiz-modal .btn-secondary {
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(56, 189, 248, 0.15);
-          color: #94a3b8;
-        }
-
-        .quiz-modal .btn-secondary:hover {
-          background: rgba(56, 189, 248, 0.08);
-          color: #e2e8f0;
-        }
-
-        .quiz-modal .btn-success {
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-          border: none;
-          color: white;
-        }
-
-        .quiz-modal .btn-success:hover {
-          background: linear-gradient(135deg, #059669 0%, #047857 100%);
-        }
-
-        /* Quiz Modal Footer - Fixed */
+        /* ── Footer ── */
         .quiz-modal-footer {
           display: flex;
           align-items: center;
-          justify-content: flex-end;
-          gap: 12px;
-          padding: 16px 24px;
-          border-top: 1px solid rgba(56, 189, 248, 0.18);
-          background: rgba(15, 23, 42, 0.5);
-          border-radius: 0 0 16px 16px;
-          position: sticky;
-          bottom: 0;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 16px 28px;
+          border-top: 1px solid rgba(56, 189, 248, 0.12);
+          background: rgba(15, 23, 42, 0.45);
+          border-radius: 0 0 18px 18px;
         }
-
-        .quiz-modal-footer .btn {
+        .qm-footer-left {
           display: flex;
-          align-items: center;
           gap: 8px;
-          padding: 10px 20px;
-          border-radius: 10px;
-          font-weight: 600;
-          font-size: 0.9rem;
-          cursor: pointer;
-          transition: all 0.2s ease;
         }
-
-        .quiz-modal-footer .btn-secondary {
-          background: rgba(22, 33, 55, 0.75);
-          border: 1px solid rgba(56, 189, 248, 0.22);
-          color: #94a3b8;
-        }
-
-        .quiz-modal-footer .btn-secondary:hover {
-          background: rgba(56, 189, 248, 0.12);
-          color: #e2e8f0;
-        }
-
-        .quiz-modal-footer .btn-outline {
-          background: rgba(22, 33, 55, 0.75);
-          border: 2px solid #38bdf8;
-          color: #38bdf8;
-        }
-
-        .quiz-modal-footer .btn-outline:hover:not(:disabled) {
-          background: rgba(56, 189, 248, 0.12);
-        }
-
-        .quiz-modal-footer .btn-download-local {
+        .qm-footer-right {
           display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+        .qm-footer-btn {
+          display: inline-flex;
           align-items: center;
           gap: 6px;
-        }
-
-        .quiz-modal-footer .btn-export {
-          background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
+          padding: 8px 16px;
+          border-radius: 9px;
+          font-size: 0.82rem;
+          font-weight: 600;
+          cursor: pointer;
           border: none;
+          transition: all 0.18s ease;
+          font-family: inherit;
+        }
+        .qm-footer-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+        .qm-btn-close {
+          background: rgba(148, 163, 184, 0.08);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          color: #94a3b8;
+        }
+        .qm-btn-close:hover {
+          background: rgba(148, 163, 184, 0.15);
+          color: #e2e8f0;
+        }
+        .qm-btn-download {
+          background: rgba(148, 163, 184, 0.08);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          color: #94a3b8;
+        }
+        .qm-btn-download:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.08);
+          border-color: rgba(56, 189, 248, 0.25);
+          color: #38bdf8;
+        }
+        .qm-btn-export {
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
           color: white;
         }
-
-        .quiz-modal-footer .btn-export:hover:not(:disabled) {
-          background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
+        .qm-btn-export:hover:not(:disabled) {
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4);
+          box-shadow: 0 3px 12px rgba(56, 189, 248, 0.35);
+        }
+        .qm-btn-deploy {
+          background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+          color: white;
+        }
+        .qm-btn-deploy:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 3px 12px rgba(99, 102, 241, 0.35);
+        }
+        .qm-btn-save {
+          background: rgba(129, 140, 248, 0.12);
+          border: 1px solid rgba(129, 140, 248, 0.25);
+          color: #a5b4fc;
+        }
+        .qm-btn-save:hover:not(:disabled) {
+          background: rgba(129, 140, 248, 0.2);
+          border-color: rgba(129, 140, 248, 0.4);
+          transform: translateY(-1px);
+        }
+        .qm-btn-save-ok {
+          background: rgba(34, 197, 94, 0.12) !important;
+          border-color: rgba(34, 197, 94, 0.3) !important;
+          color: #4ade80 !important;
         }
 
-        .quiz-modal-footer .btn-export:disabled {
-          background: rgba(100, 116, 139, 0.3);
-          cursor: not-allowed;
+        /* ── Scrollbar ── */
+        .quiz-modal-body::-webkit-scrollbar { width: 6px; }
+        .quiz-modal-body::-webkit-scrollbar-track { background: transparent; }
+        .quiz-modal-body::-webkit-scrollbar-thumb {
+          background: rgba(56, 189, 248, 0.15);
+          border-radius: 3px;
+        }
+        .quiz-modal-body::-webkit-scrollbar-thumb:hover {
+          background: rgba(56, 189, 248, 0.3);
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+          .quiz-modal {
+            max-width: 100%;
+            max-height: 100vh;
+            border-radius: 0;
+          }
+          .quiz-modal-header {
+            padding: 16px 18px;
+            border-radius: 0;
+          }
+          .quiz-modal-body {
+            padding: 16px 18px;
+          }
+          .quiz-modal-footer {
+            flex-direction: column;
+            padding: 14px 18px;
+            border-radius: 0;
+          }
+          .qm-footer-left, .qm-footer-right {
+            width: 100%;
+            justify-content: center;
+          }
+          .qm-header-tags { gap: 4px; }
         }
 
         /* Edit Topics Modal Styles */

@@ -5,7 +5,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
-import { LoginPage, SignupPage, AdminLayout, AdminDashboard, AdminUsers, AdminJobs, AdminPanels, AdminInviteCodes } from './pages';
+import { LoginPage, SignupPage, AdminLayout, AdminDashboard, AdminUsers, AdminJobs, AdminPanels, AdminInviteCodes, AdminGroqKeys } from './pages';
 import { Loader2 } from 'lucide-react';
 
 // Import the main app content (existing dashboard)
@@ -105,6 +105,7 @@ const AppRouter: React.FC = () => {
             <Route path="jobs" element={<AdminJobs />} />
             <Route path="panels" element={<AdminPanels />} />
             <Route path="invite-codes" element={<AdminInviteCodes />} />
+            <Route path="groq-keys" element={<AdminGroqKeys />} />
           </Route>
         </Route>
         

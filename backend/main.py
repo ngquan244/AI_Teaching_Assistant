@@ -25,6 +25,7 @@ from backend.routes import canvas_results as canvas_results_routes
 from backend.routes import jobs as jobs_routes
 from backend.routes import admin as admin_routes
 from backend.routes import guide as guide_routes
+from backend.routes import saved_quiz as saved_quiz_routes
 from backend.auth import auth_router
 from backend.core.config import settings
 from backend.core import BaseAPIException
@@ -53,8 +54,31 @@ async def lifespan(app: FastAPI):
     for directory in [settings.EXPORTS_DIR, settings.DATA_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
     
-    # ── RAG preload intentionally disabled in backend ─────────────────
-    app_logger.info("Skipping backend RAG/embedding preload; worker-rag owns embedding initialization")
+    # ── RAG preload ───────────────────────────────────────────────────
+    # In eager mode (CELERY_TASK_ALWAYS_EAGER=true) there is no separate
+    # worker-rag process, so the FastAPI process IS the worker. We must
+    # preload embeddings + ChromaDB here, otherwise the FIRST quiz/RAG
+    # request blocks for 30-60s while the singleton initializes inside
+    # the request handler — which manifests as the job stuck at 0%.
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        app_logger.info("Eager mode detected — preloading RAG/Canvas RAG services...")
+        try:
+            import asyncio as _asyncio
+
+            def _preload():
+                from backend.modules.document_rag import RAGService
+                from backend.modules.document_rag.canvas_rag_service import (
+                    get_canvas_rag_service,
+                )
+                RAGService.get_instance()._ensure_initialized()
+                get_canvas_rag_service()._ensure_initialized()
+
+            await _asyncio.to_thread(_preload)
+            app_logger.info("RAG/Canvas RAG preload complete ✓")
+        except Exception as e:
+            app_logger.warning(f"RAG preload failed (non-fatal, will lazy-init): {e}")
+    else:
+        app_logger.info("Skipping backend RAG/embedding preload; worker-rag owns embedding initialization")
 
     # ── Seed guide documents if DB table is empty ─────────────────────
     try:
@@ -145,6 +169,7 @@ app.include_router(canvas_results_routes.router, prefix="/api/canvas-results", t
 app.include_router(jobs_routes.router, tags=["Jobs"])
 app.include_router(admin_routes.router, tags=["Admin"])
 app.include_router(guide_routes.router, prefix="/api/guide", tags=["Guide"])
+app.include_router(saved_quiz_routes.router, prefix="/api/saved-quizzes", tags=["Saved Quizzes"])
 
 # Serve static files (exports)
 app.mount("/static/exports", StaticFiles(directory=str(settings.EXPORTS_DIR)), name="exports")

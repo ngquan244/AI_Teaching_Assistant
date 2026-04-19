@@ -1,6 +1,8 @@
 """
 Pydantic schemas for API request/response models
 """
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 from datetime import datetime
@@ -209,3 +211,97 @@ class ResultsExportRequest(BaseModel):
     course_id: int
     quiz_id: Optional[int] = None
     format: str = Field(default="xlsx", description="Export format: xlsx | csv")
+
+
+# ===== Saved Quiz Schemas =====
+
+class SavedQuizQuestionCreate(BaseModel):
+    """A question to include when creating a saved quiz snapshot."""
+    question_text: str = Field(..., description="Question body")
+    options: Dict[str, str] = Field(..., description='Answer options: {"A": "...", "B": "...", ...}')
+    correct_answer: str = Field(..., description="Correct option key (A/B/C/D)")
+    explanation: Optional[str] = Field(None, description="Answer explanation")
+    question_type: str = Field(default="multiple_choice", description="Question type")
+    points: float = Field(default=1.0, ge=0, description="Points for this question")
+
+
+class SavedQuizCreate(BaseModel):
+    """Create a new saved quiz snapshot with embedded questions."""
+    title: str = Field(..., max_length=500, description="Quiz title")
+    course_id: Optional[int] = Field(None, description="Canvas course ID")
+    course_name: Optional[str] = Field(None, max_length=500, description="Course name snapshot")
+    description: Optional[str] = Field(None, description="Quiz description")
+    difficulty: Optional[str] = Field(None, description="easy | medium | hard")
+    language: Optional[str] = Field(None, description="vi | en")
+    source: str = Field(default="manual", description="rag_generation | canvas_import | manual")
+    source_job_id: Optional[UUID] = Field(None, description="Originating job (informational)")
+    tags: List[str] = Field(default=[], description="Free-form tags")
+    questions: List[SavedQuizQuestionCreate] = Field(..., min_length=1, description="Quiz questions")
+
+
+class SavedQuizUpdate(BaseModel):
+    """Update saved quiz metadata (all fields optional)."""
+    title: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = None
+    difficulty: Optional[str] = None
+    language: Optional[str] = None
+    course_id: Optional[int] = None
+    course_name: Optional[str] = Field(None, max_length=500)
+    tags: Optional[List[str]] = None
+    is_starred: Optional[bool] = None
+
+
+class SavedQuizQuestionOut(BaseModel):
+    """Single question in a saved quiz response."""
+    id: UUID
+    question_number: int
+    question_text: str
+    options: Dict[str, str]
+    correct_answer: str
+    explanation: Optional[str] = None
+    question_type: str
+    points: float
+
+    class Config:
+        from_attributes = True
+
+
+class SavedQuizOut(BaseModel):
+    """Saved quiz summary (without questions)."""
+    id: UUID
+    title: str
+    course_id: Optional[int] = None
+    course_name: Optional[str] = None
+    description: Optional[str] = None
+    difficulty: Optional[str] = None
+    language: Optional[str] = None
+    source: str
+    tags: List[str]
+    question_count: int
+    is_starred: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SavedQuizDetailOut(SavedQuizOut):
+    """Saved quiz with all questions included."""
+    questions: List[SavedQuizQuestionOut] = []
+
+
+class CourseGroupOut(BaseModel):
+    """Course summary for sidebar grouping."""
+    course_id: Optional[int] = None
+    course_name: Optional[str] = None
+    quiz_count: int
+
+
+class SavedQuizListOut(BaseModel):
+    """Paginated list of saved quizzes."""
+    items: List[SavedQuizOut]
+    total: int
+    page: int
+    page_size: int
+    courses: List[CourseGroupOut] = []

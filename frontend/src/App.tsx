@@ -4,7 +4,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import { usePanelConfig, getFirstVisibleTab } from './context/PanelConfigContext';
 import { useAuth } from './context/AuthContext';
 import { useToast } from './context/ToastContext';
-import { Sidebar, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
+import { Sidebar, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, SavedQuizzesPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, TAB_PATHS, pathToTab } from './types';
 import type { QuizQuestion } from './api/documentRag';
@@ -18,6 +18,7 @@ const TAB_LABELS: Record<string, string> = {
   document_rag: 'Tài liệu RAG',
   canvas: 'Canvas',
   canvas_quiz: 'Quiz Builder',
+  saved_quizzes: 'Kho Đề Thi',
   canvas_simulation: 'Giả lập Quiz',
   canvas_results: 'Kết quả Canvas',
   guide: 'Hướng dẫn',
@@ -77,6 +78,12 @@ const AppContent: React.FC = () => {
     navigate('/' + TAB_PATHS[TABS.CANVAS_QUIZ], { replace: false });
   }, [navigate]);
 
+  /** Called by SavedQuizzesPanel — already provides QuizBuilderQuestion[] */
+  const handleLoadSavedToBuilder = useCallback((questions: QuizBuilderQuestion[]) => {
+    setQuizBuilderQuestions(questions);
+    navigate('/' + TAB_PATHS[TABS.CANVAS_QUIZ], { replace: false });
+  }, [navigate]);
+
   if (loading) {
     return (
       <div className="loading-screen">
@@ -109,6 +116,11 @@ const AppContent: React.FC = () => {
               questions={quizBuilderQuestions}
               onQuestionsClear={() => setQuizBuilderQuestions([])}
             />
+          </div>
+        )}
+        {checkVisible(TABS.SAVED_QUIZZES) && (
+          <div style={{ display: activeTab === TABS.SAVED_QUIZZES ? 'block' : 'none', height: '100%' }}>
+            <SavedQuizzesPanel onLoadToBuilder={handleLoadSavedToBuilder} />
           </div>
         )}
         {checkVisible(TABS.CANVAS_SIMULATION) && (

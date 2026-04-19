@@ -93,11 +93,11 @@ class Settings(BaseSettings):
         return f"{self.REDIS_URL}/1"
     
     # Celery eager mode (run tasks synchronously — no Redis/workers needed)
-    CELERY_TASK_ALWAYS_EAGER: bool = False
+    CELERY_TASK_ALWAYS_EAGER: bool = True
     
-    # Rate limits
-    LLM_RATE_LIMIT: str = "10/m"  # 10 requests per minute for LLM tasks
-    CANVAS_RATE_LIMIT: str = "30/m"  # 30 requests per minute for Canvas API
+    # Rate limits (production defaults; dev overrides applied in model_validator)
+    LLM_RATE_LIMIT: str = "10/m"  # 10 LLM requests per minute
+    CANVAS_RATE_LIMIT: str = "30/m"  # 30 Canvas API requests per minute
     
     @property
     def DATABASE_URL(self) -> str:
@@ -250,6 +250,11 @@ class Settings(BaseSettings):
                         f"Using development {name} — set {name} in .env before deploying.",
                         UserWarning,
                     )
+            # Relax rate limits for faster dev iteration (only when not overridden via .env)
+            if self.LLM_RATE_LIMIT == "10/m":
+                self.LLM_RATE_LIMIT = "30/m"
+            if self.CANVAS_RATE_LIMIT == "30/m":
+                self.CANVAS_RATE_LIMIT = "60/m"
         else:
             # Hard fail — production / staging must not use dev defaults
             insecure: list[str] = []
