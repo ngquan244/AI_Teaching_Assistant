@@ -109,6 +109,8 @@ def retrieve_quiz_context(
     selected_documents: Optional[list] = None,
     user_id: Optional[str] = None,
     source: str = "document",
+    include_course_domain: bool = False,
+    domain_quota_ratio: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Retrieve quiz documents on the rag worker and serialize them for transport."""
     with SessionLocal() as rag_db:
@@ -120,6 +122,8 @@ def retrieve_quiz_context(
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=rag_db,
+                include_course_domain=include_course_domain,
+                domain_quota_ratio=domain_quota_ratio,
             )
         else:
             service = _get_rag_service()
@@ -518,11 +522,71 @@ def canvas_extract_topics(
         
         groq_key = _resolve_groq_api_key_sync()
         service = _get_canvas_rag_service()
-        result = service.extract_topics_for_file(
-            filename, num_topics, user_id=user_id,
-            groq_api_key=groq_key,
-        )
-        
+
+        # Build round-robin Groq key pool so a single rate-limited / disabled
+        # key cannot break extract topic. Errors recorded via mark_error are
+        # flushed to DB at the end so the admin panel reflects health.
+        key_pool = None
+        try:
+            from backend.services.groq_key_pool_service import (
+                get_pool_keys_sync,
+                KeyPool,
+            )
+            with SessionLocal() as pool_db:
+                pool_keys = get_pool_keys_sync(pool_db)
+            if pool_keys:
+                key_pool = KeyPool(pool_keys)
+                logger.info(
+                    "canvas_extract_topics: KeyPool initialized with %d keys",
+                    len(pool_keys),
+                )
+        except Exception as pool_err:
+            logger.warning(
+                "canvas_extract_topics: failed to build KeyPool, falling back to single key: %s",
+                pool_err,
+            )
+
+        # IMPORTANT: use a *separate* DB session for the extraction so that
+        # any rollback inside the service never affects the job-service
+        # session (which tracks job lifecycle state). Sharing the session
+        # caused indexed documents to "vanish" after a failed extraction
+        # because the rollback would discard pending job/registry state.
+        with SessionLocal() as extract_db:
+            try:
+                result = service.extract_topics_for_file(
+                    filename, num_topics, user_id=user_id,
+                    groq_api_key=groq_key,
+                    db_session=extract_db,
+                    key_pool=key_pool,
+                )
+            except Exception as extract_err:
+                # Topic extraction failed (e.g. Groq token exhausted on every
+                # pool key). Do NOT propagate to the task — the document is
+                # still indexed and we want the job to complete with empty
+                # topics so the UI can show "0 chủ đề" + a regen button.
+                logger.warning(
+                    "Topic extraction failed for %s (filename=%s): %s",
+                    job_id, filename, extract_err,
+                )
+                try:
+                    extract_db.rollback()
+                except Exception:
+                    pass
+                result = {
+                    "success": False,
+                    "topics": [],
+                    "filename": filename,
+                    "error": str(extract_err) or "Trích xuất chủ đề thất bại (có thể do hết hạn mức API).",
+                }
+
+        # Persist key-pool error/success counters back to DB so admin sees
+        # which keys are unhealthy.
+        if key_pool is not None:
+            try:
+                key_pool.flush_to_db()
+            except Exception as flush_err:
+                logger.warning("KeyPool flush_to_db failed: %s", flush_err)
+
         job_service.complete_job(job_uuid, result)
         return result
         

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from .config import rag_config
 from .ingest import load_pdf_documents, get_file_metadata
 from .chunking import chunk_documents
+from .lang_utils import detect_language
 from .vectorstore import ChromaVectorStore
 from .collection_manager import (
     PerFileCollectionManager,
@@ -35,7 +36,10 @@ from .retriever import DocumentRetriever, MultiCollectionRetriever
 from .rag_chain import RAGChain
 from .quiz_generator import QuizGenerator
 from .llm_providers import BaseLLM, LLMFactory
-from .rag_repository import SyncRAGCollectionRepository
+from .rag_repository import (
+    SyncRAGCollectionRepository,
+    SyncCanvasCourseDomainDocRepository,
+)
 from backend.database.models.rag_document import RAGSourceType
 from backend.core.logger import quiz_logger, canvas_logger
 from backend.utils.file_state import locked_json_state, read_json_file
@@ -641,7 +645,14 @@ class CanvasRAGService:
             
             # Chunk documents
             chunks = chunk_documents(documents)
-            
+
+            # Detect dominant language across chunks (best-effort, V1).
+            try:
+                detected_language = detect_language(chunks)
+            except Exception as _lang_exc:
+                logger.warning("Language detection failed for %s: %s", filename, _lang_exc)
+                detected_language = None
+
             # Add to per-file Canvas collection (NOT global collection)
             # This is the key change that enables concurrent indexing
             added_count = self._collection_manager.add_documents(
@@ -701,6 +712,7 @@ class CanvasRAGService:
                         course_id=int(course_id) if course_id else None,
                         chunk_count=added_count,
                         is_indexed=True,
+                        language=detected_language,
                     )
                     if topics_extracted and col_row:
                         SyncRAGCollectionRepository.save_topics(
@@ -721,6 +733,7 @@ class CanvasRAGService:
                 "pages_loaded": len(documents),
                 "chunks_added": added_count,
                 "already_indexed": False,
+                "language": detected_language,
                 "topics_extracted": len(topics_extracted),
                 "topics": topics_extracted
             }
@@ -742,6 +755,7 @@ class CanvasRAGService:
         course_id: Optional[int] = None,
         user_id: Optional[str] = None,
         groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> List[Dict[str, str]]:
         """Extract topics from document and save to Canvas topic storage.
         
@@ -753,6 +767,10 @@ class CanvasRAGService:
             course_id: Canvas course ID for collection lookup
             groq_api_key: Optional fresh API key (from DB/settings); when
                 provided a temporary LLM is used instead of the cached singleton.
+            key_pool: Optional KeyPool for round-robin rotation; when provided,
+                Groq rate-limit / auth errors trigger a retry with the next key.
+                Each error is recorded via ``pool.mark_error`` so admins can see
+                which keys are unhealthy on the admin panel.
         """
         try:
             # If chunks not provided, get from per-file collection
@@ -795,14 +813,76 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             # Use a fresh LLM when a key is explicitly provided (e.g. resolved
             # from DB) so that admin-panel key changes take effect without
             # restarting the worker.
-            llm = self._llm_provider
-            if groq_api_key:
-                from .llm_providers import LLMFactory as _LLMFactory
-                llm = _LLMFactory.create(groq_api_key=groq_api_key)
+            from .llm_providers import LLMFactory as _LLMFactory
 
-            response_msg = llm.invoke(prompt)
-            response = response_msg.content if hasattr(response_msg, 'content') else str(response_msg)
-            
+            def _build_llm(api_key: Optional[str]):
+                if api_key:
+                    return _LLMFactory.create(groq_api_key=api_key)
+                return self._llm_provider
+
+            def _is_rate_limit_or_auth_error(err: Exception) -> bool:
+                msg = str(err).lower()
+                return any(
+                    sig in msg
+                    for sig in (
+                        "429", "rate_limit", "rate limit", "quota",
+                        "401", "invalid_api_key", "invalid api key",
+                        "unauthorized",
+                    )
+                )
+
+            response = None
+            current_key_info = None
+            current_api_key = groq_api_key
+            llm = _build_llm(current_api_key)
+
+            # When the pool is available, prefer pool keys (rotates load).
+            if key_pool is not None and getattr(key_pool, "size", 0) > 0:
+                current_key_info = key_pool.next_key()
+                if current_key_info:
+                    current_api_key = current_key_info["plain_key"]
+                    llm = _build_llm(current_api_key)
+
+            # Retry up to (pool_size) times when pool is present, else 1.
+            max_attempts = max(1, key_pool.size) if key_pool is not None else 1
+            last_err: Optional[Exception] = None
+            for attempt in range(max_attempts):
+                try:
+                    response_msg = llm.invoke(prompt)
+                    response = response_msg.content if hasattr(response_msg, 'content') else str(response_msg)
+                    if key_pool is not None and current_key_info is not None:
+                        key_pool.mark_success(current_key_info["id"])
+                    last_err = None
+                    break
+                except Exception as invoke_err:
+                    last_err = invoke_err
+                    is_rl = _is_rate_limit_or_auth_error(invoke_err)
+                    logger.warning(
+                        "Topic-extract LLM call failed (attempt %d/%d, rate_limit=%s, key=%s): %s",
+                        attempt + 1, max_attempts, is_rl,
+                        (current_key_info or {}).get("name", "<env>"),
+                        invoke_err,
+                    )
+                    if key_pool is not None and current_key_info is not None:
+                        key_pool.mark_error(current_key_info["id"])
+                    # If not a recoverable error or no pool to rotate, bail out.
+                    if not is_rl or key_pool is None:
+                        break
+                    next_info = key_pool.next_key()
+                    if next_info is None:
+                        logger.error("Topic-extract: key pool exhausted")
+                        break
+                    current_key_info = next_info
+                    current_api_key = next_info["plain_key"]
+                    llm = _build_llm(current_api_key)
+
+            if response is None:
+                # All attempts failed — re-raise so caller can mark the job /
+                # surface a meaningful message instead of returning 0 topics.
+                if last_err is not None:
+                    raise last_err
+                return []
+
             logger.info(f"LLM response for topics: {response[:200]}...")
             
             # Parse topics
@@ -837,6 +917,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Extract topics for a specific file by filename."""
         self._ensure_initialized()
@@ -872,7 +953,44 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             if matching:
                 file_hash = matching[0].file_hash
                 course_id = matching[0].course_id
-        
+
+        # Final fallback: case/whitespace/comma-insensitive match across the
+        # registry. Frontend may pass the raw display_name when the /indexed
+        # list filtered the canonical doc out (e.g. transient Canvas-permission
+        # check failure), so an exact-string lookup will miss.
+        if not file_hash:
+            def _norm(name: str) -> str:
+                return " ".join((name or "").lower().replace(",", "").split())
+
+            target = _norm(filename)
+            target_base = target[:-4] if target.endswith(".pdf") else target
+
+            indexed_registry = self._load_indexed_registry(user_id)
+            for hash_val, data in indexed_registry.items():
+                cand = _norm(data.get("filename") or "")
+                cand_base = cand[:-4] if cand.endswith(".pdf") else cand
+                if cand == target or cand_base == target_base or (
+                    target_base and (target_base in cand_base or cand_base in target_base)
+                ):
+                    file_hash = hash_val
+                    course_id = data.get("course_id")
+                    break
+
+            if not file_hash:
+                try:
+                    all_meta = self._collection_manager.registry.get_all(user_id=user_id)
+                    for meta in all_meta:
+                        cand = _norm(meta.filename or "")
+                        cand_base = cand[:-4] if cand.endswith(".pdf") else cand
+                        if cand == target or cand_base == target_base or (
+                            target_base and (target_base in cand_base or cand_base in target_base)
+                        ):
+                            file_hash = meta.file_hash
+                            course_id = meta.course_id
+                            break
+                except Exception:
+                    pass
+
         if not file_hash:
             return {
                 "success": False,
@@ -887,6 +1005,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 course_id=course_id,
                 user_id=user_id,
                 groq_api_key=groq_api_key,
+                key_pool=key_pool,
             )
             if topics and db_session and user_id:
                 try:
@@ -896,6 +1015,35 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         _uuid.UUID(user_id),
                         source=RAGSourceType.CANVAS,
                     )
+                    if row is None:
+                        # File was indexed via legacy JSON registry but never
+                        # got a DB row. Auto-register so future queries (and
+                        # the UI's topic_count) see it.
+                        try:
+                            collection_name = (
+                                self._collection_manager.get_collection_name(file_hash)
+                                if self._collection_manager else f"canvas_{file_hash[:12]}"
+                            )
+                        except Exception:
+                            collection_name = f"canvas_{file_hash[:12]}"
+                        try:
+                            row = SyncRAGCollectionRepository.register(
+                                db_session,
+                                user_id=_uuid.UUID(user_id),
+                                file_hash=file_hash,
+                                filename=filename,
+                                collection_name=collection_name,
+                                source=RAGSourceType.CANVAS,
+                                course_id=course_id,
+                                chunk_count=0,
+                                is_indexed=True,
+                            )
+                        except Exception as reg_err:
+                            logger.warning(
+                                "Could not auto-register DB row for legacy file_hash=%s: %s",
+                                file_hash, reg_err,
+                            )
+                            row = None
                     if row:
                         SyncRAGCollectionRepository.save_topics(
                             db_session,
@@ -1015,13 +1163,27 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     source=RAGSourceType.CANVAS,
                 )
                 for r in rows:
+                    topic_count = r.get("topic_count", 0)
+                    # Fallback: if DB has no topic row yet (legacy doc, or a
+                    # previous extract failed to persist to RAGDocumentTopic
+                    # because file_hash mismatched), use JSON topic storage so
+                    # the UI still shows the actual count.
+                    if topic_count == 0:
+                        try:
+                            json_topics = self._topic_storage.get_topics(
+                                r["file_hash"], user_id=user_id,
+                            ) or []
+                            if json_topics:
+                                topic_count = len(json_topics)
+                        except Exception:
+                            pass
                     db_documents.append({
                         "filename": r["filename"],
                         "original_filename": r["filename"],
                         "file_hash": r["file_hash"],
                         "indexed_at": r.get("indexed_at"),
                         "chunks_added": r.get("chunk_count", 0),
-                        "topic_count": r.get("topic_count", 0),
+                        "topic_count": topic_count,
                         "course_id": r.get("course_id"),
                     })
                     db_seen_hashes.add(r["file_hash"])
@@ -1221,6 +1383,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
+        *,
+        include_course_domain: bool = False,
+        domain_quota_ratio: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Generate quiz from Canvas documents."""
         retrieval = self.retrieve_documents_for_quiz(
@@ -1229,6 +1394,9 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             selected_documents=selected_documents,
             user_id=user_id,
             db_session=db_session,
+            include_course_domain=include_course_domain,
+            domain_quota_ratio=domain_quota_ratio,
+            groq_api_key=groq_api_key,
         )
         if not retrieval.get("success"):
             return {
@@ -1340,62 +1508,184 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         selected_documents: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
-    ) -> tuple[Optional[List[str]], Dict[str, str]]:
-        """Resolve selected Canvas docs to authoritative collection names."""
-        target_hashes: Optional[List[str]] = None
-        hash_to_collection: Dict[str, str] = {}
+        *,
+        include_course_domain: bool = False,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Resolve selected Canvas docs into lecture and (optional) domain targets.
 
+        Returns
+        -------
+        ``(lecture_targets, domain_targets)`` where each target is a dict with
+        keys ``file_hash``, ``collection_name``, ``language`` (Optional[str]),
+        and ``role`` ("lecture" | "domain").
+
+        Behavior
+        --------
+        * Lecture targets come from ``selected_documents`` (preferred) or the
+          full per-user Canvas index. This preserves the existing flow.
+        * If ``include_course_domain`` is True, an extra bucket of domain
+          targets is added — one per file marked as course domain knowledge
+          for the lecture's Canvas course. Domain targets reuse the
+          deterministic per-file collection name and do NOT require the
+          requesting user to have a row in ``rag_collections`` for that file.
+        * If a selected file is itself marked as a domain doc for the same
+          course, it is **coerced** into the domain bucket (with a log) so
+          the SOURCE ROLES policy still applies correctly.
+        * If lecture files span multiple Canvas courses, domain injection
+          is skipped (logged) — V1 only handles a single-course quiz.
+        """
+        lecture_targets: List[Dict[str, Any]] = []
+        domain_targets: List[Dict[str, Any]] = []
+        lecture_hashes_seen: set = set()
+
+        # ── 1. Resolve lecture rows (existing behavior) ───────────────
+        rows: List[Any] = []
         if selected_documents:
-            target_hashes = []
             if db_session and user_id:
                 try:
                     rows = SyncRAGCollectionRepository.get_by_filenames(
                         db_session, selected_documents, _uuid.UUID(user_id),
                         source=RAGSourceType.CANVAS,
                     )
-                    target_hashes = [r.file_hash for r in rows]
-                    hash_to_collection = {
-                        r.file_hash: r.collection_name
-                        for r in rows
-                        if r.collection_name
-                    }
-                    quiz_logger.info(f"Canvas DB get_by_filenames: {len(rows)} rows: {[(r.filename, r.file_hash[:8]) for r in rows]}")
+                    quiz_logger.info(
+                        f"Canvas DB get_by_filenames: {len(rows)} rows: "
+                        f"{[(r.filename, r.file_hash[:8]) for r in rows]}"
+                    )
                 except Exception as e:
                     logger.warning(f"Canvas DB get_by_filenames failed: {e}")
                     quiz_logger.warning(f"Canvas DB get_by_filenames failed: {e}")
                     db_session.rollback()
-            if not target_hashes:
-                matching = self._collection_manager.registry.get_by_filenames(selected_documents, user_id=user_id)
-                target_hashes = [m.file_hash for m in matching]
-                if not hash_to_collection:
-                    hash_to_collection = {
-                        m.file_hash: m.collection_name
-                        for m in matching
-                        if m.collection_name
-                    }
-                quiz_logger.info(f"Canvas registry fallback: matched {len(matching)} of {len(selected_documents)} docs: {[(m.filename, m.file_hash[:8]) for m in matching]}")
-            quiz_logger.info(f"Canvas resolved {len(target_hashes)} hashes from {len(selected_documents)} docs: {selected_documents} -> {[h[:8] for h in target_hashes]}")
+                    rows = []
+            if not rows:
+                matching = self._collection_manager.registry.get_by_filenames(
+                    selected_documents, user_id=user_id,
+                )
+                # Adapt registry meta -> attribute-equivalent objects
+                rows = matching
+                quiz_logger.info(
+                    f"Canvas registry fallback: matched {len(matching)} of "
+                    f"{len(selected_documents)} docs"
+                )
         elif db_session and user_id:
             try:
                 rows = SyncRAGCollectionRepository.get_all(
-                    db_session,
-                    _uuid.UUID(user_id),
+                    db_session, _uuid.UUID(user_id),
                     source=RAGSourceType.CANVAS,
                 )
-                target_hashes = [row.file_hash for row in rows]
-                hash_to_collection = {
-                    row.file_hash: row.collection_name
-                    for row in rows
-                    if row.collection_name
-                }
             except Exception as e:
                 logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
                 quiz_logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
                 db_session.rollback()
+                rows = []
         else:
-            quiz_logger.warning(f"canvas selected_documents is None/empty ({selected_documents!r}) — will query all user-scoped collections!")
+            quiz_logger.warning(
+                f"canvas selected_documents is None/empty ({selected_documents!r}) "
+                "— will query all user-scoped collections!"
+            )
 
-        return target_hashes, hash_to_collection
+        # ── 2. Determine the dominant course_id (V1: single-course only) ──
+        course_ids = {
+            getattr(r, "course_id", None) for r in rows
+            if getattr(r, "course_id", None) is not None
+        }
+        single_course_id: Optional[int] = None
+        if len(course_ids) == 1:
+            single_course_id = next(iter(course_ids))
+        elif len(course_ids) > 1:
+            quiz_logger.warning(
+                "quiz_targets_multi_course course_ids=%s — domain injection skipped",
+                sorted(course_ids),
+            )
+
+        # ── 3. Pre-compute domain marks for that course (if any) ──────
+        domain_hashes_for_course: set = set()
+        if (
+            include_course_domain
+            and single_course_id is not None
+            and db_session is not None
+        ):
+            try:
+                domain_hashes_for_course = set(
+                    SyncCanvasCourseDomainDocRepository.get_enabled_hashes(
+                        db_session, single_course_id,
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch domain marks for course={single_course_id}: {e}")
+                quiz_logger.warning(f"domain_marks_fetch_failed course_id={single_course_id} err={e}")
+                if db_session is not None:
+                    db_session.rollback()
+                domain_hashes_for_course = set()
+
+        # ── 4. Build lecture targets, coercing domain-marked selections ──
+        coerced_to_domain: List[Dict[str, Any]] = []
+        for r in rows:
+            file_hash = getattr(r, "file_hash", None)
+            if not file_hash:
+                continue
+            collection_name = getattr(r, "collection_name", None)
+            language = getattr(r, "language", None)
+            target = {
+                "file_hash": file_hash,
+                "collection_name": collection_name,
+                "language": language,
+                "role": "lecture",
+            }
+            if file_hash in domain_hashes_for_course:
+                target["role"] = "domain"
+                coerced_to_domain.append(target)
+                quiz_logger.info(
+                    "quiz_lecture_selection_coerced_to_domain "
+                    f"file_hash={file_hash[:8]} course_id={single_course_id}"
+                )
+                continue
+            if file_hash in lecture_hashes_seen:
+                continue
+            lecture_hashes_seen.add(file_hash)
+            lecture_targets.append(target)
+
+        # ── 5. Inject domain targets (excluding any already in lectures) ──
+        if (
+            include_course_domain
+            and single_course_id is not None
+            and db_session is not None
+            and domain_hashes_for_course
+        ):
+            extra_hashes = [
+                h for h in domain_hashes_for_course
+                if h not in lecture_hashes_seen
+            ]
+            language_map: Dict[str, str] = {}
+            try:
+                language_map = SyncRAGCollectionRepository.get_language_by_hashes(
+                    db_session, extra_hashes,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to bulk-fetch languages for domain hashes: {e}")
+                if db_session is not None:
+                    db_session.rollback()
+            seen_domain: set = {t["file_hash"] for t in coerced_to_domain}
+            for fh in extra_hashes:
+                if fh in seen_domain:
+                    continue
+                seen_domain.add(fh)
+                collection_name = CollectionNameGenerator.for_canvas_file(
+                    fh, single_course_id,
+                )
+                domain_targets.append({
+                    "file_hash": fh,
+                    "collection_name": collection_name,
+                    "language": language_map.get(fh),
+                    "role": "domain",
+                })
+            domain_targets.extend(coerced_to_domain)
+
+        elif coerced_to_domain:
+            # Domain injection feature is on but no extra unmarked domain
+            # files; still keep coerced ones so SOURCE ROLES applies.
+            domain_targets.extend(coerced_to_domain)
+
+        return lecture_targets, domain_targets
 
     def retrieve_documents_for_quiz(
         self,
@@ -1404,6 +1694,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         selected_documents: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        *,
+        include_course_domain: bool = False,
+        domain_quota_ratio: Optional[float] = None,
+        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Retrieve Canvas quiz documents without executing the LLM step locally."""
         self._ensure_initialized()
@@ -1417,19 +1711,85 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             }
 
         logger.info(f"Generating Canvas quiz: topics={topics}, num_questions={num_questions}")
-        quiz_logger.info(f"canvas generate_quiz called: selected_documents={selected_documents}, user_id={user_id}, db_session={'present' if db_session else 'None'}")
-
-        target_hashes, hash_to_collection = self._resolve_quiz_targets(
-            selected_documents=selected_documents,
-            user_id=user_id,
-            db_session=db_session,
+        quiz_logger.info(
+            f"canvas generate_quiz called: selected_documents={selected_documents}, "
+            f"user_id={user_id}, db_session={'present' if db_session else 'None'}, "
+            f"include_course_domain={include_course_domain}, "
+            f"domain_quota_ratio={domain_quota_ratio}"
         )
+
+        # Feature flag gates domain injection completely.
+        from backend.core.config import settings as _settings
+        feature_on = bool(getattr(_settings, "ENABLE_COURSE_DOMAIN_DOCS", False))
+        effective_include_domain = bool(include_course_domain) and feature_on
+        try:
+            lecture_targets, domain_targets = self._resolve_quiz_targets(
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=db_session,
+                include_course_domain=effective_include_domain,
+            )
+        except Exception as exc:
+            logger.warning(
+                "quiz target resolution with domain failed (%s); "
+                "falling back to lecture-only", exc,
+            )
+            quiz_logger.warning(
+                f"quiz_targets_resolve_error err={exc} -- falling back to lecture-only"
+            )
+            lecture_targets, domain_targets = self._resolve_quiz_targets(
+                selected_documents=selected_documents,
+                user_id=user_id,
+                db_session=db_session,
+                include_course_domain=False,
+            )
+
+        # Backward-compatible flat lists for prepare_quiz_documents.
+        all_targets = lecture_targets + domain_targets
+        target_hashes = [t["file_hash"] for t in all_targets] if all_targets else None
+        hash_to_collection = {
+            t["file_hash"]: t["collection_name"]
+            for t in all_targets
+            if t.get("collection_name")
+        }
+        roles_by_hash = {t["file_hash"]: t["role"] for t in all_targets}
+        language_by_hash = {
+            t["file_hash"]: t["language"]
+            for t in all_targets
+            if t.get("language")
+        }
+
+        # Resolve effective domain ratio (clamped at retriever).
+        effective_ratio: Optional[float] = None
+        if effective_include_domain and domain_targets:
+            if domain_quota_ratio is None:
+                effective_ratio = float(
+                    getattr(_settings, "DEFAULT_DOMAIN_QUOTA_RATIO", 0.3)
+                )
+            else:
+                effective_ratio = float(domain_quota_ratio)
+
+        quiz_logger.info(
+            "quiz_targets course_lecture=%d domain=%d include_domain=%s ratio=%s "
+            "lecture_hashes=%s domain_hashes=%s",
+            len(lecture_targets),
+            len(domain_targets),
+            effective_include_domain,
+            effective_ratio,
+            [t["file_hash"][:8] for t in lecture_targets[:8]],
+            [t["file_hash"][:8] for t in domain_targets[:8]],
+        )
+
         prepared = self._quiz_generator.prepare_quiz_documents(
             topics=topics,
             num_questions=num_questions,
             target_file_hashes=target_hashes,
             user_id=user_id,
             hash_to_collection_name=hash_to_collection or None,
+            roles_by_hash=roles_by_hash if roles_by_hash else None,
+            language_by_hash=language_by_hash if language_by_hash else None,
+            domain_quota_ratio=effective_ratio,
+            groq_api_key=groq_api_key,
         )
         if not prepared.get("success"):
             return prepared
@@ -1440,6 +1800,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             "topics": prepared["topics"],
             "documents": prepared["raw_documents"],
             "_resolved_hashes": len(target_hashes) if target_hashes is not None else "all",
+            "_lecture_count": len(lecture_targets),
+            "_domain_count": len(domain_targets),
         }
     
     def reset_index(self) -> Dict[str, Any]:

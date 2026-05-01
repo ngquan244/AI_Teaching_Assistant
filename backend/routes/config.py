@@ -26,6 +26,23 @@ def get_config(user: CurrentUser):
     )
 
 
+@router.get("/public")
+def get_public_config() -> Dict[str, object]:
+    """Public, unauthenticated subset of configuration.
+
+    Used by the frontend to decide which feature flags to surface in the UI
+    (e.g. course-shared domain knowledge). Never include secrets.
+    """
+    return {
+        "enable_course_domain_docs": bool(
+            getattr(settings, "ENABLE_COURSE_DOMAIN_DOCS", False)
+        ),
+        "default_domain_quota_ratio": float(
+            getattr(settings, "DEFAULT_DOMAIN_QUOTA_RATIO", 0.3)
+        ),
+    }
+
+
 # =============================================================================
 # Panel Visibility (public – any authenticated user can read)
 # =============================================================================

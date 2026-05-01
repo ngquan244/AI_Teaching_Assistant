@@ -8,7 +8,7 @@ Completely separate from uploaded document routes.
 import asyncio
 import logging
 import uuid as _uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -22,7 +22,11 @@ from backend.database.base import SessionLocal
 from backend.database.models.job import JobType
 from backend.database.models.rag_document import RAGSourceType
 from backend.modules.document_rag.canvas_rag_service import get_canvas_rag_service
-from backend.modules.document_rag.rag_repository import RAGCollectionRepository, SyncRAGCollectionRepository
+from backend.modules.document_rag.rag_repository import (
+    RAGCollectionRepository,
+    SyncRAGCollectionRepository,
+    SyncCanvasCourseDomainDocRepository,
+)
 from backend.services.canvas_connection import resolve_canvas_connection_async
 from backend.services.canvas_permission import canvas_permission
 from backend.services.canvas_service import fetch_canvas_courses
@@ -92,6 +96,9 @@ class CanvasGenerateQuizRequest(BaseModel):
     language: str = "vi"
     k: int = 10
     selected_documents: Optional[List[str]] = None
+    # ── V1: course-level shared domain knowledge ───────────────────────
+    include_course_domain: bool = True
+    domain_quota_ratio: Optional[float] = None  # clamped to [0.0, 0.6] downstream
 
 
 class AsyncJobResponse(BaseModel):
@@ -199,8 +206,14 @@ async def _check_canvas_permission(
     course_id: Optional[int] = None,
     filename: Optional[str] = None,
     user_id: Optional[str] = None,
+    *,
+    require_privileged_role: bool = False,
 ) -> None:
-    """Validate the active Canvas connection can access the relevant course."""
+    """Validate the active Canvas connection can access the relevant course.
+
+    When ``require_privileged_role=True`` the token must additionally hold
+    a teacher / TA / designer enrollment on the course (V2 mark/unmark).
+    """
     cid = course_id
     if cid is None and filename and user_id:
         cid = _resolve_course_id_for_filename(filename, user_id)
@@ -220,6 +233,8 @@ async def _check_canvas_permission(
         )
 
     await canvas_permission.validate_course_access(canvas_base_url, canvas_token, cid)
+    if require_privileged_role:
+        await canvas_permission.require_privileged_role(canvas_base_url, canvas_token, cid)
 
 
 async def _require_accessible_document_names(
@@ -580,6 +595,8 @@ async def generate_quiz_from_canvas_documents(
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=db,
+                include_course_domain=req.include_course_domain,
+                domain_quota_ratio=req.domain_quota_ratio,
             )
 
     return await asyncio.to_thread(_do_generate)
@@ -646,6 +663,8 @@ async def async_canvas_generate_quiz(
             "selected_documents": selected_documents,
             "user_id": str(user.id),
             "source": "canvas",
+            "include_course_domain": request.include_course_domain,
+            "domain_quota_ratio": request.domain_quota_ratio,
         }
 
         job = await job_service.create_job(
@@ -785,3 +804,268 @@ async def async_extract_topics(
     except Exception:
         logger.exception("Error queueing canvas extract topics job")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
+
+
+# =====================================================================
+# V1: Course-level shared domain knowledge (feature flag gated)
+# =====================================================================
+
+class CourseDomainDocsMarkRequest(BaseModel):
+    """Mark a list of indexed Canvas files as course-level shared domain docs."""
+    file_hashes: List[str]
+
+
+@router.get("/courses/{course_id}/documents")
+async def list_course_documents(
+    course_id: int,
+    http_request: Request,
+    user: CurrentUser,
+):
+    """List indexed documents for a course, enriched with `language` and
+    `is_course_domain` flags (V1 course-domain feature)."""
+    await _check_canvas_permission(
+        http_request, course_id=course_id, user_id=str(user.id),
+    )
+    user_id = str(user.id)
+
+    def _do() -> Dict[str, Any]:
+        service = get_canvas_rag_service()
+        with SessionLocal() as db:
+            listed = service.list_indexed_documents(user_id=user_id, db_session=db)
+            documents = [
+                d for d in listed.get("documents", [])
+                if d.get("course_id") == course_id
+            ]
+            hashes = [d["file_hash"] for d in documents if d.get("file_hash")]
+
+            language_map: Dict[str, Optional[str]] = {}
+            try:
+                language_map = SyncRAGCollectionRepository.get_language_by_hashes(db, hashes)
+            except Exception as exc:
+                logger.warning("get_language_by_hashes failed: %s", exc)
+                db.rollback()
+
+            domain_set: set = set()
+            domain_rows: List[Any] = []
+            try:
+                domain_set = SyncCanvasCourseDomainDocRepository.get_marked_subset(
+                    db, course_id, hashes,
+                )
+                domain_rows = SyncCanvasCourseDomainDocRepository.list_for_course(
+                    db, course_id, include_disabled=False,
+                )
+            except Exception as exc:
+                logger.warning("course domain marks lookup failed: %s", exc)
+                db.rollback()
+            marked_by_map = {row.file_hash: row.marked_by_user_id for row in domain_rows}
+
+            for d in documents:
+                fh = d.get("file_hash")
+                d["language"] = language_map.get(fh)
+                d["is_course_domain"] = fh in domain_set
+                marker = marked_by_map.get(fh)
+                d["marked_by_user_id"] = str(marker) if marker is not None else None
+
+            return {"success": True, "documents": documents, "count": len(documents)}
+
+    return await asyncio.to_thread(_do)
+
+
+@router.post("/courses/{course_id}/domain-documents")
+async def mark_course_domain_documents(
+    course_id: int,
+    body: CourseDomainDocsMarkRequest,
+    http_request: Request,
+    user: CurrentUser,
+):
+    """Mark indexed Canvas files as course-level shared domain knowledge.
+
+    **Eligibility rule (binding):** only documents indexed through the
+    Canvas course-document pipeline (``source=CANVAS``) AND belonging to
+    the target course are eligible. The request is **atomic** — if any
+    requested hash is ineligible, no rows are inserted.
+    """
+    if not getattr(settings, "ENABLE_COURSE_DOMAIN_DOCS", False):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "FEATURE_DISABLED", "message": "Course-domain feature is disabled"},
+        )
+
+    await _check_canvas_permission(
+        http_request,
+        course_id=course_id,
+        user_id=str(user.id),
+        require_privileged_role=True,
+    )
+    if not body.file_hashes:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "EMPTY_PAYLOAD", "message": "file_hashes is required"},
+        )
+
+    file_hashes = list({h for h in body.file_hashes if h})
+    if not file_hashes:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "EMPTY_PAYLOAD", "message": "file_hashes is required"},
+        )
+
+    user_uuid = user.id
+
+    def _validate_and_mark():
+        with SessionLocal() as db:
+            try:
+                # ── Eligibility check (Canvas-only + same course) ──
+                rows = SyncRAGCollectionRepository.get_by_hashes(
+                    db, file_hashes, source=RAGSourceType.CANVAS,
+                )
+                eligible_by_hash = {r.file_hash: r for r in rows}
+                not_canvas = [h for h in file_hashes if h not in eligible_by_hash]
+                if not_canvas:
+                    return {
+                        "_error": {
+                            "error": "NOT_CANVAS_DOC",
+                            "ineligible_hashes": not_canvas,
+                            "message": (
+                                "Only documents indexed through the Canvas "
+                                "course-document pipeline can be marked as "
+                                "course domain knowledge."
+                            ),
+                        },
+                        "_status": 400,
+                    }
+                wrong_course = [
+                    h for h, r in eligible_by_hash.items()
+                    if r.course_id is not None and r.course_id != course_id
+                ]
+                if wrong_course:
+                    return {
+                        "_error": {
+                            "error": "WRONG_COURSE",
+                            "ineligible_hashes": wrong_course,
+                            "message": (
+                                f"One or more files belong to a different "
+                                f"Canvas course than {course_id}."
+                            ),
+                        },
+                        "_status": 400,
+                    }
+
+                # ── Atomic upsert ──
+                inserted = SyncCanvasCourseDomainDocRepository.upsert_many(
+                    db,
+                    course_id=course_id,
+                    file_hashes=file_hashes,
+                    marked_by_user_id=user_uuid,
+                )
+                db.commit()
+                return {"_inserted": inserted}
+            except Exception:
+                db.rollback()
+                raise
+
+    try:
+        result = await asyncio.to_thread(_validate_and_mark)
+    except Exception as exc:
+        logger.exception("mark_course_domain_documents failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "INTERNAL", "message": str(exc)},
+        )
+
+    if "_error" in result:
+        raise HTTPException(status_code=result["_status"], detail=result["_error"])
+
+    return {
+        "success": True,
+        "course_id": course_id,
+        "marked_count": result["_inserted"],
+        "file_hashes": file_hashes,
+    }
+
+
+@router.delete("/courses/{course_id}/domain-documents/{file_hash}")
+async def unmark_course_domain_document(
+    course_id: int,
+    file_hash: str,
+    http_request: Request,
+    user: CurrentUser,
+):
+    """Soft-delete (disable) a course-domain mark for a given file.
+
+    The file_hash must correspond to an existing **enabled** mark on the
+    target course; otherwise 404.
+    """
+    if not getattr(settings, "ENABLE_COURSE_DOMAIN_DOCS", False):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "FEATURE_DISABLED", "message": "Course-domain feature is disabled"},
+        )
+
+    await _check_canvas_permission(
+        http_request,
+        course_id=course_id,
+        user_id=str(user.id),
+        require_privileged_role=True,
+    )
+
+    def _do() -> bool:
+        with SessionLocal() as db:
+            try:
+                ok = SyncCanvasCourseDomainDocRepository.disable(
+                    db,
+                    course_id=course_id,
+                    file_hash=file_hash,
+                )
+                db.commit()
+                return ok
+            except Exception:
+                db.rollback()
+                raise
+
+    try:
+        ok = await asyncio.to_thread(_do)
+    except Exception as exc:
+        logger.exception("unmark_course_domain_document failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "INTERNAL", "message": str(exc)},
+        )
+
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "NOT_FOUND",
+                "message": "Domain mark not found for this course/file_hash.",
+            },
+        )
+    return {"success": True, "course_id": course_id, "file_hash": file_hash}
+
+
+@router.get("/courses/{course_id}/domain-documents")
+async def list_course_domain_documents(
+    course_id: int,
+    http_request: Request,
+    user: CurrentUser,
+    include_disabled: bool = Query(False),
+):
+    """List the course-level shared domain marks for a course."""
+    await _check_canvas_permission(
+        http_request, course_id=course_id, user_id=str(user.id),
+    )
+
+    def _do():
+        with SessionLocal() as db:
+            return SyncCanvasCourseDomainDocRepository.list_for_course(
+                db, course_id, include_disabled=include_disabled,
+            )
+
+    rows = await asyncio.to_thread(_do)
+    return {
+        "success": True,
+        "course_id": course_id,
+        "domain_documents": [r.to_dict() for r in rows],
+        "count": len(rows),
+    }
+

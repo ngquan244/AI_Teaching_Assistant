@@ -103,6 +103,13 @@ class RAGCollection(Base):
         comment="Canvas course ID (NULL for regular uploads)",
     )
 
+    # Detected language: 'vi' | 'en' | 'mixed' | NULL (unknown / pre-V1 row)
+    language: Mapped[Optional[str]] = mapped_column(
+        String(8),
+        nullable=True,
+        comment="Detected dominant language of the document",
+    )
+
     # Index metadata
     chunk_count: Mapped[int] = mapped_column(
         Integer,
@@ -161,6 +168,7 @@ class RAGCollection(Base):
             "collection_name": self.collection_name,
             "source": self.source.value if self.source else "upload",
             "course_id": self.course_id,
+            "language": self.language,
             "chunk_count": self.chunk_count,
             "is_indexed": self.is_indexed,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -232,5 +240,88 @@ class RAGDocumentTopic(Base):
             "collection_id": str(self.collection_id),
             "topics": self.topics or [],
             "extracted_at": self.extracted_at.isoformat() if self.extracted_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class CanvasCourseDomainDoc(Base):
+    """
+    Marks a Canvas-indexed file as **course-level shared domain knowledge**.
+
+    A file becomes a domain doc when a teacher (or admin) explicitly marks it
+    via the API. Domain docs are visible/usable across all students enrolled
+    in that Canvas course, and during quiz generation they are injected as a
+    secondary supporting bucket alongside the student's own lecture selection.
+
+    Identity is by (course_id, file_hash) so that any user's per-file Chroma
+    collection (which is named deterministically from file_hash + course_id)
+    can be reused without re-indexing.
+    """
+    __tablename__ = "canvas_course_domain_docs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        comment="Domain mark identifier",
+    )
+
+    course_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        comment="Canvas course ID this mark applies to",
+    )
+
+    file_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="MD5 of the file (matches RAGCollection.file_hash)",
+    )
+
+    marked_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="User who marked this file as domain knowledge",
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="False acts as a soft-delete (reversible unmark)",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("course_id", "file_hash", name="uq_course_domain_doc"),
+        Index("ix_course_domain_docs_course_id", "course_id"),
+        Index(
+            "ix_course_domain_docs_course_enabled",
+            "course_id",
+            "enabled",
+        ),
+        {"comment": "Course-level shared domain document marks (V1 RAG)"},
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "course_id": self.course_id,
+            "file_hash": self.file_hash,
+            "marked_by_user_id": str(self.marked_by_user_id) if self.marked_by_user_id else None,
+            "enabled": self.enabled,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

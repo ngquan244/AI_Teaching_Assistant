@@ -14,6 +14,7 @@ from .rag_document import (
     RAGCollection,
     RAGDocumentTopic,
     RAGSourceType,
+    CanvasCourseDomainDoc,
 )
 from .invite_code import (
     AppSetting,
@@ -44,6 +45,7 @@ __all__ = [
     "RAGCollection",
     "RAGDocumentTopic",
     "RAGSourceType",
+    "CanvasCourseDomainDoc",
     "AppSetting",
     "InviteCode",
     "InviteCodeUsage",

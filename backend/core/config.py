@@ -335,6 +335,18 @@ class Settings(BaseSettings):
     
     # AI Model settings
     TEMPERATURE: float = 0.3
+
+    # ==========================================================================
+    # Feature flags — Course-level domain knowledge (RAG V1)
+    # ==========================================================================
+    # When False, quiz generation ignores course_domain marks entirely
+    # (per-request `include_course_domain` is also ignored).
+    ENABLE_COURSE_DOMAIN_DOCS: bool = False
+
+    # Default fraction of the retrieval budget reserved for domain chunks
+    # when the per-request value is not provided. Clamped to [0.0, 0.4]
+    # at the retriever (lecture floor 60%).
+    DEFAULT_DOMAIN_QUOTA_RATIO: float = 0.3
     
     # ==========================================================================
     # UI Configuration (Gradio — legacy, set via .env if needed)

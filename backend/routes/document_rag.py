@@ -924,13 +924,52 @@ def check_llm_status(user: CurrentUser):
     
     Tests the connection to the current LLM provider
     and returns detailed status information.
+
+    NOTE: result is cached for 30s to avoid hammering Groq with health-check
+    pings (which would consume daily token quota and spam the logs).
     """
+    import time as _time
+
+    cache = getattr(check_llm_status, "_cache", None)
+    if cache and (_time.time() - cache["at"]) < 30:
+        return cache["status"]
+
     try:
         rag_service = get_rag_service()
         status = rag_service.check_llm_status()
-        
+
+        # If singleton key got rate-limited, try pool keys before reporting
+        # disconnected so admins/users see the *aggregate* health.
+        if (
+            isinstance(status, dict)
+            and not status.get("connected")
+            and status.get("error_type") in ("rate_limit", "authentication")
+        ):
+            try:
+                from backend.database.base import SessionLocal
+                from backend.services.groq_key_pool_service import get_pool_keys_sync
+                from backend.modules.document_rag.llm_providers import LLMFactory
+
+                with SessionLocal() as db:
+                    pool_keys = get_pool_keys_sync(db)
+                for key_info in pool_keys:
+                    try:
+                        probe_llm = LLMFactory.create(groq_api_key=key_info["plain_key"])
+                        probe_status = probe_llm.check_connection()
+                        if probe_status.get("connected"):
+                            probe_status["message"] = (
+                                f"Đang dùng key dự phòng: {key_info.get('name', '?')}"
+                            )
+                            status = probe_status
+                            break
+                    except Exception:
+                        continue
+            except Exception as pool_err:
+                logger.warning("LLM-status pool probe failed: %s", pool_err)
+
+        check_llm_status._cache = {"at": _time.time(), "status": status}
         return status
-        
+
     except Exception as e:
         logger.exception("Error checking LLM status")
         return {

@@ -141,6 +141,97 @@ class CanvasPermissionService:
         else:
             self._cache.clear()
 
+    # ────────────────────────────────────────────────────────────────────
+    # V2: Role-based gating for course-domain mutations
+    # ────────────────────────────────────────────────────────────────────
+
+    # Canvas enrollment role names that imply ability to manage the course.
+    PRIVILEGED_ROLES: frozenset = frozenset({
+        "teacher", "TeacherEnrollment",
+        "ta", "TaEnrollment",
+        "designer", "DesignerEnrollment",
+    })
+
+    async def get_course_roles(
+        self,
+        canvas_base_url: str,
+        canvas_token: str,
+        course_id,
+    ) -> set:
+        """Return the set of normalized role names the current token has on
+        the given course. Empty set means student or no enrollment.
+
+        Cached separately from access checks (5 min TTL).
+        """
+        course_id_str = str(course_id)
+        cache_key = f"roles:{canvas_token[:12]}:{course_id_str}"
+
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            roles_obj, cached_at = cached  # type: ignore[misc]
+            if datetime.now() - cached_at < self._cache_ttl:
+                return set(roles_obj) if roles_obj else set()
+            del self._cache[cache_key]
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{canvas_base_url.rstrip('/')}/api/v1/courses/{course_id_str}",
+                    headers={"Authorization": f"Bearer {canvas_token}"},
+                    params={"include[]": "enrollments"},
+                    timeout=10.0,
+                )
+            if resp.status_code != 200:
+                logger.warning(
+                    "Canvas roles lookup failed: course=%s status=%d",
+                    course_id_str, resp.status_code,
+                )
+                self._cache[cache_key] = (frozenset(), datetime.now())  # type: ignore[misc]
+                return set()
+            data = resp.json()
+            enrollments = data.get("enrollments") or []
+            roles: set = set()
+            for e in enrollments:
+                rt = e.get("role") or e.get("type")
+                if rt:
+                    roles.add(str(rt))
+            self._cache[cache_key] = (frozenset(roles), datetime.now())  # type: ignore[misc]
+            return roles
+        except httpx.RequestError as exc:
+            logger.warning(
+                "Canvas roles lookup network error course=%s err=%s — assuming no privileged role",
+                course_id_str, exc,
+            )
+            return set()
+        except Exception as exc:
+            logger.error("Unexpected Canvas roles lookup error: %s", exc)
+            return set()
+
+    async def require_privileged_role(
+        self,
+        canvas_base_url: str,
+        canvas_token: str,
+        course_id,
+    ) -> set:
+        """Raise 403 INSUFFICIENT_ROLE unless the token holds at least one
+        of ``PRIVILEGED_ROLES`` on the course. Returns the role set on success.
+        """
+        roles = await self.get_course_roles(canvas_base_url, canvas_token, course_id)
+        if not (roles & self.PRIVILEGED_ROLES):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "INSUFFICIENT_ROLE",
+                    "message": (
+                        "Only teachers, TAs, or course designers can manage "
+                        "course-shared domain knowledge."
+                    ),
+                    "course_id": str(course_id),
+                    "actual_roles": sorted(roles),
+                },
+            )
+        return roles
+
 
 # ── Singleton ──
 canvas_permission = CanvasPermissionService()

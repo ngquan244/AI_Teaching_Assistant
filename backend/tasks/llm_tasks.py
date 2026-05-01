@@ -118,6 +118,8 @@ def generate_quiz(
     user_id: Optional[str] = None,
     source: str = "document",  # "document" or "canvas"
     groq_api_key: Optional[str] = None,
+    include_course_domain: bool = False,
+    domain_quota_ratio: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Generate quiz questions from indexed documents.
@@ -152,6 +154,8 @@ def generate_quiz(
                 "selected_documents": selected_documents,
                 "user_id": user_id,
                 "source": source,
+                "include_course_domain": include_course_domain,
+                "domain_quota_ratio": domain_quota_ratio,
             },
             timeout=120,
         )

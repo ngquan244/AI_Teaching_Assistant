@@ -667,6 +667,13 @@ GROUNDING POLICY:
 6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
 7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
 
+SOURCE ROLES:
+- Each chunk in SOURCE MATERIAL may be tagged [lecture] or [domain]. Untagged chunks are treated as [lecture].
+- [lecture] chunks define the in-scope topics that questions MUST be about.
+- [domain] chunks are course-level shared knowledge meant to add depth, examples, or precise terminology to a concept that is already covered by a [lecture] chunk.
+- Do NOT generate any question whose answer is supported ONLY by [domain] chunks. Every question's anchoring evidence must include at least one [lecture] chunk.
+- When a fact appears in both [lecture] and [domain] chunks, prefer the wording, scope, and emphasis of the [lecture] chunk.
+
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
 - Follow each slot's topic_group, coverage_item, support_level, question_form, and trap_type.
@@ -725,6 +732,13 @@ GROUNDING POLICY:
 5. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
 6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
 7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+
+SOURCE ROLES:
+- Each chunk in SOURCE MATERIAL may be tagged [lecture] or [domain]. Untagged chunks are treated as [lecture].
+- [lecture] chunks define the in-scope topics that questions MUST be about.
+- [domain] chunks are course-level shared knowledge meant to add depth, examples, or precise terminology to a concept that is already covered by a [lecture] chunk.
+- Do NOT generate any question whose answer is supported ONLY by [domain] chunks. Every question's anchoring evidence must include at least one [lecture] chunk.
+- When a fact appears in both [lecture] and [domain] chunks, prefer the wording, scope, and emphasis of the [lecture] chunk.
 
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
@@ -1392,17 +1406,48 @@ Return ONLY valid JSON, no additional text.""")
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        # ---- V1 course-level domain knowledge extensions ----
+        roles_by_hash: Optional[Dict[str, str]] = None,
+        language_by_hash: Optional[Dict[str, str]] = None,
+        topic_language: Optional[str] = None,
+        domain_quota_ratio: Optional[float] = None,
+        translation_cache: Optional[Dict[str, str]] = None,
+        llm_for_translation: Optional[Any] = None,
     ) -> List[Document]:
         max_total_docs = max(1, max_total_docs)
 
         if hasattr(self.retriever, "retrieve_with_budget"):
-            return self.retriever.retrieve_with_budget(
-                query=query,
-                max_total_docs=max_total_docs,
-                target_file_hashes=target_file_hashes,
-                user_id=user_id,
-                hash_to_collection_name=hash_to_collection_name,
-            )
+            extra_kwargs: Dict[str, Any] = {}
+            if roles_by_hash is not None:
+                extra_kwargs["roles_by_hash"] = roles_by_hash
+            if language_by_hash is not None:
+                extra_kwargs["language_by_hash"] = language_by_hash
+            if topic_language is not None:
+                extra_kwargs["topic_language"] = topic_language
+            if domain_quota_ratio is not None:
+                extra_kwargs["domain_quota_ratio"] = domain_quota_ratio
+            if translation_cache is not None:
+                extra_kwargs["translation_cache"] = translation_cache
+            if llm_for_translation is not None:
+                extra_kwargs["llm_for_translation"] = llm_for_translation
+            try:
+                return self.retriever.retrieve_with_budget(
+                    query=query,
+                    max_total_docs=max_total_docs,
+                    target_file_hashes=target_file_hashes,
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection_name,
+                    **extra_kwargs,
+                )
+            except TypeError:
+                # Older retriever signature (no V1 kwargs) — retry without.
+                return self.retriever.retrieve_with_budget(
+                    query=query,
+                    max_total_docs=max_total_docs,
+                    target_file_hashes=target_file_hashes,
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection_name,
+                )
 
         retrieve_kwargs: Dict[str, Any] = {"k": max_total_docs}
         if hasattr(self.retriever, "resolve_target_file_hashes"):
@@ -2954,6 +2999,11 @@ Return ONLY valid JSON, no additional text.""")
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        # ---- V1 course-level domain knowledge extensions ----
+        roles_by_hash: Optional[Dict[str, str]] = None,
+        language_by_hash: Optional[Dict[str, str]] = None,
+        domain_quota_ratio: Optional[float] = None,
+        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Retrieve and normalize quiz documents without invoking the LLM."""
         topic_list = [item for item in (topics or []) if str(item or "").strip()]
@@ -2968,6 +3018,45 @@ Return ONLY valid JSON, no additional text.""")
                 "sources": [],
             }
 
+        # ── V1: prepare extras for the role-aware retriever ─────────────
+        translation_cache: Dict[str, str] = {}
+        topic_language: Optional[str] = None
+        llm_for_translation = None
+        if language_by_hash:
+            try:
+                from .lang_utils import detect_topic_language
+                # Use the joined topics as a representative query for language
+                # detection (cheap, deterministic).
+                joined = " | ".join(topic_list)
+                topic_language = detect_topic_language(joined)
+            except Exception as exc:
+                logger.warning("topic language detection failed: %s", exc)
+                topic_language = None
+            # Build a translation LLM (lazy); reuse the generator's LLM unless
+            # a fresh key was supplied.
+            if topic_language and any(
+                lang and lang != "mixed" and lang != topic_language
+                for lang in language_by_hash.values()
+            ):
+                try:
+                    if groq_api_key:
+                        from .llm_providers import LLMFactory as _LLMFactory
+                        llm_for_translation = _LLMFactory.create(groq_api_key=groq_api_key)
+                    else:
+                        llm_for_translation = self.llm_provider
+                except Exception as exc:
+                    logger.warning("translation LLM init failed: %s", exc)
+                    llm_for_translation = None
+
+        retrieval_extras: Dict[str, Any] = {
+            "roles_by_hash": roles_by_hash,
+            "language_by_hash": language_by_hash,
+            "topic_language": topic_language,
+            "domain_quota_ratio": domain_quota_ratio,
+            "translation_cache": translation_cache,
+            "llm_for_translation": llm_for_translation,
+        }
+
         if len(topic_list) == 1:
             retrieval_topic = topic_list[0]
             raw_budget = self._raw_pool_budget(num_questions)
@@ -2977,6 +3066,7 @@ Return ONLY valid JSON, no additional text.""")
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
                 hash_to_collection_name=hash_to_collection_name,
+                **retrieval_extras,
             )
             raw_documents = self._annotate_documents(raw_documents, retrieval_topic=retrieval_topic)
             if not raw_documents:
@@ -3026,6 +3116,7 @@ Return ONLY valid JSON, no additional text.""")
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
                 hash_to_collection_name=hash_to_collection_name,
+                **retrieval_extras,
             )
             topic_documents = self._annotate_documents(
                 topic_documents,

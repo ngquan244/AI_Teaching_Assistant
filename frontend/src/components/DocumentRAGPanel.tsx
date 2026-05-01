@@ -69,6 +69,8 @@ import {
   getCanvasDocumentTopics,
   updateCanvasDocumentTopics,
   asyncCanvasGenerateQuiz,
+  getPublicConfig,
+  type PublicConfig,
 } from '../api/canvasRag';
 import CanvasImportModal from './CanvasImportModal';
 import { savedQuizApi } from '../api/savedQuiz';
@@ -127,6 +129,29 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const [numQuestions, setNumQuestions] = useState(5);
   const [quizDifficulty, setQuizDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [quizLanguage, setQuizLanguage] = useState<'vi' | 'en'>('vi');
+
+  // V2 — course-shared domain knowledge
+  const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
+  const [includeCourseDomain, setIncludeCourseDomain] = useState(true);
+  // Stored as percentage (0–60) for the slider; converted to ratio in the request.
+  const [domainQuotaPct, setDomainQuotaPct] = useState(30);
+
+  useEffect(() => {
+    let alive = true;
+    getPublicConfig()
+      .then((cfg) => {
+        if (!alive) return;
+        setPublicConfig(cfg);
+        const pct = Math.round((cfg.default_domain_quota_ratio ?? 0.3) * 100);
+        setDomainQuotaPct(Math.min(60, Math.max(0, pct)));
+      })
+      .catch((err) => {
+        console.warn('Failed to load public config:', err);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [generatedQuiz, setGeneratedQuiz] = useState<QuizQuestion[]>([]);
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
@@ -138,6 +163,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   // Save to library states
   const [isSavingToLibrary, setIsSavingToLibrary] = useState(false);
   const [saveLibrarySuccess, setSaveLibrarySuccess] = useState(false);
+
+  // Save-quiz modal (V2 — pop-up trước khi lưu vào Kho Đề)
+  const [showSaveQuizModal, setShowSaveQuizModal] = useState(false);
+  const [saveQuizTitle, setSaveQuizTitle] = useState('');
+  const [saveQuizDescription, setSaveQuizDescription] = useState('');
+  const [saveQuizTagsInput, setSaveQuizTagsInput] = useState('');
+  const [saveQuizError, setSaveQuizError] = useState<string | null>(null);
   
   // Document and Topic selection states
   const [indexedDocuments, setIndexedDocuments] = useState<IndexedDocument[]>([]);
@@ -896,10 +928,20 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       selected_documents: docsFromTopics,
     };
 
+    // V2: attach course-domain hints only for Canvas quiz generation.
+    const canvasQuizRequest =
+      topicSource === 'canvas' && publicConfig?.enable_course_domain_docs
+        ? {
+            ...quizRequest,
+            include_course_domain: includeCourseDomain,
+            domain_quota_ratio: Math.min(0.6, Math.max(0, domainQuotaPct / 100)),
+          }
+        : quizRequest;
+
     try {
       if (topicSource === 'canvas') {
         // Canvas quiz — async via Celery
-        await quizJob.startJob(() => asyncCanvasGenerateQuiz(quizRequest));
+        await quizJob.startJob(() => asyncCanvasGenerateQuiz(canvasQuizRequest));
         // Result handled by useEffect on quizJob.job.status
       } else {
         // Document RAG quiz — async via Celery
@@ -1004,9 +1046,32 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     }
   };
 
-  // Save generated quiz to Kho Đề
-  const handleSaveToLibrary = async () => {
+  // Open the "Save to Kho Đề" modal — pre-fills sensible defaults so the
+  // user can review or edit the title/description/tags before committing.
+  const openSaveQuizModal = () => {
     if (generatedQuiz.length === 0) return;
+    const defaultTitle = quizTopic
+      ? `Quiz - ${quizTopic}`
+      : selectedTopics.length > 0
+        ? `Quiz - ${selectedTopics.map(t => t.topic).slice(0, 3).join(', ')}${selectedTopics.length > 3 ? '…' : ''}`
+        : `Quiz ${new Date().toLocaleString('vi-VN')}`;
+    setSaveQuizTitle(defaultTitle);
+    setSaveQuizDescription('');
+    setSaveQuizTagsInput(selectedTopics.map(t => t.topic).join(', '));
+    setSaveQuizError(null);
+    setSaveLibrarySuccess(false);
+    setShowSaveQuizModal(true);
+  };
+
+  // Save generated quiz to Kho Đề (called from modal "Lưu" button).
+  const confirmSaveQuiz = async () => {
+    if (generatedQuiz.length === 0) return;
+    const title = saveQuizTitle.trim();
+    if (!title) {
+      setSaveQuizError('Vui lòng nhập tên quiz.');
+      return;
+    }
+    setSaveQuizError(null);
     setIsSavingToLibrary(true);
     setSaveLibrarySuccess(false);
     try {
@@ -1033,23 +1098,33 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         points: 1.0,
       }));
 
+      const tags = saveQuizTagsInput
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean);
+
       await savedQuizApi.create({
-        title: quizTopic || `Quiz ${new Date().toLocaleDateString('vi-VN')}`,
-        description: null,
+        title,
+        description: saveQuizDescription.trim() || null,
         course_id: courseId,
         course_name: courseName,
         difficulty: quizDifficulty,
         language: quizLanguage,
         source: topicSource === 'canvas' ? 'canvas_rag' : 'rag',
         source_job_id: null,
-        tags: selectedTopics.map(t => t.topic),
+        tags,
         questions,
       });
       setSaveLibrarySuccess(true);
+      setShowSaveQuizModal(false);
       setTimeout(() => setSaveLibrarySuccess(false), 3000);
     } catch (err) {
       console.error('[DocumentRAG] Save to library failed:', err);
-      setQuizError('Lỗi khi lưu vào Kho Đề');
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        || (err as Error)?.message
+        || 'Lỗi khi lưu vào Kho Đề.';
+      setSaveQuizError(msg);
     } finally {
       setIsSavingToLibrary(false);
     }
@@ -1424,6 +1499,75 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   </select>
                 </div>
               </div>
+
+              {topicSource === 'canvas' && publicConfig?.enable_course_domain_docs && (
+                <div
+                  className="form-section"
+                  style={{
+                    margin: '12px 0 16px',
+                    padding: 12,
+                    border: '1px solid rgba(56,189,248,0.25)',
+                    borderRadius: 6,
+                    background: 'rgba(56,189,248,0.04)',
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 13,
+                      fontWeight: 500,
+                      color: '#e2e8f0',
+                      cursor: isGeneratingQuiz ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={includeCourseDomain}
+                      disabled={isGeneratingQuiz}
+                      onChange={(e) => setIncludeCourseDomain(e.target.checked)}
+                    />
+                    Include course-shared domain knowledge
+                  </label>
+                  <p style={{
+                    margin: '6px 0 10px 24px',
+                    fontSize: 11,
+                    color: '#94a3b8',
+                    lineHeight: 1.45,
+                  }}>
+                    Pulls extra context from documents the instructor marked as
+                    course-shared. Only Canvas-pipeline documents are eligible
+                    sources — uploaded personal documents never participate.
+                  </p>
+
+                  {includeCourseDomain && (
+                    <div style={{ marginLeft: 24 }}>
+                      <label style={{
+                        display: 'block',
+                        fontSize: 12,
+                        color: '#cbd5e1',
+                        marginBottom: 4,
+                      }}>
+                        Domain ratio: <strong>{domainQuotaPct}%</strong>
+                        <span style={{ color: '#64748b', marginLeft: 6 }}>
+                          (of retrieved context budget)
+                        </span>
+                      </label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={60}
+                        step={5}
+                        value={domainQuotaPct}
+                        disabled={isGeneratingQuiz}
+                        onChange={(e) => setDomainQuotaPct(Number(e.target.value))}
+                        style={{ width: '100%', maxWidth: 320 }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               <button
                 className="btn btn-primary btn-generate"
@@ -2207,7 +2351,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 )}
                 <button
                   className={`qm-footer-btn qm-btn-save ${saveLibrarySuccess ? 'qm-btn-save-ok' : ''}`}
-                  onClick={handleSaveToLibrary}
+                  onClick={openSaveQuizModal}
                   disabled={generatedQuiz.length === 0 || isSavingToLibrary}
                   title="Lưu vào Kho Đề Thi"
                 >
@@ -2238,6 +2382,135 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           onDeployToCanvas(generatedQuiz);
         } : undefined}
       />
+
+      {/* Save-to-Kho-Đề Modal (V2) */}
+      {showSaveQuizModal && (
+        <div
+          className="sqm-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSavingToLibrary) {
+              setShowSaveQuizModal(false);
+            }
+          }}
+        >
+          <div className="sqm-modal" role="dialog" aria-modal="true" aria-labelledby="sqm-title">
+            <div className="sqm-header">
+              <div className="sqm-header-icon">
+                <Library size={20} />
+              </div>
+              <div className="sqm-header-text">
+                <h3 id="sqm-title" className="sqm-title">Lưu vào Kho Đề Thi</h3>
+                <p className="sqm-subtitle">
+                  {generatedQuiz.length} câu hỏi · {quizDifficulty === 'easy' ? 'Dễ' : quizDifficulty === 'medium' ? 'Trung bình' : 'Khó'} · {quizLanguage === 'vi' ? 'Tiếng Việt' : 'English'}
+                </p>
+              </div>
+              <button
+                className="sqm-close"
+                onClick={() => !isSavingToLibrary && setShowSaveQuizModal(false)}
+                disabled={isSavingToLibrary}
+                aria-label="Đóng"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="sqm-body">
+              <div className="sqm-field">
+                <label className="sqm-label" htmlFor="sqm-input-title">
+                  Tên quiz <span className="sqm-required">*</span>
+                </label>
+                <input
+                  id="sqm-input-title"
+                  type="text"
+                  className="sqm-input"
+                  value={saveQuizTitle}
+                  onChange={(e) => setSaveQuizTitle(e.target.value)}
+                  placeholder="VD: Đề ôn tập chương 1 — Tương tác người máy"
+                  maxLength={200}
+                  autoFocus
+                  disabled={isSavingToLibrary}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      confirmSaveQuiz();
+                    } else if (e.key === 'Escape' && !isSavingToLibrary) {
+                      setShowSaveQuizModal(false);
+                    }
+                  }}
+                />
+                <div className="sqm-hint">{saveQuizTitle.length} / 200 ký tự</div>
+              </div>
+
+              <div className="sqm-field">
+                <label className="sqm-label" htmlFor="sqm-input-desc">
+                  Mô tả <span className="sqm-optional">(tùy chọn)</span>
+                </label>
+                <textarea
+                  id="sqm-input-desc"
+                  className="sqm-textarea"
+                  value={saveQuizDescription}
+                  onChange={(e) => setSaveQuizDescription(e.target.value)}
+                  placeholder="Mô tả ngắn gọn về quiz này, đối tượng học viên, mục tiêu kiểm tra…"
+                  rows={3}
+                  maxLength={500}
+                  disabled={isSavingToLibrary}
+                />
+                <div className="sqm-hint">{saveQuizDescription.length} / 500 ký tự</div>
+              </div>
+
+              <div className="sqm-field">
+                <label className="sqm-label" htmlFor="sqm-input-tags">
+                  Tags <span className="sqm-optional">(phân cách bằng dấu phẩy)</span>
+                </label>
+                <input
+                  id="sqm-input-tags"
+                  type="text"
+                  className="sqm-input"
+                  value={saveQuizTagsInput}
+                  onChange={(e) => setSaveQuizTagsInput(e.target.value)}
+                  placeholder="VD: chương 1, ôn tập, giữa kỳ"
+                  disabled={isSavingToLibrary}
+                />
+                {saveQuizTagsInput.trim() && (
+                  <div className="sqm-tag-preview">
+                    {saveQuizTagsInput.split(',').map(t => t.trim()).filter(Boolean).map((tag, i) => (
+                      <span key={i} className="sqm-tag-chip">{tag}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {saveQuizError && (
+                <div className="sqm-error" role="alert">
+                  <AlertCircle size={14} />
+                  <span>{saveQuizError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="sqm-footer">
+              <button
+                className="sqm-btn sqm-btn-secondary"
+                onClick={() => setShowSaveQuizModal(false)}
+                disabled={isSavingToLibrary}
+              >
+                Hủy
+              </button>
+              <button
+                className="sqm-btn sqm-btn-primary"
+                onClick={confirmSaveQuiz}
+                disabled={isSavingToLibrary || !saveQuizTitle.trim()}
+              >
+                {isSavingToLibrary ? (
+                  <><Loader2 size={15} className="spin" /> Đang lưu…</>
+                ) : (
+                  <><Save size={15} /> Lưu vào Kho Đề</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         /* ===================================================================
@@ -6093,6 +6366,266 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
             padding: 24px 16px;
             font-size: 0.82rem;
           }
+        }
+
+        /* ===================================================================
+           SAVE-QUIZ MODAL (Lưu vào Kho Đề Thi)
+        =================================================================== */
+        .sqm-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 10000;
+          background: rgba(4, 6, 14, 0.72);
+          backdrop-filter: blur(6px);
+          -webkit-backdrop-filter: blur(6px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          animation: sqmFadeIn 0.18s ease-out;
+        }
+        @keyframes sqmFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        .sqm-modal {
+          width: 100%;
+          max-width: 520px;
+          max-height: calc(100vh - 48px);
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          background: linear-gradient(180deg, #0f1424 0%, #0a0e1c 100%);
+          border: 1px solid rgba(34, 211, 238, 0.18);
+          border-radius: 16px;
+          box-shadow:
+            0 24px 60px -12px rgba(0, 0, 0, 0.7),
+            0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+            0 0 40px rgba(34, 211, 238, 0.08);
+          animation: sqmSlideUp 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+        }
+        @keyframes sqmSlideUp {
+          from { opacity: 0; transform: translateY(16px) scale(0.98); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .sqm-header {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 18px 20px;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+          background: linear-gradient(180deg, rgba(34, 211, 238, 0.06) 0%, transparent 100%);
+        }
+        .sqm-header-icon {
+          flex-shrink: 0;
+          width: 40px;
+          height: 40px;
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(135deg, rgba(34, 211, 238, 0.18), rgba(56, 189, 248, 0.12));
+          border: 1px solid rgba(34, 211, 238, 0.3);
+          color: #22d3ee;
+        }
+        .sqm-header-text {
+          flex: 1;
+          min-width: 0;
+        }
+        .sqm-title {
+          margin: 0;
+          font-size: 1.02rem;
+          font-weight: 600;
+          color: #f1f5f9;
+          letter-spacing: -0.01em;
+        }
+        .sqm-subtitle {
+          margin: 2px 0 0 0;
+          font-size: 0.78rem;
+          color: #94a3b8;
+          font-weight: 500;
+        }
+        .sqm-close {
+          flex-shrink: 0;
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
+          background: transparent;
+          border: 1px solid transparent;
+          color: #94a3b8;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.15s ease;
+        }
+        .sqm-close:hover:not(:disabled) {
+          background: rgba(244, 63, 94, 0.1);
+          border-color: rgba(244, 63, 94, 0.25);
+          color: #fb7185;
+        }
+        .sqm-close:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+        .sqm-body {
+          padding: 20px;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 18px;
+        }
+        .sqm-body::-webkit-scrollbar { width: 6px; }
+        .sqm-body::-webkit-scrollbar-thumb {
+          background: rgba(148, 163, 184, 0.2);
+          border-radius: 3px;
+        }
+        .sqm-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .sqm-label {
+          font-size: 0.82rem;
+          font-weight: 600;
+          color: #cbd5e1;
+          letter-spacing: 0.01em;
+        }
+        .sqm-required {
+          color: #fb7185;
+          margin-left: 2px;
+        }
+        .sqm-optional {
+          color: #64748b;
+          font-weight: 400;
+          font-size: 0.74rem;
+        }
+        .sqm-input,
+        .sqm-textarea {
+          width: 100%;
+          padding: 10px 12px;
+          font-size: 0.88rem;
+          color: #f1f5f9;
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(148, 163, 184, 0.2);
+          border-radius: 10px;
+          outline: none;
+          transition: all 0.15s ease;
+          font-family: inherit;
+          box-sizing: border-box;
+        }
+        .sqm-input::placeholder,
+        .sqm-textarea::placeholder {
+          color: #475569;
+        }
+        .sqm-input:focus,
+        .sqm-textarea:focus {
+          border-color: rgba(34, 211, 238, 0.55);
+          background: rgba(15, 23, 42, 0.85);
+          box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+        }
+        .sqm-input:disabled,
+        .sqm-textarea:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .sqm-textarea {
+          resize: vertical;
+          min-height: 70px;
+          line-height: 1.5;
+        }
+        .sqm-hint {
+          font-size: 0.7rem;
+          color: #64748b;
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        .sqm-tag-preview {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 4px;
+        }
+        .sqm-tag-chip {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 9px;
+          font-size: 0.72rem;
+          font-weight: 500;
+          color: #67e8f9;
+          background: rgba(34, 211, 238, 0.1);
+          border: 1px solid rgba(34, 211, 238, 0.25);
+          border-radius: 999px;
+        }
+        .sqm-error {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          padding: 10px 12px;
+          font-size: 0.8rem;
+          color: #fca5a5;
+          background: rgba(244, 63, 94, 0.08);
+          border: 1px solid rgba(244, 63, 94, 0.25);
+          border-radius: 10px;
+          line-height: 1.4;
+        }
+        .sqm-error svg {
+          flex-shrink: 0;
+          margin-top: 1px;
+        }
+        .sqm-footer {
+          display: flex;
+          gap: 10px;
+          justify-content: flex-end;
+          padding: 14px 20px;
+          border-top: 1px solid rgba(148, 163, 184, 0.1);
+          background: rgba(8, 11, 24, 0.5);
+        }
+        .sqm-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 9px 18px;
+          font-size: 0.85rem;
+          font-weight: 600;
+          border-radius: 10px;
+          border: 1px solid transparent;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          font-family: inherit;
+        }
+        .sqm-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .sqm-btn-secondary {
+          background: transparent;
+          color: #cbd5e1;
+          border-color: rgba(148, 163, 184, 0.25);
+        }
+        .sqm-btn-secondary:hover:not(:disabled) {
+          background: rgba(148, 163, 184, 0.08);
+          border-color: rgba(148, 163, 184, 0.4);
+          color: #f1f5f9;
+        }
+        .sqm-btn-primary {
+          color: #062a2f;
+          background: linear-gradient(135deg, #22d3ee 0%, #38bdf8 100%);
+          border-color: rgba(34, 211, 238, 0.5);
+          box-shadow: 0 4px 16px -4px rgba(34, 211, 238, 0.5);
+        }
+        .sqm-btn-primary:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 8px 22px -4px rgba(34, 211, 238, 0.6);
+        }
+        .sqm-btn-primary:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        @media (max-width: 600px) {
+          .sqm-modal { max-width: 100%; }
+          .sqm-header, .sqm-body, .sqm-footer { padding-left: 16px; padding-right: 16px; }
+          .sqm-footer { flex-direction: column-reverse; }
+          .sqm-btn { width: 100%; justify-content: center; }
         }
       `}</style>
 
