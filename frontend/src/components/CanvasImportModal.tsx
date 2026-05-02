@@ -15,6 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { fetchCourses, importQTIToCanvas } from '../api/canvas';
 import { getCanvasSettings } from '../utils/canvasStorage';
 import type { CanvasCourse, ImportProgressStatus } from '../types/canvas';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface CanvasImportModalProps {
   isOpen: boolean;
@@ -154,10 +155,16 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
     }
   };
 
+  // Allow Esc to close, but not while a long import is in flight.
+  const importInFlight =
+    importStatus === 'creating_migration' ||
+    importStatus === 'uploading_to_s3' ||
+    importStatus === 'processing';
+  useEscapeKey(onClose, isOpen && !importInFlight);
+
   if (!isOpen) return null;
 
   const isProcessing = importStatus === 'creating_migration' || importStatus === 'uploading_to_s3' || importStatus === 'processing';
-
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content cim" onClick={(e) => e.stopPropagation()}>
@@ -167,7 +174,7 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
             <Upload size={20} />
             Xuất câu hỏi lên Canvas
           </h2>
-          <button className="btn-icon" onClick={onClose}>
+          <button className="btn-icon" onClick={onClose} aria-label="Đóng">
             <X size={20} />
           </button>
         </div>

@@ -7,6 +7,7 @@
 import React from 'react';
 import { X, Loader2, AlertTriangle, CheckCircle, XCircle, Ban } from 'lucide-react';
 import type { JobOut } from '../api/jobs';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import './JobProgressModal.css';
 
 export interface JobProgressModalProps {
@@ -32,9 +33,13 @@ const JobProgressModal: React.FC<JobProgressModalProps> = ({
   onCancel,
   onClose,
 }) => {
+  const isTerminal = visible && job ? ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(job.status) : false;
+  // Allow Esc only when modal is dismissible (terminal state) so we don't
+  // accidentally close a running job by hitting the wrong key.
+  useEscapeKey(() => onClose?.(), visible && isTerminal && !!onClose);
+
   if (!visible || !job) return null;
 
-  const isTerminal = ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(job.status);
   const isRunning = job.status === 'RUNNING';
   const isQueued = job.status === 'QUEUED';
 
@@ -56,7 +61,7 @@ const JobProgressModal: React.FC<JobProgressModalProps> = ({
             {title}
           </h2>
           {isTerminal && (
-            <button className="btn-icon" onClick={onClose}>
+            <button className="btn-icon" onClick={onClose} aria-label="Đóng">
               <X size={18} />
             </button>
           )}

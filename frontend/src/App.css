@@ -4593,6 +4593,33 @@ body {
   font-weight: 500;
 }
 
+/* Compact pagination variant — matches the uploaded-files pagination bar
+   in DocumentRAGPanel: centered Prev / "Trang X / Y" / Next with wider
+   text buttons and no separator before the info label. Used in /canvas
+   and /saved-quizzes for visual consistency. */
+.pagination.pagination--compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 0 4px;
+  border-top: none;
+}
+.pagination.pagination--compact .pagination-btn {
+  width: auto;
+  min-width: 96px;
+  height: 36px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.pagination.pagination--compact .pagination-info {
+  margin: 0;
+  padding: 0;
+  border-left: none;
+}
+
 /* ============================================================================
    Settings Panel - Canvas Section
    ============================================================================ */

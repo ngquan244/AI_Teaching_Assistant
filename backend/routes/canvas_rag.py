@@ -32,6 +32,7 @@ from backend.services.canvas_permission import canvas_permission
 from backend.services.canvas_service import fetch_canvas_courses
 from backend.services.job_service import JobService
 from backend.services.url_safety import validate_download_url
+from backend.routes.document_rag import _generate_quiz_idempotency_key
 from backend.core.config import settings
 from backend.core.security import decrypt_token
 from backend.database.models import AppSetting
@@ -466,17 +467,46 @@ async def list_indexed_canvas_documents(
 ):
     """
     List indexed Canvas documents, filtering out inaccessible course-scoped docs.
+
+    Fast path when ``course_id`` is given: validate just that one course and
+    filter the user's docs locally. This avoids:
+      - calling Canvas ``filter_accessible_courses`` over every other course
+        the user has ever indexed
+      - calling Canvas ``fetch_canvas_courses`` only to attach a name
+        (the frontend already knows the selected course name)
     """
     try:
         user_id = str(user.id)
+
+        # ── Fast path: a specific course was requested ─────────────────
+        if course_id is not None:
+            await _check_canvas_permission(
+                http_request, course_id=course_id, user_id=user_id,
+            )
+            all_docs = await asyncio.to_thread(
+                _list_canvas_documents_for_user, user_id,
+            )
+            docs = [d for d in all_docs if d.get("course_id") == course_id]
+
+            total = len(docs)
+            offset = (page - 1) * page_size
+            paged_docs = docs[offset:offset + page_size]
+            # No course_name enrichment — frontend already has it for the
+            # selected course. Saves one Canvas API roundtrip per call.
+            return {
+                "success": True,
+                "documents": paged_docs,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "pages": (total + page_size - 1) // page_size if total else 1,
+            }
+
+        # ── General path (no course_id): preserve original semantics ────
         docs, canvas_token, canvas_base_url = await _get_accessible_canvas_documents(
             http_request,
             user_id,
         )
-
-        if course_id is not None:
-            await _check_canvas_permission(http_request, course_id=course_id, user_id=user_id)
-            docs = [doc for doc in docs if doc.get("course_id") == course_id]
 
         total = len(docs)
         offset = (page - 1) * page_size
@@ -667,24 +697,44 @@ async def async_canvas_generate_quiz(
             "domain_quota_ratio": request.domain_quota_ratio,
         }
 
-        job = await job_service.create_job(
+        # Idempotency: dedupe accidental double-clicks within the in-flight window.
+        idem_key = _generate_quiz_idempotency_key(
+            scope="canvas",
+            user_id=str(user.id),
+            topics=request.topics,
+            num_questions=request.num_questions,
+            difficulty=request.difficulty,
+            language=request.language,
+            selected_documents=selected_documents,
+            extra={
+                "include_course_domain": bool(request.include_course_domain),
+                "domain_quota_ratio": request.domain_quota_ratio,
+            },
+        )
+        job, created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.GENERATE_QUIZ,
+            idempotency_key=idem_key,
             payload=payload,
         )
         await db.commit()
 
-        result = await apply_async_nonblocking(
-            tasks.llm_tasks.generate_quiz,
-            args=[str(job.id)],
-            kwargs=payload,
-        )
-        await job_service.set_celery_task_id(job.id, result.id)
+        if created:
+            result = await apply_async_nonblocking(
+                tasks.llm_tasks.generate_quiz,
+                args=[str(job.id)],
+                kwargs=payload,
+            )
+            await job_service.set_celery_task_id(job.id, result.id)
+            message = f"Canvas quiz generation queued for topics: {', '.join(request.topics)}"
+        else:
+            logger.info(f"Reusing in-flight canvas quiz job {job.id} for idempotency_key={idem_key[:12]}…")
+            message = "Yêu cầu tạo quiz tương tự đang chạy, đang theo dõi job hiện có."
 
         return AsyncJobResponse(
             success=True,
             job_id=str(job.id),
-            message=f"Canvas quiz generation queued for topics: {', '.join(request.topics)}",
+            message=message,
             status_url=f"/api/jobs/{job.id}",
             stream_url=f"/api/jobs/{job.id}/stream",
         )

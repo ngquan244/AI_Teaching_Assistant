@@ -201,11 +201,16 @@ def extract_topics_payload(
     effective_groq_key = _resolve_groq_api_key_sync(groq_api_key)
     service = _get_rag_service()
     with SessionLocal() as rag_db:
-        return service.extract_topics(
+        result = service.extract_topics(
             user_id=user_id,
             db_session=rag_db,
             groq_api_key=effective_groq_key,
         )
+        if result.get("success"):
+            rag_db.commit()
+        else:
+            rag_db.rollback()
+        return result
 
 
 @shared_task(
@@ -251,15 +256,33 @@ def ingest_document(
         # Update progress
         job_service.update_progress(job_uuid, 10, "Reading PDF")
         
-        # Ingest document
-        with SessionLocal() as rag_db:
-            result = rag_service.ingest_document(
-                file_path=file_path,
-                skip_if_exists=skip_if_exists,
-                extract_topics=extract_topics,
-                user_id=user_id,
-                db_session=rag_db,
-            )
+        # Resolve Groq key + build round-robin pool so topic extraction during
+        # ingestion survives a single rate-limited / disabled key.
+        groq_key = _resolve_groq_api_key_sync()
+        key_pool = _build_groq_key_pool_sync("ingest_document")
+
+        try:
+            # Ingest document
+            with SessionLocal() as rag_db:
+                result = rag_service.ingest_document(
+                    file_path=file_path,
+                    skip_if_exists=skip_if_exists,
+                    extract_topics=extract_topics,
+                    user_id=user_id,
+                    db_session=rag_db,
+                    groq_api_key=groq_key,
+                    key_pool=key_pool,
+                )
+                # Commit so the FastAPI process sees the new collection + topics
+                # immediately on the next read (otherwise the writes are rolled back
+                # when the session context exits, and the UI shows stale data until
+                # the backend is restarted).
+                if result.get("success"):
+                    rag_db.commit()
+                else:
+                    rag_db.rollback()
+        finally:
+            _flush_groq_key_pool(key_pool, "ingest_document")
         
         if result.get("success"):
             job_service.complete_job(job_uuid, result)
@@ -327,10 +350,20 @@ def build_index(
         # Ingest document into per-file collection
         # This uses the new PerFileCollectionManager - no global locks!
         rag_service = _get_rag_service()
-        with SessionLocal() as rag_db:
-            result = rag_service.ingest_document(
-                str(file_path), user_id=user_id, db_session=rag_db,
-            )
+        groq_key = _resolve_groq_api_key_sync()
+        key_pool = _build_groq_key_pool_sync("build_index")
+        try:
+            with SessionLocal() as rag_db:
+                result = rag_service.ingest_document(
+                    str(file_path), user_id=user_id, db_session=rag_db,
+                    groq_api_key=groq_key, key_pool=key_pool,
+                )
+                if result.get("success"):
+                    rag_db.commit()
+                else:
+                    rag_db.rollback()
+        finally:
+            _flush_groq_key_pool(key_pool, "build_index")
         
         if result.get("success"):
             # Log the collection name for debugging
@@ -446,12 +479,75 @@ def extract_topics(
                 db_session=rag_db,
                 groq_api_key=effective_groq_key,
             )
+            if result.get("success"):
+                rag_db.commit()
+            else:
+                rag_db.rollback()
         
         job_service.complete_job(job_uuid, result)
         return result
         
     except Exception as e:
         logger.exception(f"Error in extract_topics task: {e}")
+        job_service.fail_job(job_uuid, str(e))
+        raise
+    finally:
+        db_session.close()
+
+
+@shared_task(
+    bind=True,
+    base=BaseTaskWithRetry,
+    name="backend.tasks.rag_tasks.extract_topics_for_document",
+    queue="rag",
+    max_retries=2,
+)
+def extract_topics_for_document(
+    self,
+    job_id: str,
+    filename: str,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Re-extract topics for a single uploaded document.
+
+    Mirrors ``canvas_extract_topics`` but for the upload pipeline. Uses the
+    Groq key pool so admin-rotated / disabled keys are honoured without
+    a worker restart.
+    """
+    job_service, db_session = get_sync_job_service()
+    job_uuid = uuid.UUID(job_id)
+
+    try:
+        job_service.start_job(job_uuid, f"Extracting topics for: {filename}")
+
+        groq_key = _resolve_groq_api_key_sync()
+        key_pool = _build_groq_key_pool_sync("extract_topics_for_document")
+
+        rag_service = _get_rag_service()
+        try:
+            with SessionLocal() as rag_db:
+                result = rag_service.extract_topics_for_document(
+                    filename,
+                    user_id=user_id,
+                    db_session=rag_db,
+                    groq_api_key=groq_key,
+                    key_pool=key_pool,
+                )
+                if result.get("success"):
+                    rag_db.commit()
+                else:
+                    rag_db.rollback()
+        finally:
+            _flush_groq_key_pool(key_pool, "extract_topics_for_document")
+
+        if result.get("success"):
+            job_service.complete_job(job_uuid, result)
+        else:
+            job_service.fail_job(job_uuid, result.get("message") or "Extract topics failed")
+        return result
+
+    except Exception as e:
+        logger.exception(f"Error in extract_topics_for_document task: {e}")
         job_service.fail_job(job_uuid, str(e))
         raise
     finally:

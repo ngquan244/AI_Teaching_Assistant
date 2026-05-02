@@ -298,6 +298,17 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
     builderQuestions.length > 0 &&
     quizSettings.title.trim().length > 0;
 
+  /** Human-readable reason the "Create Canvas Quiz" button is disabled. */
+  const createDisabledReason = isCreating
+    ? 'Đang tạo quiz trên Canvas, vui lòng đợi...'
+    : !selectedCourseId
+      ? 'Chọn một khóa học Canvas trước'
+      : builderQuestions.length === 0
+        ? 'Thêm ít nhất một câu hỏi vào quiz'
+        : !quizSettings.title.trim()
+          ? 'Nhập tiêu đề cho quiz'
+          : 'Tạo quiz mới trên Canvas LMS';
+
   const selectedCourseName =
     courses.find((c) => c.id === selectedCourseId)?.name || '';
 
@@ -806,6 +817,8 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
           <button
             className="qb-btn qb-btn-primary qb-btn-create"
             disabled={!canCreate || isCreating}
+            aria-disabled={!canCreate || isCreating}
+            title={createDisabledReason}
             onClick={handleCreateQuiz}
           >
             {isCreating ? (
@@ -824,8 +837,15 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
         <button
           className={`qb-btn qb-btn-save-library ${saveSuccess ? 'qb-btn-save-success' : ''}`}
           disabled={builderQuestions.length === 0 || isSaving}
+          aria-disabled={builderQuestions.length === 0 || isSaving}
           onClick={handleSaveToLibrary}
-          title="Lưu vào Kho Đề Thi"
+          title={
+            isSaving
+              ? 'Đang lưu vào Kho Đề Thi...'
+              : builderQuestions.length === 0
+                ? 'Thêm ít nhất một câu hỏi trước khi lưu'
+                : 'Lưu vào Kho Đề Thi'
+          }
         >
           {isSaving ? (
             <Loader2 size={15} className="spin" />

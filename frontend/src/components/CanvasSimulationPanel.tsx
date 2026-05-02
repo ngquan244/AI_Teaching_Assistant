@@ -19,6 +19,7 @@ import { canvasSimApi } from '../api/canvasSim';
 import { canvasApi } from '../api/canvas';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import type { CanvasCourse, CanvasQuiz } from '../types/canvas';
+import { useConfirm } from '../context/ConfirmContext';
 import type {
   TestStudent,
   PreCheckResponse,
@@ -55,6 +56,7 @@ type SimTab = 'execute' | 'students' | 'history' | 'audit';
 // ============================================================================
 
 const CanvasSimulationPanel: React.FC = () => {
+  const confirmDialog = useConfirm();
   const [activeTab, setActiveTab] = useState<SimTab>('execute');
 
   // Course + Quiz
@@ -189,7 +191,14 @@ const CanvasSimulationPanel: React.FC = () => {
 
   // ---- Delete test student ----
   const handleDeleteStudent = async (id: string) => {
-    if (!confirm('Xóa test student này?')) return;
+    const ok = await confirmDialog({
+      title: 'Xóa test student?',
+      message: 'Xóa test student này khỏi danh sách mô phỏng?',
+      confirmLabel: 'Xóa',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) return;
     await canvasSimApi.deleteTestStudent(id);
     fetchStudents();
   };

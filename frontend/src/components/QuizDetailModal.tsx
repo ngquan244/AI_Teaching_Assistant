@@ -21,6 +21,7 @@ import {
 import { savedQuizApi } from '../api/savedQuiz';
 import type { SavedQuizDetail, SavedQuizUpdateRequest } from '../types/savedQuiz';
 import type { QuizBuilderQuestion } from '../types/canvas';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 // ============================================================================
 // Props
@@ -69,6 +70,8 @@ const QuizDetailModal: React.FC<QuizDetailModalProps> = ({
   onLoadToBuilder,
   onQuizUpdated,
 }) => {
+  // Close on Esc whenever the modal is mounted (parent only mounts when open).
+  useEscapeKey(onClose, true);
   // ---- Edit metadata state ----
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
@@ -130,7 +133,7 @@ const QuizDetailModal: React.FC<QuizDetailModalProps> = ({
             <BookOpen size={22} />
             {loading ? 'Đang tải...' : quiz?.title || 'Chi tiết bộ đề'}
           </h2>
-          <button className="modal-close-btn" onClick={onClose}>
+          <button className="modal-close-btn" onClick={onClose} aria-label="Đóng">
             <X size={20} />
           </button>
         </div>

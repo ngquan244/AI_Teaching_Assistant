@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Library,
   Search,
@@ -9,8 +9,6 @@ import {
   BookOpen,
   Trash2,
   Copy,
-  ChevronLeft,
-  ChevronRight,
   FolderOpen,
   Filter,
   ArrowUpDown,
@@ -22,6 +20,7 @@ import {
 import PanelHelpButton from './PanelHelpButton';
 import QuizDetailModal from './QuizDetailModal';
 import { savedQuizApi } from '../api/savedQuiz';
+import { useToast } from '../context/ToastContext';
 import type {
   SavedQuiz,
   SavedQuizDetail,
@@ -86,7 +85,27 @@ export interface SavedQuizzesPanelProps {
 // Component
 // ============================================================================
 
+/** Best-effort extraction of a user-friendly message from an axios/fetch error. */
+function extractErrorMessage(err: unknown, fallback: string): string {
+  const e = err as {
+    response?: { data?: { detail?: unknown; message?: unknown } };
+    message?: string;
+  };
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    const d = detail as { message?: unknown; error?: unknown };
+    if (typeof d.message === 'string') return d.message;
+    if (typeof d.error === 'string') return d.error;
+  }
+  if (typeof e?.response?.data?.message === 'string') return e.response.data.message as string;
+  if (typeof e?.message === 'string') return e.message;
+  return fallback;
+}
+
 const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }) => {
+  const { showToast } = useToast();
+
   // ---- Data state ----
   const [quizzes, setQuizzes] = useState<SavedQuiz[]>([]);
   const [courses, setCourses] = useState<CourseGroup[]>([]);
@@ -135,10 +154,11 @@ const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }
       setCourses(res.courses);
     } catch (err) {
       console.error('Failed to fetch saved quizzes', err);
+      showToast(extractErrorMessage(err, 'Không thể tải danh sách bộ đề.'), 'error');
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, selectedCourse, debouncedSearch, difficultyFilter, starredFilter, sortBy]);
+  }, [page, pageSize, selectedCourse, debouncedSearch, difficultyFilter, starredFilter, sortBy, showToast]);
 
   useEffect(() => {
     fetchQuizzes();
@@ -153,10 +173,12 @@ const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }
       setDetailQuiz(detail);
     } catch (err) {
       console.error('Failed to fetch quiz detail', err);
+      showToast(extractErrorMessage(err, 'Không thể mở chi tiết bộ đề.'), 'error');
+      setSelectedQuizId(null);
     } finally {
       setDetailLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   const closeDetail = useCallback(() => {
     setSelectedQuizId(null);
@@ -172,29 +194,39 @@ const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }
       if (detailQuiz?.id === quizId) {
         setDetailQuiz(prev => prev ? { ...prev, is_starred: updated.is_starred } : prev);
       }
+      showToast(
+        updated.is_starred ? 'Đã đánh dấu bộ đề.' : 'Đã bỏ đánh dấu bộ đề.',
+        'success',
+        2500,
+      );
     } catch (err) {
       console.error('Failed to toggle star', err);
+      showToast(extractErrorMessage(err, 'Không thể cập nhật đánh dấu.'), 'error');
     }
-  }, [detailQuiz]);
+  }, [detailQuiz, showToast]);
 
   const handleDelete = useCallback(async (quizId: string) => {
     try {
       await savedQuizApi.delete(quizId);
       closeDetail();
       fetchQuizzes();
+      showToast('Đã xóa bộ đề.', 'success', 2500);
     } catch (err) {
       console.error('Failed to delete quiz', err);
+      showToast(extractErrorMessage(err, 'Không thể xóa bộ đề. Vui lòng thử lại.'), 'error');
     }
-  }, [closeDetail, fetchQuizzes]);
+  }, [closeDetail, fetchQuizzes, showToast]);
 
   const handleDuplicate = useCallback(async (quizId: string) => {
     try {
       await savedQuizApi.duplicate(quizId);
       fetchQuizzes();
+      showToast('Đã nhân bản bộ đề.', 'success', 2500);
     } catch (err) {
       console.error('Failed to duplicate quiz', err);
+      showToast(extractErrorMessage(err, 'Không thể nhân bản bộ đề.'), 'error');
     }
-  }, [fetchQuizzes]);
+  }, [fetchQuizzes, showToast]);
 
   const handleLoadToBuilder = useCallback((quiz: SavedQuizDetail) => {
     if (!onLoadToBuilder) return;
@@ -220,13 +252,6 @@ const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }
 
   // ---- Pagination ----
   const totalPages = Math.ceil(total / pageSize);
-  const pageNumbers = useMemo(() => {
-    const pages: number[] = [];
-    const start = Math.max(1, page - 2);
-    const end = Math.min(totalPages, page + 2);
-    for (let i = start; i <= end; i++) pages.push(i);
-    return pages;
-  }, [page, totalPages]);
 
   // ---- Render ----
   return (
@@ -414,35 +439,24 @@ const SavedQuizzesPanel: React.FC<SavedQuizzesPanelProps> = ({ onLoadToBuilder }
 
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="pagination">
+                <div className="pagination pagination--compact">
                   <button
                     className="pagination-btn"
                     disabled={page <= 1}
                     onClick={() => setPage(p => p - 1)}
                   >
-                    <ChevronLeft size={16} />
+                    ‹ Trước
                   </button>
-                  <div className="pagination-pages">
-                    {pageNumbers.map(p => (
-                      <button
-                        key={p}
-                        className={`pagination-page ${p === page ? 'active' : ''}`}
-                        onClick={() => setPage(p)}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
+                  <span className="pagination-info">
+                    Trang {page} / {totalPages}
+                  </span>
                   <button
                     className="pagination-btn"
                     disabled={page >= totalPages}
                     onClick={() => setPage(p => p + 1)}
                   >
-                    <ChevronRight size={16} />
+                    Sau ›
                   </button>
-                  <span className="pagination-info">
-                    Tổng: {total} bộ đề
-                  </span>
                 </div>
               )}
             </>

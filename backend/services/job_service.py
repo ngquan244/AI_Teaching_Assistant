@@ -19,6 +19,12 @@ from backend.celery_app import revoke_task
 
 logger = logging.getLogger(__name__)
 
+# A job that has not had its `updated_at` touched in this many seconds is
+# considered "stuck" (likely a worker crash, deploy, or container restart).
+# When the API observes such a job it auto-marks it FAILED so the UI doesn't
+# spin forever on "Đang xử lý...".
+STALE_JOB_THRESHOLD_SECONDS = 5 * 60
+
 
 class JobService:
     """
@@ -369,6 +375,48 @@ class JobService:
         logger.error(f"Job {job_id} failed: {error_message}")
         return job
     
+    async def heal_if_stale(
+        self,
+        job: Job,
+        threshold_seconds: int = STALE_JOB_THRESHOLD_SECONDS,
+    ) -> Job:
+        """
+        If a non-terminal job has not been updated within `threshold_seconds`,
+        mark it as FAILED. Otherwise return the job unchanged.
+
+        This protects the UI from showing "Đang xử lý..." forever when a
+        worker crashes mid-task. Safe to call from any read endpoint.
+        """
+        if job is None or job.is_terminal:
+            return job
+        last = job.updated_at
+        if last is None:
+            return job
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - last).total_seconds()
+        if age <= threshold_seconds:
+            return job
+
+        logger.warning(
+            f"Job {job.id} appears stuck (no update in {int(age)}s); auto-failing."
+        )
+        await self.fail_job(
+            job.id,
+            error_message=(
+                f"Tác vụ bị treo (không có tiến trình mới trong {int(age // 60)} phút). "
+                "Worker có thể đã restart. Vui lòng thử lại."
+            ),
+            error_stack="auto-healed: stale job detected by API",
+        )
+        # Commit so subsequent reads see the FAILED state.
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+        refreshed = await self.get_by_id(job.id)
+        return refreshed or job
+
     async def increment_retry(
         self,
         job_id: uuid.UUID,

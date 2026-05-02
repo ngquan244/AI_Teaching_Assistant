@@ -4,6 +4,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import { usePanelConfig, getFirstVisibleTab } from './context/PanelConfigContext';
 import { useAuth } from './context/AuthContext';
 import { useToast } from './context/ToastContext';
+import { SESSION_EXPIRED_EVENT } from './api/client';
 import { Sidebar, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, SavedQuizzesPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, TAB_PATHS, pathToTab } from './types';
@@ -58,6 +59,25 @@ const AppContent: React.FC = () => {
       navigate('/' + TAB_PATHS[redirect], { replace: true });
     }
   }, [activeTab, isPanelVisible, panelConfigLoaded, isAdmin, navigate, showToast]);
+
+  // Listen for session-expired signal from the API client (refresh token failed).
+  // Show a friendly toast first, then redirect — so the user understands WHY
+  // they're being sent to /login instead of being yanked mid-action.
+  useEffect(() => {
+    const handler = () => {
+      showToast(
+        'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để tiếp tục.',
+        'warning',
+        4000,
+      );
+      // Give the toast a moment to render before navigation tears the tree down.
+      setTimeout(() => {
+        navigate('/login', { replace: true });
+      }, 1200);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
+  }, [navigate, showToast]);
 
   // Shared state: questions to inject into QuizBuilder from other panels
   const [quizBuilderQuestions, setQuizBuilderQuestions] = useState<QuizBuilderQuestion[]>([]);

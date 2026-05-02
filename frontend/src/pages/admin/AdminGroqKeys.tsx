@@ -15,7 +15,6 @@ import {
   Edit3,
   ShieldCheck,
   ShieldOff,
-  Activity,
   Clock,
   AlertTriangle,
   X,
@@ -53,6 +52,16 @@ const AdminGroqKeys: React.FC = () => {
   // UI helpers
   const [showAddKey, setShowAddKey] = useState(false);
   const [showEditKey, setShowEditKey] = useState(false);
+
+  // Client-side pagination (the API returns the full list).
+  const PAGE_SIZE = 5;
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(keys.length / PAGE_SIZE));
+  // Clamp current page if list shrinks (e.g. after delete).
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+  const pagedKeys = keys.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // ─── Fetch ──────────────────────────────────────────────────────
   const fetchKeys = useCallback(async () => {
@@ -277,7 +286,7 @@ const AdminGroqKeys: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {keys.map((k) => (
+              {pagedKeys.map((k) => (
                 <tr key={k.id} className={!k.enabled ? 'ic-row-disabled' : ''}>
                   <td>
                     <span style={{ fontWeight: 500 }}>{k.name}</span>
@@ -349,6 +358,27 @@ const AdminGroqKeys: React.FC = () => {
               ))}
             </tbody>
           </table>
+          {totalPages > 1 && (
+            <div className="admin-pagination admin-pagination--compact">
+              <button
+                className="admin-pagination-btn"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                ‹ Trước
+              </button>
+              <span className="admin-pagination-info">
+                Trang {page} / {totalPages}
+              </span>
+              <button
+                className="admin-pagination-btn"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Sau ›
+              </button>
+            </div>
+          )}
         </div>
       )}
 

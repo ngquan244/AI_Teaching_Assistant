@@ -28,6 +28,7 @@ import {
   FolderOpen,
   Rocket,
   Library,
+  Sparkles,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
 
@@ -52,7 +53,11 @@ import {
   listIndexedDocuments,
   getLLMProviderInfo,
   asyncUploadAndIndex,
+  asyncBuildIndex,
   asyncGenerateQuiz,
+  asyncExtractTopicsForDocument,
+  removeDocumentIndex,
+  deleteUploadedFile,
   type GenerateQuizResponse,
   type RAGIndexStats,
   type RAGUploadedFile,
@@ -63,6 +68,7 @@ import {
 } from '../api/documentRag';
 import { getJob, TERMINAL_STATUSES, type JobOut } from '../api/jobs';
 import { useAsyncJob } from '../hooks/useAsyncJob';
+import { useConfirm } from '../context/ConfirmContext';
 import JobProgressModal from './JobProgressModal';
 import {
   listIndexedCanvasDocuments,
@@ -112,6 +118,7 @@ interface DocumentRAGPanelProps {
 }
 
 const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas }) => {
+  const confirmDialog = useConfirm();
   // Decorative stars
   const ragStars = useMemo(() => generateRAGStars(24), []);
 
@@ -173,6 +180,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   
   // Document and Topic selection states
   const [indexedDocuments, setIndexedDocuments] = useState<IndexedDocument[]>([]);
+  // Lookup map across ALL indexed documents (not paginated) so per-row status
+  // (Đã index / topic_count) is correct even when the uploaded-files list and
+  // the indexed-documents list use different pagination windows.
+  const [indexedDocsMap, setIndexedDocsMap] = useState<Map<string, IndexedDocument>>(new Map());
+  // True while we are (re)building the indexed-filename map. Used by the
+  // Files-đã-upload table to render "Đang tải…" instead of an empty pill.
+  const [indexedDocsMapLoading, setIndexedDocsMapLoading] = useState(true);
   const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
   const [topicsCache, setTopicsCache] = useState<Record<string, TopicSuggestion[]>>({});
   const [topicsByDocument, setTopicsByDocument] = useState<Record<string, TopicSuggestion[]>>({});
@@ -353,8 +367,39 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         setIndexedPages(response.pages);
         setIndexedTotal(response.total);
       }
+      // Always refresh the full lookup map so per-row badges stay accurate.
+      void loadIndexedFilenameMap();
     } catch (error) {
       console.error('Error loading indexed documents:', error);
+    }
+  };
+
+  // Build a Map<filename, IndexedDocument> over the entire indexed corpus.
+  // Used by the Files-đã-upload table to render per-row index/topic status.
+  // The backend caps page_size at 100, so we paginate to cover all docs.
+  const loadIndexedFilenameMap = async () => {
+    setIndexedDocsMapLoading(true);
+    try {
+      const map = new Map<string, IndexedDocument>();
+      const PAGE_SIZE = 100;
+      let page = 1;
+      // Hard safety cap to avoid infinite loops if backend misbehaves.
+      const MAX_PAGES = 50;
+      while (page <= MAX_PAGES) {
+        const response = await listIndexedDocuments(page, PAGE_SIZE);
+        if (!response.success || !response.documents) break;
+        for (const doc of response.documents) {
+          map.set(doc.filename, doc as IndexedDocument);
+        }
+        const totalPages = response.pages || 1;
+        if (page >= totalPages) break;
+        page += 1;
+      }
+      setIndexedDocsMap(map);
+    } catch (error) {
+      console.error('Error loading indexed filename map:', error);
+    } finally {
+      setIndexedDocsMapLoading(false);
     }
   };
 
@@ -386,7 +431,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const loadUploadedFiles = async (page?: number) => {
     try {
       const p = page ?? uploadedPage;
-      const response = await listUploadedFiles(p);
+      const response = await listUploadedFiles(p, 5);
       if (response.success) {
         setUploadedFiles(response.files);
         setUploadedPage(response.page);
@@ -534,11 +579,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   };
 
   // ===== Edit Topics Modal Handlers =====
-  const openEditTopicsModal = (filename: string) => {
-    // Get topics from appropriate cache based on topic source
-    const docTopics = topicSource === 'canvas'
-      ? (tempTopicsByDocument[filename] || canvasTopicsCache[filename] || [])
-      : (tempTopicsByDocument[filename] || topicsCache[filename] || []);
+  const openEditTopicsModal = (filename: string, preloadedTopics?: TopicSuggestion[]) => {
+    // Prefer caller-provided topics (avoids React stale-state when called right
+    // after a setTopicsCache). Otherwise fall back to caches.
+    const docTopics = preloadedTopics
+      ?? (topicSource === 'canvas'
+          ? (tempTopicsByDocument[filename] || canvasTopicsCache[filename] || [])
+          : (tempTopicsByDocument[filename] || topicsCache[filename] || []));
     setEditingDocumentFilename(filename);
     setEditingTopics(docTopics.map(t => t.name));
     setNewTopicInput('');
@@ -630,6 +677,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               ? { ...doc, topic_count: topicsToSave.length }
               : doc
           ));
+          // Keep the per-row map (used by the Files-đã-upload table) in sync
+          // so the topic-count pill updates without needing a hard refresh.
+          setIndexedDocsMap(prev => {
+            const existing = prev.get(editingDocumentFilename);
+            if (!existing) return prev;
+            const next = new Map(prev);
+            next.set(editingDocumentFilename, { ...existing, topic_count: topicsToSave.length });
+            return next;
+          });
         }
         
         setTempTopicsByDocument(prev => ({ ...prev, [editingDocumentFilename]: updatedTopics }));
@@ -871,7 +927,20 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
 
 
   const handleResetIndex = async () => {
-    if (!window.confirm('Bạn có chắc muốn xóa toàn bộ dữ liệu đã xử lý? Hành động này không thể hoàn tác.')) {
+    const ok = await confirmDialog({
+      title: 'Xóa toàn bộ dữ liệu tải lên?',
+      message:
+        'Bạn có chắc muốn xóa toàn bộ dữ liệu RAG cá nhân?\n\n' +
+        'Thao tác này sẽ:\n' +
+        '• Xóa tất cả file PDF đã tải lên khỏi máy chủ\n' +
+        '• Xóa toàn bộ index (chunks + embeddings)\n' +
+        '• Xóa tất cả chủ đề đã trích xuất\n\n' +
+        'Hành động này không thể hoàn tác.',
+      confirmLabel: 'Xóa tất cả',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
 
@@ -880,10 +949,21 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     try {
       const response = await resetRAGIndex();
       if (response.success) {
-        setUploadMessage({ type: 'success', text: 'Đã xóa dữ liệu thành công' });
+        const deleted = (response as { deleted_files?: number }).deleted_files;
+        setUploadMessage({
+          type: 'success',
+          text: typeof deleted === 'number'
+            ? `Đã xóa toàn bộ dữ liệu (${deleted} file PDF + index + chủ đề).`
+            : 'Đã xóa toàn bộ dữ liệu thành công.',
+        });
         setGeneratedQuiz([]);
         setQuizMessage(null);
-        await loadIndexStats();
+        setTopicsCache({});
+        await Promise.all([
+          loadIndexStats(),
+          loadIndexedDocuments(1),
+          loadUploadedFiles(1),
+        ]);
       } else {
         setUploadMessage({ type: 'error', text: response.error || 'Lỗi khi xóa dữ liệu' });
       }
@@ -892,6 +972,231 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
       setUploadMessage({ type: 'error', text: 'Lỗi khi xóa dữ liệu' });
     } finally {
       setIsResetting(false);
+    }
+  };
+
+  // ===== Per-uploaded-file action handlers =====
+  const [busyDocAction, setBusyDocAction] = useState<Record<string, 'remove' | 'extract' | 'edit' | 'index'>>({});
+
+  const setDocBusy = (filename: string, action: 'remove' | 'extract' | 'edit' | 'index' | null) => {
+    setBusyDocAction(prev => {
+      const next = { ...prev };
+      if (action === null) {
+        delete next[filename];
+      } else {
+        next[filename] = action;
+      }
+      return next;
+    });
+  };
+
+  const isFilenameIndexed = (filename: string): boolean => {
+    if (indexedDocsMap.has(filename)) return true;
+    return indexedDocuments.some(d => d.filename === filename);
+  };
+
+  const handleRemoveDocIndex = async (filename: string) => {
+    const ok = await confirmDialog({
+      title: 'Xóa file và dữ liệu liên quan?',
+      message:
+        `Bạn có chắc muốn xóa "${filename}"?\n\n` +
+        `Thao tác này sẽ:\n` +
+        `• Xóa file PDF đã tải lên khỏi máy chủ\n` +
+        `• Xóa toàn bộ index (chunks + embeddings) của file\n` +
+        `• Xóa các chủ đề đã trích xuất cho file\n\n` +
+        `Hành động này không thể hoàn tác.`,
+      confirmLabel: 'Xóa tất cả',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setDocBusy(filename, 'remove');
+    try {
+      // 1) Drop the RAG index (Chroma collection + topics + DB row).
+      // Ignored if the file was never indexed — we still proceed to delete
+      // the on-disk PDF below.
+      const indexed = isFilenameIndexed(filename);
+      let indexErr: string | null = null;
+      if (indexed) {
+        try {
+          const idxRes = await removeDocumentIndex(filename);
+          if (!idxRes.success) {
+            indexErr = 'Không xóa được index';
+          }
+        } catch (err) {
+          console.error('removeDocumentIndex failed:', err);
+          indexErr = 'Lỗi khi xóa index';
+        }
+      }
+
+      // 2) Delete the source PDF from the user's upload directory.
+      try {
+        await deleteUploadedFile(filename);
+      } catch (err) {
+        console.error('deleteUploadedFile failed:', err);
+        setUploadMessage({
+          type: 'error',
+          text: indexErr
+            ? `${indexErr}; ngoài ra không xóa được file PDF.`
+            : 'Không xóa được file PDF',
+        });
+        return;
+      }
+
+      // 3) Drop cached topics + reload UI.
+      setTopicsCache(prev => {
+        const next = { ...prev };
+        delete next[filename];
+        return next;
+      });
+      await Promise.all([
+        loadIndexStats(),
+        loadIndexedDocuments(1),
+        loadUploadedFiles(uploadedPage),
+      ]);
+
+      if (indexErr) {
+        setUploadMessage({
+          type: 'info',
+          text: `Đã xóa file PDF "${filename}" nhưng không xóa được index (${indexErr}).`,
+        });
+      } else {
+        setUploadMessage({
+          type: 'success',
+          text: indexed
+            ? `Đã xóa file và toàn bộ dữ liệu liên quan: ${filename}`
+            : `Đã xóa file: ${filename}`,
+        });
+      }
+    } finally {
+      setDocBusy(filename, null);
+    }
+  };
+
+  const handleIndexFile = async (filename: string) => {
+    setDocBusy(filename, 'index');
+    try {
+      const resp = await asyncBuildIndex(filename);
+      const jobId = resp.job_id;
+
+      let final: JobOut | null = null;
+      while (true) {
+        const j = await getJob(jobId);
+        if (TERMINAL_STATUSES.includes(j.status)) {
+          final = j;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1500));
+      }
+
+      if (final.status === 'SUCCEEDED') {
+        const result = (final.result || {}) as {
+          success?: boolean;
+          already_indexed?: boolean;
+          pages_loaded?: number;
+          chunks_added?: number;
+          error?: string;
+        };
+        if (result.success) {
+          await Promise.all([
+            loadIndexStats(),
+            loadIndexedDocuments(1),
+          ]);
+          setUploadMessage({
+            type: 'success',
+            text: result.already_indexed
+              ? `File đã có trong index: ${filename}`
+              : `Đã index file: ${filename} (${result.pages_loaded ?? 0} trang, ${result.chunks_added ?? 0} chunks)`,
+          });
+        } else {
+          setUploadMessage({
+            type: 'error',
+            text: `Index thất bại: ${result.error || 'Lỗi không xác định'}`,
+          });
+        }
+      } else {
+        setUploadMessage({
+          type: 'error',
+          text: `Index thất bại: ${final.error_message || 'Lỗi không xác định'}`,
+        });
+      }
+    } catch (e) {
+      console.error('Index file error:', e);
+      setUploadMessage({ type: 'error', text: 'Lỗi khi index file' });
+    } finally {
+      setDocBusy(filename, null);
+    }
+  };
+
+  const handleExtractDocTopics = async (filename: string) => {
+    setDocBusy(filename, 'extract');
+    try {
+      const resp = await asyncExtractTopicsForDocument(filename);
+      const jobId = resp.job_id;
+
+      // Poll until done
+      let final: JobOut | null = null;
+      while (true) {
+        const j = await getJob(jobId);
+        if (TERMINAL_STATUSES.includes(j.status)) {
+          final = j;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1500));
+      }
+
+      if (final.status === 'SUCCEEDED') {
+        // Invalidate cached topics so the modal/picker re-fetches
+        setTopicsCache(prev => {
+          const next = { ...prev };
+          delete next[filename];
+          return next;
+        });
+        await loadIndexedDocuments(1);
+        setUploadMessage({ type: 'success', text: `Đã trích xuất chủ đề cho: ${filename}` });
+      } else {
+        setUploadMessage({
+          type: 'error',
+          text: `Trích xuất chủ đề thất bại: ${final.error_message || 'Lỗi không xác định'}`,
+        });
+      }
+    } catch (e) {
+      console.error('Extract topics error:', e);
+      setUploadMessage({ type: 'error', text: 'Lỗi khi trích xuất chủ đề' });
+    } finally {
+      setDocBusy(filename, null);
+    }
+  };
+
+  const handleEditDocTopics = async (filename: string) => {
+    setDocBusy(filename, 'edit');
+    try {
+      // Make sure we're editing the upload-source list, and topics are loaded.
+      if (topicSource !== 'upload') {
+        setTopicSource('upload');
+      }
+      // Always re-fetch fresh topics from backend so the modal is never stale,
+      // and pass them directly to avoid React's async state update lag (which
+      // previously caused the first open to show "no topics").
+      let preloaded: TopicSuggestion[] | undefined = topicsCache[filename];
+      try {
+        const resp = await getDocumentTopics(filename);
+        if (resp.success && resp.topics) {
+          const topicsList: TopicSuggestion[] = resp.topics.map(name => ({
+            name,
+            description: '',
+            keywords: [],
+          }));
+          setTopicsCache(prev => ({ ...prev, [filename]: topicsList }));
+          preloaded = topicsList;
+        }
+      } catch (err) {
+        console.warn('Could not preload topics for edit:', err);
+      }
+      openEditTopicsModal(filename, preloaded);
+    } finally {
+      setDocBusy(filename, null);
     }
   };
 
@@ -1196,6 +1501,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
             loadLLMProviderInfo();
           }}
           title="Làm mới trạng thái"
+          aria-label="Làm mới trạng thái"
         >
           <RefreshCw size={18} />
         </button>
@@ -1324,6 +1630,8 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                             type="button"
                             className="btn-remove-file"
                             onClick={() => removeFileFromQueue(index)}
+                            aria-label={`Xóa ${fileItem.file.name} khỏi danh sách`}
+                            title="Xóa khỏi danh sách"
                           >
                             <X size={16} />
                           </button>
@@ -1352,30 +1660,52 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               )}
 
               <div className="upload-actions-compact">
-                <button
-                  className="btn btn-primary btn-upload-main"
-                  onClick={handleUploadAndIndex}
-                  disabled={selectedFiles.length === 0 || isUploading || selectedFiles.every(f => f.status !== 'waiting')}
-                >
-                  {isUploading ? (
-                    <>
-                      <Loader2 size={16} className="spin" />
-                      Đang xử lý...
-                    </>
-                  ) : (
-                    <>
-                      <Database size={16} />
-                      Tải lên & Xử lý {selectedFiles.filter(f => f.status === 'waiting').length > 0 && 
-                        `(${selectedFiles.filter(f => f.status === 'waiting').length} file)`}
-                    </>
-                  )}
-                </button>
+                {(() => {
+                  const waitingCount = selectedFiles.filter(f => f.status === 'waiting').length;
+                  const uploadDisabled =
+                    selectedFiles.length === 0 || isUploading || waitingCount === 0;
+                  const uploadReason = isUploading
+                    ? 'Đang xử lý, vui lòng đợi...'
+                    : selectedFiles.length === 0
+                      ? 'Hãy chọn ít nhất một file PDF trước'
+                      : waitingCount === 0
+                        ? 'Tất cả file đã được xử lý hoặc đang chờ'
+                        : 'Tải lên & xử lý các file đã chọn';
+                  return (
+                    <button
+                      className="btn btn-primary btn-upload-main"
+                      onClick={handleUploadAndIndex}
+                      disabled={uploadDisabled}
+                      aria-disabled={uploadDisabled}
+                      title={uploadReason}
+                    >
+                      {isUploading ? (
+                        <>
+                          <Loader2 size={16} className="spin" />
+                          Đang xử lý...
+                        </>
+                      ) : (
+                        <>
+                          <Database size={16} />
+                          Tải lên & Xử lý {waitingCount > 0 && `(${waitingCount} file)`}
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
 
                 <button
                   className="btn btn-outline-danger btn-reset"
                   onClick={handleResetIndex}
-                  disabled={isResetting || (indexStats?.total_documents ?? 0) === 0}
-                  title="Xóa toàn bộ dữ liệu đã xử lý"
+                  disabled={isResetting || ((indexStats?.total_documents ?? 0) === 0 && uploadedTotal === 0)}
+                  aria-disabled={isResetting || ((indexStats?.total_documents ?? 0) === 0 && uploadedTotal === 0)}
+                  title={
+                    isResetting
+                      ? 'Đang xóa, vui lòng đợi...'
+                      : ((indexStats?.total_documents ?? 0) === 0 && uploadedTotal === 0)
+                        ? 'Chưa có dữ liệu nào để xóa'
+                        : 'Xóa toàn bộ file PDF đã tải lên + index + chủ đề (không thể hoàn tác)'
+                  }
                 >
                   {isResetting ? (
                     <Loader2 size={16} className="spin" />
@@ -1569,23 +1899,39 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 </div>
               )}
 
-              <button
-                className="btn btn-primary btn-generate"
-                onClick={handleGenerateQuiz}
-                disabled={selectedTopics.length === 0 || isGeneratingQuiz || (indexedTotal === 0 && canvasIndexedDocuments.length === 0)}
-              >
-                {isGeneratingQuiz ? (
-                  <>
-                    <Loader2 size={16} className="spin" />
-                    Đang tạo quiz...
-                  </>
-                ) : (
-                  <>
-                    <BookOpen size={16} />
-                    Tạo Quiz {selectedTopics.length > 0 ? `(${selectedTopics.length} chủ đề)` : ''}
-                  </>
-                )}
-              </button>
+              {(() => {
+                const noTopics = selectedTopics.length === 0;
+                const noDocs = indexedTotal === 0 && canvasIndexedDocuments.length === 0;
+                const generateDisabled = noTopics || isGeneratingQuiz || noDocs;
+                const generateReason = isGeneratingQuiz
+                  ? 'Đang tạo quiz, vui lòng đợi...'
+                  : noDocs
+                    ? 'Bạn cần index ít nhất một tài liệu trước khi tạo quiz'
+                    : noTopics
+                      ? 'Hãy chọn ít nhất một chủ đề'
+                      : `Tạo quiz cho ${selectedTopics.length} chủ đề đã chọn`;
+                return (
+                  <button
+                    className="btn btn-primary btn-generate"
+                    onClick={handleGenerateQuiz}
+                    disabled={generateDisabled}
+                    aria-disabled={generateDisabled}
+                    title={generateReason}
+                  >
+                    {isGeneratingQuiz ? (
+                      <>
+                        <Loader2 size={16} className="spin" />
+                        Đang tạo quiz...
+                      </>
+                    ) : (
+                      <>
+                        <BookOpen size={16} />
+                        Tạo Quiz {selectedTopics.length > 0 ? `(${selectedTopics.length} chủ đề)` : ''}
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
 
               {indexedTotal === 0 && canvasIndexedDocuments.length === 0 && (
                 <div className="message info">
@@ -1650,24 +1996,203 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         {/* Uploaded Files List */}
         {(uploadedFiles.length > 0 || uploadedTotal > 0) && (
           <div className="files-section">
-            <h3>
-              <FileIcon size={18} />
-              Files đã upload ({uploadedTotal})
-            </h3>
+            <div className="section-header">
+              <h3>
+                <FileIcon size={18} />
+                Files đã upload
+                <span className="indexed-count-badge">{uploadedTotal}</span>
+              </h3>
+              <div className="section-actions">
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={() => {
+                    void loadUploadedFiles(uploadedPage);
+                    void loadIndexedFilenameMap();
+                  }}
+                  title="Tải lại danh sách file"
+                >
+                  <RefreshCw size={14} />
+                  Làm mới
+                </button>
+              </div>
+            </div>
             <div className="files-list">
-              {uploadedFiles.map((file, idx) => (
-                <div key={idx} className="file-item">
-                  <FileText size={16} />
-                  <span className="file-name">{file.filename}</span>
-                  <span className="file-size">{formatFileSize(file.size)}</span>
-                </div>
-              ))}
+              <table className="files-table rag-uploaded-files-table">
+                <colgroup>
+                  <col className="col-name" />
+                  <col className="col-size" />
+                  <col className="col-topics" />
+                  <col className="col-status" />
+                  <col className="col-actions" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Tên file</th>
+                    <th>Kích thước</th>
+                    <th>Chủ đề</th>
+                    <th>Trạng thái</th>
+                    <th className="actions-col">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uploadedFiles.map((file) => {
+                    const indexed = isFilenameIndexed(file.filename);
+                    const busy = busyDocAction[file.filename];
+                    const indexedDoc = indexedDocsMap.get(file.filename);
+                    const topicCount = indexedDoc?.topic_count ?? 0;
+
+                    let statusLabel: string;
+                    let statusClass: string;
+                    let StatusIco: typeof Loader2 | typeof Database | typeof CheckCircle | typeof AlertCircle | typeof Sparkles | typeof Trash2;
+                    let spinIcon = false;
+                    if (busy === 'extract') {
+                      statusLabel = 'Đang trích xuất…';
+                      statusClass = 'extracting';
+                      StatusIco = Sparkles;
+                      spinIcon = true;
+                    } else if (busy === 'remove') {
+                      statusLabel = 'Đang xóa…';
+                      statusClass = 'failed';
+                      StatusIco = Trash2;
+                      spinIcon = true;
+                    } else if (busy === 'index') {
+                      statusLabel = 'Đang index…';
+                      statusClass = 'indexing';
+                      StatusIco = Database;
+                      spinIcon = true;
+                    } else if (busy === 'edit') {
+                      statusLabel = 'Đang mở…';
+                      statusClass = 'downloading';
+                      StatusIco = Loader2;
+                      spinIcon = true;
+                    } else if (indexed) {
+                      statusLabel = 'Đã index';
+                      statusClass = 'indexed';
+                      StatusIco = CheckCircle;
+                    } else {
+                      statusLabel = 'Chưa index';
+                      statusClass = 'idle';
+                      StatusIco = AlertCircle;
+                    }
+
+                    return (
+                      <tr key={file.filename}>
+                        <td>
+                          <div className="file-name" title={file.filename}>
+                            <FileText size={16} />
+                            <span>{file.filename}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="file-size">{formatFileSize(file.size)}</span>
+                        </td>
+                        <td>
+                          {indexed ? (
+                            indexedDoc ? (
+                              <span className={`topic-count ${topicCount === 0 ? 'empty' : ''}`}>
+                                {topicCount > 0 ? `${topicCount} chủ đề` : '— chưa trích xuất'}
+                              </span>
+                            ) : (
+                              // File is known to be indexed (via paginated list)
+                              // but the full filename→topic map is still loading.
+                              // Show a loader instead of a misleading "chưa trích xuất".
+                              <span className="topic-count loading">
+                                <Loader2 size={12} className="spin" />
+                                Đang tải…
+                              </span>
+                            )
+                          ) : indexedDocsMapLoading ? (
+                            <span className="topic-count loading">
+                              <Loader2 size={12} className="spin" />
+                              Đang tải…
+                            </span>
+                          ) : (
+                            <span className="topic-count empty">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`file-status ${statusClass}`}>
+                            <StatusIco size={14} className={spinIcon ? 'spin' : ''} />
+                            {statusLabel}
+                          </span>
+                        </td>
+                        <td className="actions-cell">
+                          <div className="action-buttons">
+                            {indexed ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn-action"
+                                  onClick={() => handleExtractDocTopics(file.filename)}
+                                  disabled={!!busy}
+                                  title="Trích xuất lại chủ đề từ nội dung file (chạy LLM)"
+                                  aria-label="Trích xuất chủ đề"
+                                >
+                                  <Sparkles size={15} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-action"
+                                  onClick={() => handleEditDocTopics(file.filename)}
+                                  disabled={!!busy}
+                                  title="Sửa danh sách chủ đề (thêm/sửa/xóa thủ công)"
+                                  aria-label="Sửa chủ đề"
+                                >
+                                  <Edit2 size={15} />
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn-action btn-primary-action"
+                                onClick={() => handleIndexFile(file.filename)}
+                                disabled={!!busy}
+                                title="Index file này vào cơ sở dữ liệu để có thể tạo quiz / trích xuất chủ đề"
+                                aria-label="Index file"
+                              >
+                                <Database size={15} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn-action warning"
+                              onClick={() => handleRemoveDocIndex(file.filename)}
+                              disabled={!!busy}
+                              title="Xóa file PDF + toàn bộ index và chủ đề liên quan (không thể hoàn tác)"
+                              aria-label="Xóa file và dữ liệu"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
             {uploadedPages > 1 && (
-              <div className="pagination-controls">
-                <button disabled={uploadedPage <= 1} onClick={() => { setUploadedPage(p => p - 1); loadUploadedFiles(uploadedPage - 1); }}>Trước</button>
-                <span>Trang {uploadedPage} / {uploadedPages}</span>
-                <button disabled={uploadedPage >= uploadedPages} onClick={() => { setUploadedPage(p => p + 1); loadUploadedFiles(uploadedPage + 1); }}>Sau</button>
+              <div className="pagination pagination--compact">
+                <button
+                  type="button"
+                  className="pagination-btn"
+                  disabled={uploadedPage <= 1}
+                  onClick={() => { setUploadedPage(p => p - 1); loadUploadedFiles(uploadedPage - 1); }}
+                >
+                  ‹ Trước
+                </button>
+                <span className="pagination-info">
+                  Trang {uploadedPage} / {uploadedPages}
+                </span>
+                <button
+                  type="button"
+                  className="pagination-btn"
+                  disabled={uploadedPage >= uploadedPages}
+                  onClick={() => { setUploadedPage(p => p + 1); loadUploadedFiles(uploadedPage + 1); }}
+                >
+                  Sau ›
+                </button>
               </div>
             )}
           </div>
@@ -2207,7 +2732,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                   </div>
                 </div>
               </div>
-              <button className="qm-close-btn" onClick={() => setShowQuizModal(false)}>
+              <button className="qm-close-btn" onClick={() => setShowQuizModal(false)} aria-label="Đóng">
                 <X size={18} />
               </button>
             </div>
@@ -2500,6 +3025,14 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                 className="sqm-btn sqm-btn-primary"
                 onClick={confirmSaveQuiz}
                 disabled={isSavingToLibrary || !saveQuizTitle.trim()}
+                aria-disabled={isSavingToLibrary || !saveQuizTitle.trim()}
+                title={
+                  isSavingToLibrary
+                    ? 'Đang lưu, vui lòng đợi...'
+                    : !saveQuizTitle.trim()
+                      ? 'Hãy nhập tiêu đề cho quiz trước'
+                      : 'Lưu quiz vào Kho Đề'
+                }
               >
                 {isSavingToLibrary ? (
                   <><Loader2 size={15} className="spin" /> Đang lưu…</>
@@ -3685,6 +4218,159 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           font-size: 0.8rem;
           color: #94a3b8;
           font-weight: 500;
+        }
+
+        /* Stable grid layout for upload row: icon | name | size | status | actions */
+        .file-item.file-item-grid {
+          display: grid;
+          grid-template-columns: 18px minmax(0, 1fr) 70px 96px 116px;
+          align-items: center;
+          column-gap: 14px;
+          padding: 10px 14px;
+        }
+
+        .file-item.file-item-grid .file-icon {
+          flex: none;
+        }
+
+        .file-item.file-item-grid .file-name {
+          flex: none;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 0.875rem;
+        }
+
+        .file-item.file-item-grid .file-size {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+          font-size: 0.78rem;
+          color: #94a3b8;
+          background: transparent;
+          padding: 0;
+          border: none;
+        }
+
+        .file-item.file-item-grid .file-status {
+          font-size: 0.72rem;
+          font-weight: 500;
+          letter-spacing: 0.01em;
+          padding: 3px 10px;
+          border-radius: 6px;
+          white-space: nowrap;
+          text-align: center;
+          justify-self: center;
+          line-height: 1.3;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+        }
+
+        .file-item.file-item-grid .file-status::before {
+          content: '';
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          flex: none;
+        }
+
+        .file-item.file-item-grid .file-status.success {
+          color: #34d399;
+          background: rgba(52, 211, 153, 0.1);
+        }
+
+        .file-item.file-item-grid .file-status.idle {
+          color: #94a3b8;
+          background: rgba(148, 163, 184, 0.08);
+        }
+
+        .file-item.file-item-grid .file-status.pending {
+          color: #fbbf24;
+          background: rgba(251, 191, 36, 0.1);
+        }
+
+        .file-item.file-item-grid .action-buttons {
+          display: grid;
+          grid-template-columns: repeat(3, 32px);
+          gap: 4px;
+          justify-content: end;
+          align-items: center;
+          padding: 3px;
+          background: rgba(15, 23, 42, 0.4);
+          border: 1px solid rgba(56, 189, 248, 0.06);
+          border-radius: 8px;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action-spacer {
+          width: 32px;
+          height: 32px;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action {
+          width: 32px;
+          height: 32px;
+          padding: 0;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 6px;
+          border: 1px solid transparent;
+          background: transparent;
+          color: #94a3b8;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action svg {
+          color: inherit;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.14);
+          color: #e2e8f0;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action.primary {
+          color: #38bdf8;
+          background: rgba(56, 189, 248, 0.1);
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action.primary:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.2);
+          color: #7dd3fc;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action.warning {
+          color: #f87171;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action.warning:hover:not(:disabled) {
+          background: rgba(248, 113, 113, 0.14);
+          color: #fca5a5;
+        }
+
+        .file-item.file-item-grid .action-buttons .btn-action:disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
+        }
+
+        @media (max-width: 720px) {
+          .file-item.file-item-grid {
+            grid-template-columns: 18px minmax(0, 1fr) auto;
+            grid-template-areas:
+              "icon name size"
+              "status status status"
+              "actions actions actions";
+            row-gap: 8px;
+          }
+          .file-item.file-item-grid .file-icon { grid-area: icon; }
+          .file-item.file-item-grid .file-name { grid-area: name; }
+          .file-item.file-item-grid .file-size { grid-area: size; }
+          .file-item.file-item-grid .file-status { grid-area: status; justify-self: start; }
+          .file-item.file-item-grid .action-buttons { grid-area: actions; justify-content: start; }
         }
 
         .pagination-controls {
@@ -6626,6 +7312,228 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           .sqm-header, .sqm-body, .sqm-footer { padding-left: 16px; padding-right: 16px; }
           .sqm-footer { flex-direction: column-reverse; }
           .sqm-btn { width: 100%; justify-content: center; }
+        }
+
+        /* ===================================================================
+           Uploaded Files Table — professional layout matching Canvas panel
+        =================================================================== */
+        .document-rag-panel .files-section .section-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+        .document-rag-panel .files-section .section-header h3 {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin: 0;
+          font-size: 1rem;
+          color: #e2e8f0;
+        }
+        .document-rag-panel .files-section .section-actions {
+          display: flex;
+          gap: 8px;
+        }
+        .document-rag-panel .files-list {
+          background: rgba(15, 23, 42, 0.5);
+          border: 1px solid rgba(56, 189, 248, 0.15);
+          border-radius: 10px;
+          overflow-x: auto;
+        }
+        .document-rag-panel .rag-uploaded-files-table {
+          width: 100%;
+          border-collapse: collapse;
+          table-layout: fixed;
+          min-width: 720px;
+        }
+        .document-rag-panel .rag-uploaded-files-table th,
+        .document-rag-panel .rag-uploaded-files-table td {
+          padding: 14px 16px;
+          text-align: left;
+          border-bottom: 1px solid rgba(56, 189, 248, 0.08);
+          vertical-align: middle;
+          font-size: 0.88rem;
+          color: #cbd5e1;
+        }
+        .document-rag-panel .rag-uploaded-files-table thead th {
+          background: rgba(15, 23, 42, 0.7);
+          color: #94a3b8;
+          font-weight: 600;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          white-space: nowrap;
+        }
+        /* Column widths: name flexes; others fixed and balanced */
+        .document-rag-panel .rag-uploaded-files-table col.col-name { width: auto; }
+        .document-rag-panel .rag-uploaded-files-table col.col-size { width: 96px; }
+        .document-rag-panel .rag-uploaded-files-table col.col-topics { width: 132px; }
+        .document-rag-panel .rag-uploaded-files-table col.col-status { width: 158px; }
+        .document-rag-panel .rag-uploaded-files-table col.col-actions { width: 156px; }
+        .document-rag-panel .rag-uploaded-files-table th.actions-col,
+        .document-rag-panel .rag-uploaded-files-table td.actions-cell {
+          text-align: right;
+        }
+        /* Center-align pill columns so the header text lines up with the
+           visible pill content (pills have inner padding, plain text doesn't,
+           which would otherwise make headers look shifted to the left). */
+        .document-rag-panel .rag-uploaded-files-table th:nth-child(2),
+        .document-rag-panel .rag-uploaded-files-table td:nth-child(2),
+        .document-rag-panel .rag-uploaded-files-table th:nth-child(3),
+        .document-rag-panel .rag-uploaded-files-table td:nth-child(3),
+        .document-rag-panel .rag-uploaded-files-table th:nth-child(4),
+        .document-rag-panel .rag-uploaded-files-table td:nth-child(4) {
+          text-align: center;
+        }
+        .document-rag-panel .rag-uploaded-files-table tbody tr:hover {
+          background: rgba(56, 189, 248, 0.04);
+        }
+        .document-rag-panel .rag-uploaded-files-table tbody tr:last-child td {
+          border-bottom: none;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-name {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-name svg {
+          color: #38bdf8;
+          flex-shrink: 0;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-name span {
+          color: #e2e8f0;
+          font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-size {
+          color: #94a3b8;
+          font-variant-numeric: tabular-nums;
+          font-size: 0.85rem;
+          white-space: nowrap;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 10px;
+          border-radius: 999px;
+          font-size: 0.78rem;
+          font-weight: 600;
+          white-space: nowrap;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .document-rag-panel .rag-uploaded-files-table .file-status .spin {
+          animation: rag-spin 1s linear infinite;
+        }
+        @keyframes rag-spin {
+          to { transform: rotate(360deg); }
+        }
+        .document-rag-panel .rag-uploaded-files-table .topic-count {
+          display: inline-block;
+          padding: 4px 10px;
+          border-radius: 999px;
+          background: rgba(34, 211, 238, 0.10);
+          color: #67e8f9;
+          font-size: 0.78rem;
+          font-weight: 600;
+          white-space: nowrap;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .document-rag-panel .rag-uploaded-files-table .topic-count.empty {
+          background: rgba(100, 116, 139, 0.12);
+          color: #94a3b8;
+        }
+        .document-rag-panel .rag-uploaded-files-table .topic-count.loading {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          background: rgba(148, 163, 184, 0.12);
+          color: #cbd5e1;
+        }
+        .document-rag-panel .rag-uploaded-files-table .topic-count.loading .spin {
+          animation: rag-spin 1s linear infinite;
+        }
+
+        /* Icon-only action buttons (matches CanvasFilesPanel) */
+        .document-rag-panel .rag-uploaded-files-table .action-buttons {
+          display: inline-flex;
+          flex-wrap: nowrap;
+          gap: 6px;
+          justify-content: flex-end;
+          align-items: center;
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 34px;
+          height: 34px;
+          padding: 0;
+          border-radius: 8px;
+          border: 1px solid rgba(56, 189, 248, 0.25);
+          background: rgba(15, 23, 42, 0.6);
+          color: #cbd5e1;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          flex-shrink: 0;
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action svg {
+          flex-shrink: 0;
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action:hover:not(:disabled) {
+          background: rgba(56, 189, 248, 0.15);
+          border-color: rgba(56, 189, 248, 0.5);
+          color: #e0f2fe;
+          transform: translateY(-1px);
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action.btn-primary-action {
+          background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+          color: #0b1120;
+          border-color: rgba(56, 189, 248, 0.6);
+          box-shadow: 0 2px 8px rgba(56, 189, 248, 0.25);
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action.btn-primary-action:hover:not(:disabled) {
+          color: #ffffff;
+          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action.warning {
+          color: #fca5a5;
+          border-color: rgba(248, 113, 113, 0.35);
+          background: rgba(127, 29, 29, 0.18);
+        }
+        .document-rag-panel .rag-uploaded-files-table .btn-action.warning:hover:not(:disabled) {
+          background: rgba(248, 113, 113, 0.18);
+          color: #fecaca;
+          border-color: rgba(248, 113, 113, 0.6);
+        }
+
+        /* Compact view on narrow widths */
+        @media (max-width: 1024px) {
+          .document-rag-panel .rag-uploaded-files-table {
+            min-width: 600px;
+          }
+          .document-rag-panel .rag-uploaded-files-table col.col-size { width: 0; }
+          .document-rag-panel .rag-uploaded-files-table th:nth-child(2),
+          .document-rag-panel .rag-uploaded-files-table td:nth-child(2) { display: none; }
+        }
+        @media (max-width: 720px) {
+          .document-rag-panel .rag-uploaded-files-table col.col-topics { width: 0; }
+          .document-rag-panel .rag-uploaded-files-table th:nth-child(3),
+          .document-rag-panel .rag-uploaded-files-table td:nth-child(3) { display: none; }
         }
       `}</style>
 

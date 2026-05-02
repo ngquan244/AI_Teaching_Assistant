@@ -18,6 +18,7 @@ import {
   setSelectedCourse,
 } from '../utils/canvasStorage';
 import type { CanvasCourse, CanvasFile } from '../types/canvas';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface CanvasFileSelectModalProps {
   isOpen: boolean;
@@ -187,8 +188,9 @@ const CanvasFileSelectModal: React.FC<CanvasFileSelectModalProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  if (!isOpen) return null;
+  useEscapeKey(onClose, isOpen);
 
+  if (!isOpen) return null;
   const isConfigured = isAuthenticated && canvasTokens.length > 0;
 
   return (
@@ -200,7 +202,7 @@ const CanvasFileSelectModal: React.FC<CanvasFileSelectModalProps> = ({
             <FolderOpen size={24} />
             {step === 'course' ? 'Chọn Khóa học Canvas' : 'Chọn File từ Canvas'}
           </h2>
-          <button className="btn-icon" onClick={onClose}>
+          <button className="btn-icon" onClick={onClose} aria-label="Đóng">
             <X size={20} />
           </button>
         </div>

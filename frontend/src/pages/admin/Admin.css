@@ -518,6 +518,29 @@
   cursor: not-allowed;
 }
 
+/* Compact, centered Prev / "Trang X / Y" / Next bar — matches the
+   Files-đã-upload pagination in /rag for visual consistency. */
+.admin-pagination.admin-pagination--compact {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 4px;
+  margin-top: 16px;
+}
+.admin-pagination.admin-pagination--compact .admin-pagination-btn {
+  min-width: 96px;
+  height: 36px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.admin-pagination.admin-pagination--compact .admin-pagination-info {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
 /* Modal */
 .admin-modal-overlay {
   position: fixed;

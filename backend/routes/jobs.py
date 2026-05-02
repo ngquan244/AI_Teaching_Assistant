@@ -125,7 +125,11 @@ async def get_job(
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
+    # Self-heal: if the job has been silent for too long, mark it FAILED so
+    # the UI stops spinning. No-op when the job is healthy.
+    job = await job_service.heal_if_stale(job)
+
     return _job_to_out(job)
 
 
@@ -282,19 +286,41 @@ async def stream_job_events(
         raise HTTPException(status_code=404, detail="Job not found")
     
     async def event_generator():
-        """Generate SSE events."""
+        """Generate SSE events with adaptive polling cadence.
+
+        Cadence: snappy at the start (when the user is actively watching),
+        then back off so a long indexing job doesn't hammer the DB at 2 Hz
+        for the entire duration. Cadence resets to snappy whenever the job
+        actually changes (progress_pct or status), so progress bursts feel
+        live again.
+        """
         last_progress = -1
         last_status = None
-        poll_interval = 0.5  # seconds
-        max_polls = 7200  # 1 hour max
-        
-        for _ in range(max_polls):
+
+        # Adaptive polling — fast while job is changing, then back off.
+        FAST_INTERVAL = 0.5      # snappy "is it done yet?" feel
+        STEADY_INTERVAL = 1.5    # most of an indexing run lives here
+        IDLE_INTERVAL = 3.0      # nothing has changed for a while
+        FAST_DURATION = 6.0      # seconds of fast polling per change burst
+        STEADY_DURATION = 30.0   # seconds before falling to idle cadence
+        MAX_STREAM_SECONDS = 60 * 60  # 1 hour total cap (was 7200 polls @ 0.5s)
+
+        loop = asyncio.get_event_loop()
+        elapsed = 0.0
+        last_change_at = loop.time()
+        poll_interval = FAST_INTERVAL
+
+        while elapsed < MAX_STREAM_SECONDS:
             # Refresh job from DB
             job = await job_service.get_by_id(job_id)
             if not job:
                 yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
                 break
-            
+
+            # Self-heal stuck jobs so the SSE loop terminates cleanly
+            # instead of polling forever against a dead worker.
+            job = await job_service.heal_if_stale(job)
+
             # Send update if changed
             if job.progress_pct != last_progress or job.status != last_status:
                 data = {
@@ -317,12 +343,23 @@ async def stream_job_events(
                     break
                 else:
                     yield f"event: progress\ndata: {json.dumps(data)}\n\n"
-                
+
                 last_progress = job.progress_pct
                 last_status = job.status
-            
+                last_change_at = loop.time()
+
+            # Decide next interval based on time since last real change.
+            since_change = loop.time() - last_change_at
+            if since_change < FAST_DURATION:
+                poll_interval = FAST_INTERVAL
+            elif since_change < STEADY_DURATION:
+                poll_interval = STEADY_INTERVAL
+            else:
+                poll_interval = IDLE_INTERVAL
+
             await asyncio.sleep(poll_interval)
-        
+            elapsed += poll_interval
+
         yield f"event: close\ndata: {json.dumps({'message': 'Stream ended'})}\n\n"
     
     return StreamingResponse(

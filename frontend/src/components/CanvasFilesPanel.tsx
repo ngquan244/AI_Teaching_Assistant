@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FileText,
   Download,
@@ -18,8 +18,6 @@ import {
   X,
   Plus,
   Save,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   ChevronUp,
   WifiOff,
@@ -39,6 +37,7 @@ const generateCanvasStars = (count: number) =>
     size: `${1.5 + Math.random() * 1.5}px`,
   }));
 import { useAuth } from '../context/AuthContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { canvasApi } from '../api/canvas';
 import {
   downloadCanvasFile,
@@ -185,6 +184,7 @@ const findMatchingIndexedDoc = (
 
 const CanvasFilesPanel: React.FC = () => {
   const { isAuthenticated, canvasTokens } = useAuth();
+  const confirmDialog = useConfirm();
   const canvasStars = useMemo(() => generateCanvasStars(30), []);
   
   // Remote files state (from Canvas API)
@@ -326,7 +326,7 @@ const CanvasFilesPanel: React.FC = () => {
       return docs;
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
-        setError('KhÃ´ng cÃ³ quyá»n truy cáº­p khÃ³a há»c nÃ y. Vui lÃ²ng kiá»ƒm tra Canvas token.');
+        setError('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
       }
       console.error('Error loading all indexed docs:', err);
       return [];
@@ -346,18 +346,32 @@ const CanvasFilesPanel: React.FC = () => {
   useEffect(() => {
     const stored = getSelectedCourse();
     if (stored) {
+      // Setting selectedCourse will trigger the [selectedCourse] effect
+      // below which calls fetchRemoteFiles (already loads indexed docs).
       setSelectedCourse(stored);
+    } else {
+      // No stored course → fetchRemoteFiles won't run; still show indexed view.
+      refreshIndexedData(undefined, 1);
     }
-    // Always load indexed docs on mount (works offline)
-    refreshIndexedData(stored?.id, 1);
   }, []);
 
-  // Fetch remote files when course changes
+  // Race guard: ignore stale responses when user switches course quickly.
+  const courseReqRef = useRef(0);
+
+  // Fetch remote files when course changes.
+  // NOTE: fetchRemoteFiles already loads indexed + all-indexed in parallel,
+  // so we don't call refreshIndexedData here — that would double every request.
+  // We still need loadCourseDocuments (V2 enrich) to merge language /
+  // is_course_domain into the indexed view; that runs after fetchRemoteFiles.
   useEffect(() => {
-    if (selectedCourse) {
-      fetchRemoteFiles(selectedCourse.id);
-      refreshIndexedData(selectedCourse.id, 1);
-    }
+    if (!selectedCourse) return;
+    const reqId = ++courseReqRef.current;
+    const courseId = selectedCourse.id;
+    (async () => {
+      await fetchRemoteFiles(courseId);
+      if (courseReqRef.current !== reqId) return; // user switched course
+      await loadCourseDocuments(courseId);
+    })();
   }, [selectedCourse]);
 
   // Reset pagination when data changes
@@ -701,7 +715,14 @@ const CanvasFilesPanel: React.FC = () => {
   };
 
   const handleRemoveIndex = async (filename: string) => {
-    if (!confirm(`Xóa index nội bộ cho "${filename}"?\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống.\nFile trên Canvas LMS không bị ảnh hưởng.`)) {
+    const ok = await confirmDialog({
+      title: 'Xóa index nội bộ?',
+      message: `Xóa index nội bộ cho "${filename}"?\n\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống. File trên Canvas LMS không bị ảnh hưởng.`,
+      confirmLabel: 'Xóa index',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
     
@@ -719,8 +740,15 @@ const CanvasFilesPanel: React.FC = () => {
   // Remove index for remote file (from Canvas file list)
   const handleRemoveIndexForRemoteFile = async (file: CanvasFile) => {
     const sanitizedName = file.display_name.replace(/[,]/g, '');
-    
-    if (!confirm(`Xóa index nội bộ cho "${file.display_name}"?\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống.\nFile trên Canvas LMS không bị ảnh hưởng.`)) {
+
+    const ok = await confirmDialog({
+      title: 'Xóa index nội bộ?',
+      message: `Xóa index nội bộ cho "${file.display_name}"?\n\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống. File trên Canvas LMS không bị ảnh hưởng.`,
+      confirmLabel: 'Xóa index',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
     
@@ -1175,38 +1203,24 @@ const CanvasFilesPanel: React.FC = () => {
                     </div>
                     
                     {/* Pagination */}
-                    <div className="pagination">
+                    <div className="pagination pagination--compact">
                       <button
                         className="pagination-btn"
                         onClick={() => setRemoteCurrentPage(p => Math.max(1, p - 1))}
                         disabled={remoteCurrentPage === 1}
                       >
-                        <ChevronLeft size={16} />
+                        ‹ Trước
                       </button>
-                      <div className="pagination-pages">
-                        {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                          <button
-                            key={page}
-                            className={`pagination-page ${page === remoteCurrentPage ? 'active' : ''}`}
-                            onClick={() => setRemoteCurrentPage(page)}
-                          >
-                            {page}
-                          </button>
-                        ))}
-                      </div>
+                      <span className="pagination-info">
+                        Trang {remoteCurrentPage} / {Math.max(totalPages, 1)}
+                      </span>
                       <button
                         className="pagination-btn"
                         onClick={() => setRemoteCurrentPage(p => Math.min(totalPages, p + 1))}
                         disabled={remoteCurrentPage === totalPages}
                       >
-                        <ChevronRight size={16} />
+                        Sau ›
                       </button>
-                      <span className="pagination-info">
-                        {remoteFiles.length > 0 
-                          ? `${startIndex + 1}-${Math.min(startIndex + ITEMS_PER_PAGE, remoteFiles.length)} / ${remoteFiles.length}`
-                          : '0 / 0'
-                        }
-                      </span>
                     </div>
                   </>
                 );
@@ -1295,7 +1309,6 @@ const CanvasFilesPanel: React.FC = () => {
                           <th>Tên file</th>
                           <th>Chunks</th>
                           <th>Topics</th>
-                          {showDomainCols && <th>Lang</th>}
                           {showDomainCols && <th>Domain</th>}
                           <th>Thao tác</th>
                         </tr>
@@ -1321,20 +1334,6 @@ const CanvasFilesPanel: React.FC = () => {
                                     {doc.topic_count > 0 ? `${doc.topic_count} topics` : '—'}
                                   </span>
                                 </td>
-                                {showDomainCols && (
-                                  <td>
-                                    <span style={{
-                                      fontSize: 11,
-                                      padding: '2px 6px',
-                                      borderRadius: 4,
-                                      background: 'rgba(148,163,184,0.12)',
-                                      color: '#cbd5e1',
-                                      textTransform: 'uppercase',
-                                    }}>
-                                      {doc.language || '—'}
-                                    </span>
-                                  </td>
-                                )}
                                 {showDomainCols && (
                                   <td>
                                     <label
@@ -1414,35 +1413,24 @@ const CanvasFilesPanel: React.FC = () => {
 
                   {/* Pagination */}
                   {indexedTotalPages > 1 && (
-                    <div className="pagination">
+                    <div className="pagination pagination--compact">
                       <button
                         className="pagination-btn"
                         onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage - 1)}
                         disabled={indexedCurrentPage <= 1}
                       >
-                        <ChevronLeft size={16} />
+                        ‹ Trước
                       </button>
-                      <div className="pagination-pages">
-                        {Array.from({ length: indexedTotalPages }, (_, i) => i + 1).map(page => (
-                          <button
-                            key={page}
-                            className={`pagination-page ${page === indexedCurrentPage ? 'active' : ''}`}
-                            onClick={() => loadIndexedDocs(selectedCourse?.id, page)}
-                          >
-                            {page}
-                          </button>
-                        ))}
-                      </div>
+                      <span className="pagination-info">
+                        Trang {indexedCurrentPage} / {indexedTotalPages}
+                      </span>
                       <button
                         className="pagination-btn"
                         onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage + 1)}
                         disabled={indexedCurrentPage >= indexedTotalPages}
                       >
-                        <ChevronRight size={16} />
+                        Sau ›
                       </button>
-                      <span className="pagination-info">
-                        {`${(indexedCurrentPage - 1) * ITEMS_PER_PAGE + 1}-${Math.min(indexedCurrentPage * ITEMS_PER_PAGE, indexedTotal)} / ${indexedTotal}`}
-                      </span>
                     </div>
                   )}
                 </>
