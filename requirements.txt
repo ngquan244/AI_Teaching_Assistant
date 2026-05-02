@@ -27,7 +27,10 @@ langchain-huggingface==1.2.0
 langchain-chroma==1.1.0
 chromadb==1.4.1
 sentence-transformers==5.2.0
+# pypdf is the fallback parser when PyMuPDF fails; PyMuPDF is preferred for
+# speed (~10x on text PDFs) but pypdf handles edge cases more conservatively.
 pypdf==6.6.0
+pymupdf>=1.24,<2.0
 
 # === Document Processing ===
 pdfplumber==0.11.9
@@ -63,4 +66,3 @@ httpx==0.28.1
 
 # === Excel ===
 openpyxl==3.1.5
-

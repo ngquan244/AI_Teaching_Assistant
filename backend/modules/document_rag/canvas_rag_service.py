@@ -481,6 +481,7 @@ class CanvasRAGService:
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a Canvas PDF document into a per-file collection.
@@ -492,6 +493,10 @@ class CanvasRAGService:
             user_id: User ID for per-user scoping
             db_session: Sync DB session for metadata persistence
             groq_api_key: Optional fresh API key for topic extraction
+            key_pool: Optional ``KeyPool`` for round-robin Groq key rotation
+                during the inline topic-extraction step. When provided, the
+                pool is used in preference to ``groq_api_key`` and the caller
+                is responsible for flushing its counters afterwards.
         """
         self._ensure_initialized()
         
@@ -597,6 +602,7 @@ class CanvasRAGService:
                             course_id=course_id,
                             user_id=user_id,
                             groq_api_key=groq_api_key,
+                            key_pool=key_pool,
                         )
                         has_topics = len(topics_extracted) > 0
                         if has_topics and db_session and user_id:
@@ -634,7 +640,10 @@ class CanvasRAGService:
                 }
             
             # Load PDF
-            documents = load_pdf_documents(file_path)
+            from .bench import bench_stage  # local import: keeps module-load light
+            with bench_stage("pdf_load", file=filename) as _pl:
+                documents = load_pdf_documents(file_path)
+                _pl["pages"] = len(documents)
             
             if not documents:
                 return {
@@ -644,7 +653,9 @@ class CanvasRAGService:
                 }
             
             # Chunk documents
-            chunks = chunk_documents(documents)
+            with bench_stage("chunking", file=filename) as _ch:
+                chunks = chunk_documents(documents)
+                _ch["chunks"] = len(chunks)
 
             # Detect dominant language across chunks (best-effort, V1).
             try:
@@ -674,14 +685,21 @@ class CanvasRAGService:
             # Extract and save topics (pass chunks directly for efficiency)
             if extract_topics and added_count > 0:
                 try:
-                    topics_extracted = self._extract_and_save_topics(
-                        file_hash=file_hash,
-                        filename=filename,
-                        chunks=chunks,
-                        course_id=course_id,
-                        user_id=user_id,
-                        groq_api_key=groq_api_key,
-                    )
+                    with bench_stage(
+                        "topic_extract",
+                        file=filename,
+                        chunks=len(chunks),
+                    ) as _tp:
+                        topics_extracted = self._extract_and_save_topics(
+                            file_hash=file_hash,
+                            filename=filename,
+                            chunks=chunks,
+                            course_id=course_id,
+                            user_id=user_id,
+                            groq_api_key=groq_api_key,
+                            key_pool=key_pool,
+                        )
+                        _tp["topics"] = len(topics_extracted)
                 except Exception as e:
                     logger.warning(f"Failed to extract topics: {e}")
             

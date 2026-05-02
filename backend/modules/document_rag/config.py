@@ -32,9 +32,21 @@ class RAGConfig:
     ])
     
     # ===== Embedding Settings =====
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
+    # Phase 2: switched from BAAI/bge-m3 (568 M params, 1024-dim, ~900 ms/chunk
+    # on CPU) to multilingual-e5-small (118 M params, 384-dim, ~80-120 ms/chunk).
+    # Trade-off accepted: smaller model, lower peak quality on hard cross-lingual
+    # cases, ~10x faster indexing, ~3x lower RAM. E5 family REQUIRES the
+    # "passage: " / "query: " prefixes which are applied automatically by
+    # ``E5PrefixedEmbeddings`` in ``embeddings.py``.
+    EMBEDDING_MODEL: str = "intfloat/multilingual-e5-small"
     EMBEDDING_DEVICE: str = "cpu"  # Will be auto-detected
     NORMALIZE_EMBEDDINGS: bool = True
+    # Batch size used by sentence-transformers when encoding chunks. With
+    # the small e5 model (Phase 2), batch=64 better utilizes CPU SIMD and
+    # roughly halves embed_chunks time vs the library default of 32, with
+    # only a transient RAM bump (~150-200 MB). Tunable via
+    # ``RAG_EMBEDDING_BATCH_SIZE``; try 128 if RAM headroom allows.
+    EMBEDDING_BATCH_SIZE: int = 64
     
     # ===== Vector Store Settings =====
     PERSIST_DIRECTORY: str = "./data/chroma/document_rag"
@@ -68,6 +80,12 @@ class RAGConfig:
         # Embedding
         self.EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", self.EMBEDDING_MODEL)
         self.EMBEDDING_DEVICE = os.getenv("RAG_EMBEDDING_DEVICE", self.EMBEDDING_DEVICE)
+        try:
+            self.EMBEDDING_BATCH_SIZE = int(
+                os.getenv("RAG_EMBEDDING_BATCH_SIZE", self.EMBEDDING_BATCH_SIZE)
+            )
+        except (TypeError, ValueError):
+            pass
         
         # Vector Store
         self.PERSIST_DIRECTORY = os.getenv("RAG_PERSIST_DIRECTORY", self.PERSIST_DIRECTORY)

@@ -52,6 +52,43 @@ def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[s
     return env_key.strip() if env_key and env_key.strip() else None
 
 
+def _build_groq_key_pool_sync(context: str):
+    """Build a round-robin Groq ``KeyPool`` from the DB-backed pool table.
+
+    Returns ``None`` when the pool is empty or cannot be loaded; the caller
+    should then fall back to the single resolved key. ``context`` is only
+    used for log lines so failures can be traced back to the originating task.
+    """
+    try:
+        from backend.services.groq_key_pool_service import (
+            get_pool_keys_sync,
+            KeyPool,
+        )
+        with SessionLocal() as pool_db:
+            pool_keys = get_pool_keys_sync(pool_db)
+        if not pool_keys:
+            return None
+        pool = KeyPool(pool_keys)
+        logger.info("%s: KeyPool initialized with %d keys", context, len(pool_keys))
+        return pool
+    except Exception as exc:
+        logger.warning(
+            "%s: failed to build KeyPool, falling back to single key: %s",
+            context, exc,
+        )
+        return None
+
+
+def _flush_groq_key_pool(key_pool, context: str) -> None:
+    """Persist key-pool error/success counters; never raise."""
+    if key_pool is None:
+        return
+    try:
+        key_pool.flush_to_db()
+    except Exception as flush_err:
+        logger.warning("%s: KeyPool flush_to_db failed: %s", context, flush_err)
+
+
 @shared_task(
     bind=True,
     base=BaseTaskWithRetry,
@@ -470,15 +507,29 @@ def canvas_index_file(
             error = f"File not found: {filename}"
             job_service.fail_job(job_uuid, error)
             return {"success": False, "error": error}
-        
-        # Ingest into per-file collection with course_id for naming
+
+        # Coarse-grained progress so the SSE stream isn't silent during the
+        # slow embedding step. Stage timings come from BENCH log lines.
+        job_service.update_progress(job_uuid, 15, "Loading PDF & chunking")
+
+        # Ingest into per-file collection with course_id for naming.
+        # The pool is forwarded so the inline topic-extraction step inside
+        # ``ingest_document`` can rotate keys exactly like the standalone
+        # ``canvas_extract_topics`` task does.
         groq_key = _resolve_groq_api_key_sync()
-        with SessionLocal() as rag_db:
-            result = service.ingest_document(
-                str(file_path), course_id=course_id,
-                user_id=user_id, db_session=rag_db,
-                groq_api_key=groq_key,
-            )
+        key_pool = _build_groq_key_pool_sync("canvas_index_file")
+        job_service.update_progress(job_uuid, 35, "Embedding chunks")
+        try:
+            with SessionLocal() as rag_db:
+                result = service.ingest_document(
+                    str(file_path), course_id=course_id,
+                    user_id=user_id, db_session=rag_db,
+                    groq_api_key=groq_key,
+                    key_pool=key_pool,
+                )
+        finally:
+            _flush_groq_key_pool(key_pool, "canvas_index_file")
+        job_service.update_progress(job_uuid, 90, "Finalizing index")
         
         if result.get("success"):
             collection_name = result.get("collection_name", "unknown")
@@ -526,25 +577,7 @@ def canvas_extract_topics(
         # Build round-robin Groq key pool so a single rate-limited / disabled
         # key cannot break extract topic. Errors recorded via mark_error are
         # flushed to DB at the end so the admin panel reflects health.
-        key_pool = None
-        try:
-            from backend.services.groq_key_pool_service import (
-                get_pool_keys_sync,
-                KeyPool,
-            )
-            with SessionLocal() as pool_db:
-                pool_keys = get_pool_keys_sync(pool_db)
-            if pool_keys:
-                key_pool = KeyPool(pool_keys)
-                logger.info(
-                    "canvas_extract_topics: KeyPool initialized with %d keys",
-                    len(pool_keys),
-                )
-        except Exception as pool_err:
-            logger.warning(
-                "canvas_extract_topics: failed to build KeyPool, falling back to single key: %s",
-                pool_err,
-            )
+        key_pool = _build_groq_key_pool_sync("canvas_extract_topics")
 
         # IMPORTANT: use a *separate* DB session for the extraction so that
         # any rollback inside the service never affects the job-service
@@ -581,11 +614,7 @@ def canvas_extract_topics(
 
         # Persist key-pool error/success counters back to DB so admin sees
         # which keys are unhealthy.
-        if key_pool is not None:
-            try:
-                key_pool.flush_to_db()
-            except Exception as flush_err:
-                logger.warning("KeyPool flush_to_db failed: %s", flush_err)
+        _flush_groq_key_pool(key_pool, "canvas_extract_topics")
 
         job_service.complete_job(job_uuid, result)
         return result

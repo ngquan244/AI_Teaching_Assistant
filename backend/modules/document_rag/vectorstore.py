@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import List, Optional, Set, Dict, Any
 
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings  # noqa: F401  (kept for backwards-compat type hints)
 from langchain_chroma import Chroma
 
 from .config import rag_config
@@ -29,7 +30,7 @@ class ChromaVectorStore:
     - Embedding using BAAI/bge-m3 (from RAG_AI_Tutor.ipynb)
     """
     
-    _embedding_model: Optional[HuggingFaceEmbeddings] = None
+    _embedding_model: Optional[Embeddings] = None
     
     def __init__(
         self,
@@ -81,13 +82,15 @@ class ChromaVectorStore:
 
                 logger.info(f"Loading embedding model: {self.embedding_model_name}")
                 logger.info(f"Using device: {self.device}")
-                
-                ChromaVectorStore._embedding_model = HuggingFaceEmbeddings(
+
+                from .embeddings import build_embeddings  # local: avoid cycles
+                ChromaVectorStore._embedding_model = build_embeddings(
                     model_name=self.embedding_model_name,
-                    model_kwargs={'device': self.device},
-                    encode_kwargs={'normalize_embeddings': rag_config.NORMALIZE_EMBEDDINGS}
+                    device=self.device,
+                    batch_size=getattr(rag_config, "EMBEDDING_BATCH_SIZE", 32),
+                    normalize=rag_config.NORMALIZE_EMBEDDINGS,
                 )
-                
+
                 logger.info("Embedding model loaded successfully")
 
                 # Share with PerFileCollectionManager so it doesn't reload

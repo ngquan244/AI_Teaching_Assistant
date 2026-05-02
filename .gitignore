@@ -116,3 +116,6 @@ tests/test_document_rag.py
 README_document_rag.md
 
 AGENTS.md
+baseline_bench.txt
+debug_ppt.py
+README.md
