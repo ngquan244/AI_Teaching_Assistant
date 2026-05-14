@@ -87,6 +87,13 @@ export interface CanvasDownloadResponse {
 export interface CanvasIndexRequest {
   filename: string;
   course_id?: number;  // Canvas course ID for collection naming
+  /**
+   * When true, the backend purges any prior index/topic/registry state for
+   * this file before indexing. Used by the UI's "re-index after delete" path
+   * so a stale cross-process registry can't short-circuit into
+   * `already_indexed=true`.
+   */
+  force_reindex?: boolean;
 }
 
 export interface CanvasIndexResponse {
@@ -233,13 +240,14 @@ export async function downloadCanvasFile(
  */
 export async function indexCanvasFile(
   filename: string,
-  courseId?: number
+  courseId?: number,
+  forceReindex: boolean = false,
 ): Promise<CanvasIndexResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<CanvasIndexResponse>(
       `${API_BASE}/index`,
-      { filename, course_id: courseId },
+      { filename, course_id: courseId, force_reindex: forceReindex },
       cfg,
     );
     return response.data;
@@ -449,12 +457,13 @@ export async function asyncCanvasGenerateQuiz(
 export async function asyncIndexCanvasFile(
   filename: string,
   courseId?: number,
+  forceReindex: boolean = false,
 ): Promise<AsyncJobResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<AsyncJobResponse>(
       `${API_BASE}/async/index`,
-      { filename, course_id: courseId },
+      { filename, course_id: courseId, force_reindex: forceReindex },
       cfg,
     );
     return response.data;

@@ -482,6 +482,7 @@ class CanvasRAGService:
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
         key_pool: Optional[Any] = None,
+        force_reindex: bool = False,
     ) -> Dict[str, Any]:
         """
         Ingest a Canvas PDF document into a per-file collection.
@@ -518,9 +519,28 @@ class CanvasRAGService:
             # Pick up delete/reindex changes made by other processes before duplicate checks.
             self._collection_manager.ensure_fresh_state()
 
+            # Force re-index path: explicitly purge any prior state for this
+            # (filename, user) so a stale cross-process registry / DB row from
+            # a recent delete cannot short-circuit us into ``already_indexed``.
+            if force_reindex:
+                logger.info(
+                    "Canvas force_reindex requested: purging prior state for %s (hash=%s, user=%s)",
+                    filename, file_hash, user_id,
+                )
+                try:
+                    self.remove_index(filename, user_id=user_id, db_session=db_session)
+                except Exception as _purge_exc:
+                    logger.warning(
+                        "force_reindex pre-purge failed for %s: %s", filename, _purge_exc,
+                    )
+                # Refresh again after the purge so the duplicate checks below
+                # observe a clean registry / DB.
+                self._collection_manager.ensure_fresh_state()
+
             already_indexed = False
             collection_name = None
             topics_extracted: List[Dict[str, str]] = []
+            indexed_source = None  # 'db' | 'registry' — for debug logging only
 
             if db_session and user_id:
                 try:
@@ -532,6 +552,7 @@ class CanvasRAGService:
                         source=RAGSourceType.CANVAS,
                     )
                     if already_indexed:
+                        indexed_source = "db"
                         collection_name = SyncRAGCollectionRepository.get_collection_name(
                             db_session,
                             file_hash,
@@ -572,10 +593,14 @@ class CanvasRAGService:
 
                 if registry_meta is not None and registry_meta.is_indexed:
                     already_indexed = True
+                    indexed_source = "registry"
                     collection_name = registry_meta.collection_name
 
             if already_indexed:
-                logger.info(f"Canvas document already indexed in per-file collection: {file_path}")
+                logger.info(
+                    "Canvas document already indexed in per-file collection: %s | source=%s | hash=%s | collection=%s | user=%s",
+                    file_path, indexed_source, file_hash, collection_name, user_id,
+                )
 
                 has_topics = False
                 if db_session and user_id:
@@ -1873,18 +1898,36 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         """Remove index for a Canvas file (keep the file itself).
         
         Cleans up: ChromaDB collection, legacy vector store,
-        indexed registry (JSON), topic storage, and PostgreSQL record.
+        indexed registry (JSON), topic storage, PostgreSQL record,
+        and any matching CanvasCourseDomainDoc marks.
         """
         self._ensure_collection_manager()
-        
+
+        logger.info(
+            "Canvas remove_index start: filename=%s user=%s",
+            filename, user_id,
+        )
+        # Pull in any registry/DB writes made by another process (typically the
+        # rag worker that just finished indexing this file). Without this, the
+        # FastAPI backend can hold a stale view and fail to find the entry it
+        # is trying to delete — producing "Cannot delete collection: file_hash
+        # ... not found in registry" warnings and orphan Chroma directories.
+        try:
+            self._collection_manager.ensure_fresh_state()
+        except Exception as _refresh_exc:
+            logger.warning(
+                "remove_index: registry refresh failed (continuing): %s", _refresh_exc,
+            )
         try:
             hash_to_remove = None
+            course_id_for_domain: Optional[int] = None
             
             # Source 1: Find file hash in indexed_files_registry (per-user)
             indexed_registry = self._load_indexed_registry(user_id)
             for hash_val, data in indexed_registry.items():
                 if data.get("filename") == filename:
                     hash_to_remove = hash_val
+                    course_id_for_domain = data.get("course_id")
                     break
             
             # Source 2: Find file hash in collection_manager registry
@@ -1897,6 +1940,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     for meta in registry_matches:
                         if meta.filename == filename:
                             hash_to_remove = meta.file_hash
+                            course_id_for_domain = course_id_for_domain or meta.course_id
                             break
                 except Exception as e:
                     logger.warning(f"Could not search collection_manager: {e}")
@@ -1912,14 +1956,73 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     )
                     if row:
                         hash_to_remove = row.file_hash
+                        course_id_for_domain = course_id_for_domain or row.course_id
                 except Exception as e:
                     logger.warning(f"Could not search DB for file hash: {e}")
-            
+
+            # Source 4 (fuzzy fallback): the UI sometimes hands us the raw
+            # Canvas display_name (e.g. ``1 - Gioi thieu.pdf``) while the
+            # local copy was suffix-renamed at download time to avoid name
+            # collisions (``1 - Gioi thieu_1.pdf``). Mirror the normalization
+            # used by the topic-extract resolver above so the strict lookups
+            # don't silently no-op.
             if not hash_to_remove:
+                def _norm(name: str) -> str:
+                    return " ".join((name or "").lower().replace(",", "").split())
+
+                target = _norm(filename)
+                target_base = target[:-4] if target.endswith(".pdf") else target
+
+                def _matches(candidate: str) -> bool:
+                    cand = _norm(candidate)
+                    cand_base = cand[:-4] if cand.endswith(".pdf") else cand
+                    if not target_base:
+                        return False
+                    if cand == target or cand_base == target_base:
+                        return True
+                    # ``foo`` should match ``foo_1`` / ``foo_2`` (download-time
+                    # collision suffix) but not ``foobar``.
+                    if cand_base.startswith(target_base + "_") or target_base.startswith(cand_base + "_"):
+                        return True
+                    return False
+
+                for hash_val, data in indexed_registry.items():
+                    if _matches(data.get("filename") or ""):
+                        hash_to_remove = hash_val
+                        course_id_for_domain = course_id_for_domain or data.get("course_id")
+                        break
+
+                if not hash_to_remove:
+                    try:
+                        all_meta = self._collection_manager.registry.get_all(user_id=user_id)
+                        for meta in all_meta:
+                            if _matches(meta.filename or ""):
+                                hash_to_remove = meta.file_hash
+                                course_id_for_domain = course_id_for_domain or meta.course_id
+                                break
+                    except Exception as e:
+                        logger.warning(f"Fuzzy registry scan failed: {e}")
+
+                if hash_to_remove:
+                    logger.info(
+                        "Canvas remove_index fuzzy-matched %r -> hash=%s",
+                        filename, hash_to_remove,
+                    )
+
+            if not hash_to_remove:
+                logger.info(
+                    "Canvas remove_index: no prior state found for %s (user=%s) \u2014 nothing to do",
+                    filename, user_id,
+                )
                 return {
                     "success": False,
                     "error": f"File not indexed: {filename}"
                 }
+
+            logger.info(
+                "Canvas remove_index resolved hash=%s course_id=%s for %s",
+                hash_to_remove, course_id_for_domain, filename,
+            )
             
             # Remove from per-file collection manager
             try:
@@ -1962,7 +2065,38 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 except Exception as e:
                     logger.warning(f"Could not remove DB record: {e}")
                     db_session.rollback()
-            
+
+            # Soft-disable any matching CanvasCourseDomainDoc marks so the file
+            # cannot resurface as "course-shared domain knowledge" pointing at
+            # a now-deleted RAGCollection. We only know the course_id when it
+            # was captured above; if missing, skip silently.
+            if db_session and course_id_for_domain is not None:
+                try:
+                    disabled = SyncCanvasCourseDomainDocRepository.disable(
+                        db_session,
+                        course_id=int(course_id_for_domain),
+                        file_hash=hash_to_remove,
+                    )
+                    if disabled:
+                        db_session.commit()
+                        logger.info(
+                            "Canvas remove_index: disabled CanvasCourseDomainDoc for course=%s hash=%s",
+                            course_id_for_domain, hash_to_remove,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Could not disable CanvasCourseDomainDoc for course=%s hash=%s: %s",
+                        course_id_for_domain, hash_to_remove, e,
+                    )
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
+
+            logger.info(
+                "Canvas remove_index done: filename=%s hash=%s user=%s",
+                filename, hash_to_remove, user_id,
+            )
             return {
                 "success": True,
                 "message": f"Index removed for: {filename}"

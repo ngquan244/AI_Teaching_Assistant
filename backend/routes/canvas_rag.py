@@ -67,6 +67,11 @@ class CanvasIndexRequest(BaseModel):
     """Request to index a downloaded Canvas file."""
     filename: str
     course_id: Optional[int] = None
+    # When True, any existing index/topic/registry/Chroma data for this file
+    # is removed before indexing. Used by the UI's "re-index after delete"
+    # path so a stale cross-process registry cannot short-circuit the request
+    # back into ``already_indexed=True``.
+    force_reindex: bool = False
 
 
 class CanvasExtractTopicsRequest(BaseModel):
@@ -319,6 +324,7 @@ async def index_canvas_file(
 
     user_id = str(user.id)
     course_id = request.course_id
+    force_reindex = request.force_reindex
 
     def _do_ingest():
         with SessionLocal() as db:
@@ -327,6 +333,7 @@ async def index_canvas_file(
                 course_id=course_id,
                 user_id=user_id,
                 db_session=db,
+                force_reindex=force_reindex,
             )
 
     return await asyncio.to_thread(_do_ingest)
@@ -786,6 +793,7 @@ async def async_index_canvas_file(
                 "user_id": str(user.id),
                 "course_id": request.course_id,
                 "file_path": str(file_path),
+                "force_reindex": request.force_reindex,
             },
         )
         await job_service.set_celery_task_id(job.id, result.id)

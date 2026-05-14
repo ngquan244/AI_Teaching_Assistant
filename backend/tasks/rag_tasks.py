@@ -568,6 +568,7 @@ def canvas_index_file(
     user_id: Optional[str] = None,
     course_id: Optional[int] = None,
     file_path: Optional[str] = None,
+    force_reindex: bool = False,
 ) -> Dict[str, Any]:
     """
     Index a downloaded Canvas file into a per-file collection.
@@ -622,6 +623,7 @@ def canvas_index_file(
                     user_id=user_id, db_session=rag_db,
                     groq_api_key=groq_key,
                     key_pool=key_pool,
+                    force_reindex=force_reindex,
                 )
         finally:
             _flush_groq_key_pool(key_pool, "canvas_index_file")

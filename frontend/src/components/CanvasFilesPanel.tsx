@@ -211,6 +211,12 @@ const CanvasFilesPanel: React.FC = () => {
 
   // Action states for indexed files (extract/edit/remove)
   const [fileActionStates, setFileActionStates] = useState<Map<string, ExtendedFileStatus>>(new Map());
+
+  // Track filenames whose index was just removed in this session. The next
+  // time the user re-indexes one of these files we send `force_reindex=true`
+  // so a stale cross-process registry/DB row from the recent delete cannot
+  // short-circuit the worker into `already_indexed=true`.
+  const recentlyRemovedRef = useRef<Set<string>>(new Set());
   
   // Pagination state
   const [remoteCurrentPage, setRemoteCurrentPage] = useState(1);
@@ -573,7 +579,31 @@ const CanvasFilesPanel: React.FC = () => {
     updateFileStatus(file.id, { status: 'indexing' });
     
     try {
-      const asyncResp = await asyncIndexCanvasFile(filenameToIndex, selectedCourse?.id);
+      // Force re-index whenever we have evidence the prior index was removed:
+      //   1. Session-local mark from a delete the user just performed, OR
+      //   2. Local file exists (download returned 'duplicate') but the file
+      //      is NOT in the current indexed list — i.e. user deleted the
+      //      index in a previous session / different tab and the cross-process
+      //      registry may still hold a stale entry.
+      const sessionMark =
+        recentlyRemovedRef.current.has(filenameToIndex) ||
+        recentlyRemovedRef.current.has(file.display_name);
+      const inferredFromState =
+        downloadResult.status === 'duplicate' &&
+        !allIndexedDocs.some((doc) => filenamesMatch(filenameToIndex, doc.filename));
+      const forceReindex = sessionMark || inferredFromState;
+      console.log('[canvas-rag] asyncIndexCanvasFile', {
+        filename: filenameToIndex,
+        courseId: selectedCourse?.id,
+        forceReindex,
+        sessionMark,
+        inferredFromState,
+      });
+      const asyncResp = await asyncIndexCanvasFile(
+        filenameToIndex,
+        selectedCourse?.id,
+        forceReindex,
+      );
       const jobId = asyncResp.job_id;
 
       // Poll until job completes
@@ -590,6 +620,9 @@ const CanvasFilesPanel: React.FC = () => {
           error?: string;
         };
         if (result.success) {
+          // Re-index attempt completed; clear any "recently removed" mark.
+          recentlyRemovedRef.current.delete(filenameToIndex);
+          recentlyRemovedRef.current.delete(file.display_name);
           if (result.already_indexed) {
             updateFileStatus(file.id, { status: 'indexed' });
           } else {
@@ -727,8 +760,11 @@ const CanvasFilesPanel: React.FC = () => {
     }
     
     try {
+      console.log('[canvas-rag] removeCanvasFileIndex', { filename, courseId: selectedCourse?.id });
       const result = await removeCanvasFileIndex(filename);
+      console.log('[canvas-rag] removeCanvasFileIndex response', result);
       if (result.success) {
+        recentlyRemovedRef.current.add(filename);
         await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
@@ -754,12 +790,16 @@ const CanvasFilesPanel: React.FC = () => {
     
     try {
       // Try with both original and sanitized name
+      console.log('[canvas-rag] removeCanvasFileIndex (remote)', { filename: file.display_name, sanitizedName, fileId: file.id });
       let result = await removeCanvasFileIndex(sanitizedName);
       if (!result.success) {
         result = await removeCanvasFileIndex(file.display_name);
       }
-      
+      console.log('[canvas-rag] removeCanvasFileIndex (remote) response', result);
+
       if (result.success) {
+        recentlyRemovedRef.current.add(file.display_name);
+        recentlyRemovedRef.current.add(sanitizedName);
         // Reset status — no longer indexed
         setDownloadStates(prev => {
           const newMap = new Map(prev);

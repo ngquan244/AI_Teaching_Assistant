@@ -1858,7 +1858,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                       disabled={isGeneratingQuiz}
                       onChange={(e) => setIncludeCourseDomain(e.target.checked)}
                     />
-                    Include course-shared domain knowledge
+                    Bao gồm tri thức nền dùng chung của khóa học
                   </label>
                   <p style={{
                     margin: '6px 0 10px 24px',
@@ -1866,9 +1866,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                     color: '#94a3b8',
                     lineHeight: 1.45,
                   }}>
-                    Pulls extra context from documents the instructor marked as
-                    course-shared. Only Canvas-pipeline documents are eligible
-                    sources — uploaded personal documents never participate.
+                    Bổ sung ngữ cảnh từ các tài liệu Canvas được giảng viên đánh dấu dùng chung cho khóa học. Tài liệu cá nhân tải lên sẽ không được sử dụng.
                   </p>
 
                   {includeCourseDomain && (
