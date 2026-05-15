@@ -21,6 +21,7 @@ from backend.routes import canvas as canvas_routes
 from backend.routes import canvas_rag as canvas_rag_routes
 from backend.routes import canvas_quiz as canvas_quiz_routes
 from backend.routes import canvas_sim as canvas_sim_routes
+from backend.routes import canvas_student_import as canvas_student_import_routes
 from backend.routes import canvas_results as canvas_results_routes
 from backend.routes import jobs as jobs_routes
 from backend.routes import admin as admin_routes
@@ -165,6 +166,11 @@ app.include_router(canvas_routes.router, prefix="/api/canvas", tags=["Canvas LMS
 app.include_router(canvas_rag_routes.router, prefix="/api/canvas-rag", tags=["Canvas RAG"])
 app.include_router(canvas_quiz_routes.router, prefix="/api/canvas-quiz", tags=["Canvas Quiz"])
 app.include_router(canvas_sim_routes.router, prefix="/api/canvas-sim", tags=["Canvas Simulation"])
+app.include_router(
+    canvas_student_import_routes.router,
+    prefix="/api/canvas/students/import",
+    tags=["Canvas Student Import"],
+)
 app.include_router(canvas_results_routes.router, prefix="/api/canvas-results", tags=["Canvas Results"])
 app.include_router(jobs_routes.router, tags=["Jobs"])
 app.include_router(admin_routes.router, tags=["Admin"])
