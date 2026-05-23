@@ -127,9 +127,8 @@ class GroqLLM(BaseLLM):
         self.api_key = api_key
         self.base_url = base_url
         self.max_tokens = max_tokens
-        # Phase 1 logging: identify which pool key this provider wraps.
-        # ``key_id`` is the UUID from the DB pool; ``masked_key`` is e.g.
-        # "gsk_ab...wxyz". Both are optional so single-key (env) usage still works.
+        # KeyPool identifiers used for per-request logging. Both optional so
+        # single-key (env) usage still works.
         self.key_id = key_id
         self.masked_key = masked_key or (
             f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else "***"
@@ -159,12 +158,7 @@ class GroqLLM(BaseLLM):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "max_tokens": max_tokens or self.max_tokens,
-            # Phase 2: disable SDK-level retry on 429. The KeyPool retry loop
-            # in quiz_generator._invoke_generation_pass switches to another
-            # key immediately instead of letting ChatOpenAI sleep 14/19/25s
-            # on the same rate-limited key. Network 5xx errors will now also
-            # fail fast; Phase 3 retry-on-other-key handles 429 only, other
-            # errors still propagate as before.
+            # Let KeyPool handle rate-limit rotation instead of SDK-level retries.
             "max_retries": 0,
         }
         
@@ -183,8 +177,6 @@ class GroqLLM(BaseLLM):
         - 429: Rate limit exceeded
         - Other connection errors
         """
-        # Phase 1 logging only: emit START / SUCCESS / 429 lines with the
-        # masked key id. Control flow is unchanged.
         t0 = time.monotonic()
         logger.info(
             "LLM_REQUEST_START provider=groq model=%s key_id=%s masked_key=%s",

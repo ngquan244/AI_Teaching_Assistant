@@ -370,7 +370,6 @@ def build_index(
             _flush_groq_key_pool(key_pool, "build_index")
         
         if result.get("success"):
-            # Log the collection name for debugging
             collection_name = result.get("collection_name", "unknown")
             logger.info(f"Successfully indexed {filename} into collection: {collection_name}")
             job_service.complete_job(job_uuid, result)

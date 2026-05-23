@@ -268,24 +268,9 @@ const CanvasFilesPanel: React.FC = () => {
     };
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────
-  // DOMAIN-DOC ENRICHMENT TRIGGER
-  //
-  // The /indexed endpoint does NOT carry is_course_domain. We must enrich
-  // by calling /courses/{id}/documents AFTER both:
-  //   (a) publicConfig.enable_course_domain_docs is true
-  //   (b) indexedDocs has been populated by fetchRemoteFiles/loadIndexedDocs
-  //
-  // Previous approaches keyed only off [publicConfig] which would fire while
-  // indexedDocs was still []. That left a race where the merge ran against
-  // an empty array and then fetchRemoteFiles later overwrote with un-enriched
-  // documents.
-  //
-  // This effect uses a fingerprint of the current docs' file_hashes so it:
-  //   - fires after fetchRemoteFiles populates indexedDocs (hashes change)
-  //   - is idempotent: the enrichment itself does not change hashes, so the
-  //     effect won't re-fire infinitely.
-  // ─────────────────────────────────────────────────────────────────────
+  // Re-enrich domain flags after both publicConfig and indexed docs are ready.
+  // Fingerprint keyed off file_hashes so the effect fires once per docs change
+  // and stays idempotent (enrichment does not mutate hashes).
   const lastEnrichedRef = useRef<string>('');
   useEffect(() => {
     if (!publicConfig?.enable_course_domain_docs || !selectedCourse) return;
@@ -297,12 +282,6 @@ const CanvasFilesPanel: React.FC = () => {
     const fingerprint = `${selectedCourse.id}|${hashes.sort().join(',')}`;
     if (lastEnrichedRef.current === fingerprint) return;
     lastEnrichedRef.current = fingerprint;
-    console.log('[domain-audit] enrichment trigger', {
-      courseId: selectedCourse.id,
-      indexedDocsCount: indexedDocs.length,
-      allIndexedDocsCount: allIndexedDocs.length,
-      publicConfigReady: !!publicConfigRef.current?.enable_course_domain_docs,
-    });
     void loadCourseDocuments(selectedCourse.id);
     // loadCourseDocuments captured fresh on each render but its only state
     // dependency is publicConfigRef (a ref). selectedCourse is read directly.
@@ -314,25 +293,10 @@ const CanvasFilesPanel: React.FC = () => {
    *  course view refreshes if the feature is enabled. */
   const loadCourseDocuments = async (courseId?: number) => {
     if (!courseId || !publicConfigRef.current?.enable_course_domain_docs) {
-      console.log('[domain-audit] loadCourseDocuments skipped', {
-        courseId,
-        publicConfigReady: !!publicConfigRef.current?.enable_course_domain_docs,
-      });
       return;
     }
     try {
       const res = await listCourseDocuments(courseId);
-      console.log('[domain-audit] /courses/{id}/documents response', {
-        courseId,
-        success: res.success,
-        count: res.documents?.length ?? 0,
-        sample: res.documents?.slice(0, 3).map((d) => ({
-          file_hash: d.file_hash,
-          filename: d.filename,
-          is_course_domain: d.is_course_domain,
-          course_id: d.course_id,
-        })),
-      });
       if (!res.success) return;
       // Use boolean coercion for is_course_domain so `false` from backend
       // correctly overrides any stale undefined/true value on the local doc.
@@ -351,14 +315,7 @@ const CanvasFilesPanel: React.FC = () => {
           marked_by_user_id: enriched.marked_by_user_id ?? doc.marked_by_user_id,
         };
       };
-      setIndexedDocs((prev) => {
-        const next = prev.map(merge);
-        console.log('[domain-audit] indexedDocs after merge', {
-          before: prev.map((d) => ({ h: d.file_hash, dom: d.is_course_domain })),
-          after: next.map((d) => ({ h: d.file_hash, dom: d.is_course_domain })),
-        });
-        return next;
-      });
+      setIndexedDocs((prev) => prev.map(merge));
       setAllIndexedDocs((prev) => prev.map(merge));
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
@@ -376,13 +333,6 @@ const CanvasFilesPanel: React.FC = () => {
     nextEnabled: boolean,
   ) => {
     if (!selectedCourse || !publicConfigRef.current?.enable_course_domain_docs) return;
-    console.log('[domain-audit] handleToggleDomain start', {
-      courseId: selectedCourse.id,
-      file_hash: doc.file_hash,
-      filename: doc.filename,
-      nextEnabled,
-      currentValue: doc.is_course_domain,
-    });
     setDomainToggleError(null);
     setDomainTogglePending((prev) => {
       const next = new Set(prev);
@@ -390,13 +340,11 @@ const CanvasFilesPanel: React.FC = () => {
       return next;
     });
     try {
-      let apiResp: unknown;
       if (nextEnabled) {
-        apiResp = await markDomainDocuments(selectedCourse.id, [doc.file_hash]);
+        await markDomainDocuments(selectedCourse.id, [doc.file_hash]);
       } else {
-        apiResp = await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
+        await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
       }
-      console.log('[domain-audit] toggle API response', { nextEnabled, apiResp });
       // Confirmed update (after server acknowledged). Apply locally so UI
       // stays in sync until next refresh enrichment.
       const apply = (d: CanvasIndexedDocument): CanvasIndexedDocument =>
@@ -410,22 +358,16 @@ const CanvasFilesPanel: React.FC = () => {
       try {
         const verify = await listCourseDocuments(selectedCourse.id);
         const found = verify.documents.find((d) => d.file_hash === doc.file_hash);
-        console.log('[domain-audit] post-toggle verify from server', {
-          file_hash: doc.file_hash,
-          expected: nextEnabled,
-          actual: found?.is_course_domain,
-          matchesExpected: found?.is_course_domain === nextEnabled,
-        });
         if (found && found.is_course_domain !== nextEnabled) {
           console.warn(
-            '[domain-audit] PERSISTENCE MISMATCH: backend reported a different value than what we just sent',
+            '[canvas-domain] backend reported a different value than what was sent',
           );
         }
       } catch (verifyErr) {
-        console.warn('[domain-audit] verify call failed', verifyErr);
+        console.warn('[canvas-domain] verify call failed', verifyErr);
       }
     } catch (err: unknown) {
-      console.error('[domain-audit] toggle API failed', err);
+      console.error('[canvas-domain] toggle API failed', err);
       const msg =
         (err as { response?: { data?: { detail?: { message?: string; error?: string } } } })
           ?.response?.data?.detail?.message ||
@@ -828,13 +770,6 @@ const CanvasFilesPanel: React.FC = () => {
         downloadResult.status === 'duplicate' &&
         !allIndexedDocs.some((doc) => filenamesMatch(filenameToIndex, doc.filename));
       const forceReindex = sessionMark || inferredFromState;
-      console.log('[canvas-rag] asyncIndexCanvasFile', {
-        filename: filenameToIndex,
-        courseId: selectedCourse?.id,
-        forceReindex,
-        sessionMark,
-        inferredFromState,
-      });
       const asyncResp = await asyncIndexCanvasFile(
         filenameToIndex,
         selectedCourse?.id,
@@ -962,9 +897,7 @@ const CanvasFilesPanel: React.FC = () => {
     }
     
     try {
-      console.log('[canvas-rag] removeCanvasFileIndex', { filename, courseId: selectedCourse?.id });
       const result = await removeCanvasFileIndex(filename);
-      console.log('[canvas-rag] removeCanvasFileIndex response', result);
       if (result.success) {
         recentlyRemovedRef.current.add(filename);
         await refreshIndexedData(selectedCourse?.id, 1);
@@ -992,12 +925,10 @@ const CanvasFilesPanel: React.FC = () => {
     
     try {
       // Try with both original and sanitized name
-      console.log('[canvas-rag] removeCanvasFileIndex (remote)', { filename: file.display_name, sanitizedName, fileId: file.id });
       let result = await removeCanvasFileIndex(sanitizedName);
       if (!result.success) {
         result = await removeCanvasFileIndex(file.display_name);
       }
-      console.log('[canvas-rag] removeCanvasFileIndex (remote) response', result);
 
       if (result.success) {
         recentlyRemovedRef.current.add(file.display_name);

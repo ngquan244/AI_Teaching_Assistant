@@ -233,8 +233,7 @@ class KeyPool:
             run_err = self._run_errors.get(candidate["id"], 0)
             if run_err >= _MAX_ERRORS_BEFORE_SKIP:
                 continue
-            # Phase 1 logging: emit KEY_SWITCH whenever the returned key changes
-            # (or first selection). No behavioural change.
+            # Emit KEY_SWITCH whenever the returned key changes (or first selection).
             if self._last_returned_id != candidate["id"]:
                 logger.info(
                     "KEY_SWITCH from_key_id=%s to_key_id=%s to_masked=%s pool_size=%d",

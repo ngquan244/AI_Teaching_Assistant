@@ -295,7 +295,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   // Listen for canvas topics updates from CanvasFilesPanel
   useEffect(() => {
     const handleCanvasTopicsUpdated = () => {
-      console.log('Canvas topics updated event received, reloading...');
       loadCanvasIndexedDocuments();
       // Clear canvas topics cache to force reload
       setCanvasTopicsCache({});
@@ -320,7 +319,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     // since documents may already be indexed locally
     try {
       const response = await listIndexedCanvasDocuments(undefined, 1, 100);
-      console.log('Canvas indexed documents response:', response);
       if (response.success && response.documents) {
         const docs: IndexedDocument[] = response.documents.map(d => ({
           filename: d.filename,
@@ -339,7 +337,6 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
           }
         }
         setCourseNameMap(prev => ({ ...prev, ...map }));
-        console.log('Set canvasIndexedDocuments:', docs.length, 'documents');
       }
     } catch (error) {
       console.error('Error loading Canvas indexed documents:', error);

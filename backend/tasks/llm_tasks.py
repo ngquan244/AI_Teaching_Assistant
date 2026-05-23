@@ -142,7 +142,9 @@ def generate_quiz(
     
     try:
         job_service.start_job(job_uuid, "Retrieving context")
-        quiz_logger.info(f"Task received: job={job_id}, topics={topics}, selected_documents={selected_documents}, user_id={user_id}, source={source}")
+        quiz_logger.info(
+            f"Task received: job={job_id} topics={topics} selected_docs={n_selected} source={source}"
+        )
 
         from backend.tasks import rag_tasks
 

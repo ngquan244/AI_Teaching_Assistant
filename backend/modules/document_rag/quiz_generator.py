@@ -3103,11 +3103,10 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected=cost_protected,
         )
 
-        # Phase 3: retry-on-other-key loop. Each iteration uses one provider
-        # bound to one Groq key. On 429 we mark the key, ask KeyPool for a
-        # fresh one, and re-issue chain.invoke. Bounded by max_attempts.
-        # Non-429 errors propagate unchanged (no behaviour change for parse
-        # failures, auth errors, network 5xx, etc.).
+        # Retry-on-other-key loop. Each iteration uses one provider bound to
+        # one Groq key; on 429 we mark the key, rotate to a fresh one, and
+        # re-issue chain.invoke. Bounded by max_attempts. Non-429 errors
+        # propagate unchanged.
         active_provider = llm_provider_override or self._llm_provider
         active_key_info = current_key_info
         pool_size = key_pool.size if key_pool is not None else 0
@@ -3597,9 +3596,7 @@ Return ONLY valid JSON, no additional text.""")
                     current_key_info=_current_key_info,
                 )
             except Exception:
-                # Phase 3: _invoke_generation_pass already marked the key on
-                # 429/other errors; outer mark_error removed to avoid double
-                # counting once a key swap happens inside the inner loop.
+                # Inner pass already handled mark_error/key swap on 429.
                 raise
             total_malformed += batch_stats["malformed_count"]
             total_retries += batch_stats["retry_count"]
@@ -3660,7 +3657,7 @@ Return ONLY valid JSON, no additional text.""")
                         current_key_info=_refill_key,
                     )
                 except Exception:
-                    # Phase 3: inner loop already handled mark_error/key swap.
+                    # Inner pass already handled mark_error/key swap on 429.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
@@ -3729,7 +3726,7 @@ Return ONLY valid JSON, no additional text.""")
                         current_key_info=_refill2_key,
                     )
                 except Exception:
-                    # Phase 3: inner loop already handled mark_error/key swap.
+                    # Inner pass already handled mark_error/key swap on 429.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
@@ -4689,7 +4686,7 @@ Return ONLY valid JSON, no additional text.""")
             # Extract response content
             content = response.content if hasattr(response, 'content') else str(response)
             logger.info(f"Raw LLM response length: {len(content)} chars")
-            logger.info(f"Raw LLM response: {content[:500]}...")
+            logger.debug(f"Raw LLM response: {content[:500]}...")
             
             # Check for truncation
             finish_reason = self._get_finish_reason(response)
@@ -4698,14 +4695,14 @@ Return ONLY valid JSON, no additional text.""")
             if was_truncated:
                 logger.warning("LLM output was truncated (finish_reason=length)")
             
-            # Phase 1: Parse response
+            # Parse response
             quiz_data = self._parse_quiz_response(content)
             
-            # Phase 2: If parse failed and was truncated, try salvage
+            # If parse failed and was truncated, try salvage
             if not quiz_data and was_truncated:
                 quiz_data = self._salvage_partial_json(content)
             
-            # Phase 3: If parse still failed, retry with reduced explanation + higher max_tokens
+            # If parse still failed, retry with reduced explanation + higher max_tokens
             if not quiz_data:
                 logger.warning("Parse failed, retrying with reduced explanation prompt...")
                 retry_max_tokens = dynamic_max_tokens + 2048
@@ -4749,14 +4746,14 @@ Return ONLY valid JSON, no additional text.""")
                     "sources": sources
                 }
             
-            # Phase 4: Format quiz questions
+            # Format quiz questions
             formatted_quiz = self._format_quiz(quiz_data.get("quiz", []))
             num_generated = len(formatted_quiz)
             is_partial_salvage = quiz_data.get("message") == "partial_salvage"
             
             logger.info(f"Generated {num_generated}/{num_questions} questions (salvaged={is_partial_salvage})")
             
-            # Phase 5: Handle insufficient questions
+            # Handle insufficient questions
             if num_generated < num_questions and num_generated > 0:
                 missing = num_questions - num_generated
                 
@@ -4791,7 +4788,7 @@ Return ONLY valid JSON, no additional text.""")
                         formatted_quiz = batched_result
                         logger.info(f"After batching: {len(formatted_quiz)}/{num_questions} questions")
             
-            # Phase 6: Enforce exact count — truncate surplus questions
+            # Enforce exact count — truncate surplus questions
             if len(formatted_quiz) > num_questions:
                 formatted_quiz = formatted_quiz[:num_questions]
 
