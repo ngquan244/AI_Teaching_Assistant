@@ -44,8 +44,23 @@ def _resolve_groq_api_key_sync(groq_api_key: Optional[str] = None) -> Optional[s
 
 
 def _wait_for_rag_task(task, *, args: Optional[List[Any]] = None, kwargs: Optional[Dict[str, Any]] = None, timeout: int = 180) -> Dict[str, Any]:
-    """Run a rag-queue subtask and wait for its result from the llm worker."""
-    async_result = task.apply_async(args=args or [], kwargs=kwargs or {}, queue="rag")
+    """Run a rag-queue subtask and wait for its result from the llm worker.
+
+    In eager mode there is no separate rag worker to dispatch to, and using
+    ``apply_async().get()`` would require ``allow_join_result`` + a running
+    broker. We bypass queue routing entirely and invoke the task function
+    directly in-process instead.
+    """
+    call_args = args or []
+    call_kwargs = kwargs or {}
+
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        # task.apply() runs the task synchronously in-process without touching
+        # the broker or any queue; returns an EagerResult.
+        eager_result = task.apply(args=call_args, kwargs=call_kwargs)
+        return eager_result.get(propagate=True)
+
+    async_result = task.apply_async(args=call_args, kwargs=call_kwargs, queue="rag")
     with allow_join_result():
         return async_result.get(
             timeout=timeout,
@@ -57,9 +72,22 @@ def _wait_for_rag_task(task, *, args: Optional[List[Any]] = None, kwargs: Option
 def _build_quiz_generator(groq_api_key: Optional[str] = None):
     from backend.modules.document_rag.quiz_generator import QuizGenerator
     from backend.modules.document_rag.llm_providers import LLMFactory
+    from backend.services.groq_key_pool_service import get_pool_keys_sync, KeyPool
 
     llm_provider = LLMFactory.create(groq_api_key=groq_api_key) if groq_api_key else LLMFactory.create()
-    return QuizGenerator(retriever=None, llm_provider=llm_provider)
+
+    # Build key pool for round-robin rotation across batches
+    key_pool = None
+    try:
+        with SessionLocal() as db:
+            pool_keys = get_pool_keys_sync(db)
+        if pool_keys:
+            key_pool = KeyPool(pool_keys)
+            logger.info("KeyPool initialized with %d keys", len(pool_keys))
+    except Exception as exc:
+        logger.warning("Failed to build KeyPool, falling back to single key: %s", exc)
+
+    return QuizGenerator(retriever=None, llm_provider=llm_provider, key_pool=key_pool)
 
 
 def _build_rag_chain():
@@ -90,6 +118,8 @@ def generate_quiz(
     user_id: Optional[str] = None,
     source: str = "document",  # "document" or "canvas"
     groq_api_key: Optional[str] = None,
+    include_course_domain: bool = False,
+    domain_quota_ratio: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Generate quiz questions from indexed documents.
@@ -124,6 +154,8 @@ def generate_quiz(
                 "selected_documents": selected_documents,
                 "user_id": user_id,
                 "source": source,
+                "include_course_domain": include_course_domain,
+                "domain_quota_ratio": domain_quota_ratio,
             },
             timeout=120,
         )
@@ -150,6 +182,9 @@ def generate_quiz(
                 language=language,
             )
             result["_resolved_hashes"] = retrieval.get("_resolved_hashes", "?")
+            # Persist key pool usage stats back to DB
+            if quiz_generator._key_pool is not None:
+                quiz_generator._key_pool.flush_to_db()
         
         duration = round(time.time() - t0, 1)
         n_resolved = result.get("_resolved_hashes", "?")

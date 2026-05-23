@@ -712,3 +712,128 @@ async def delete_groq_key(
 
     logger.info("Admin %s removed Groq API key from DB", admin.email)
     return MessageOut(success=True, message="Đã xoá Groq API key. Hệ thống sẽ dùng biến môi trường nếu có.")
+
+
+# =============================================================================
+# Groq API Key Pool Endpoints
+# =============================================================================
+
+class GroqPoolKeyOut(BaseModel):
+    id: UUID
+    name: str
+    enabled: bool
+    masked_key: str
+    error_count: int
+    last_error_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AddGroqPoolKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    api_key: str = Field(..., min_length=10, max_length=256)
+    enabled: bool = True
+
+
+class UpdateGroqPoolKeyRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    api_key: Optional[str] = Field(None, min_length=10, max_length=256)
+    enabled: Optional[bool] = None
+
+
+def _pool_key_to_out(record, plain_key: Optional[str] = None) -> GroqPoolKeyOut:
+    from backend.services.groq_key_pool_service import mask_key_value
+    from backend.core.security import decrypt_token
+
+    if plain_key is None:
+        try:
+            plain_key = decrypt_token(record.encrypted_key)
+        except Exception:
+            plain_key = "***"
+    return GroqPoolKeyOut(
+        id=record.id,
+        name=record.name,
+        enabled=record.enabled,
+        masked_key=mask_key_value(plain_key),
+        error_count=record.error_count,
+        last_error_at=record.last_error_at,
+        last_used_at=record.last_used_at,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+@router.get("/groq-keys", response_model=List[GroqPoolKeyOut])
+async def list_groq_pool_keys(
+    admin: AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """List all Groq API keys in the rotation pool."""
+    from backend.services import groq_key_pool_service as pool_svc
+
+    records = await pool_svc.list_keys(db)
+    return [_pool_key_to_out(r) for r in records]
+
+
+@router.post("/groq-keys", response_model=GroqPoolKeyOut, status_code=201)
+async def add_groq_pool_key(
+    body: AddGroqPoolKeyRequest,
+    admin: AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate and add a new Groq API key to the pool."""
+    from backend.services import groq_key_pool_service as pool_svc
+
+    valid = await pool_svc.validate_plain_key(body.api_key)
+    if not valid:
+        raise HTTPException(status_code=400, detail="API key không hợp lệ hoặc đã hết hạn.")
+
+    record = await pool_svc.add_key(db, name=body.name, plain_key=body.api_key, enabled=body.enabled)
+    logger.info("Admin %s added pool key %s (%s)", admin.email, record.id, body.name)
+    return _pool_key_to_out(record, plain_key=body.api_key)
+
+
+@router.patch("/groq-keys/{key_id}", response_model=GroqPoolKeyOut)
+async def update_groq_pool_key(
+    key_id: UUID,
+    body: UpdateGroqPoolKeyRequest,
+    admin: AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update name, key value, or enabled status of a pool key."""
+    from backend.services import groq_key_pool_service as pool_svc
+
+    if body.api_key is not None:
+        valid = await pool_svc.validate_plain_key(body.api_key)
+        if not valid:
+            raise HTTPException(status_code=400, detail="API key không hợp lệ hoặc đã hết hạn.")
+
+    record = await pool_svc.update_key(
+        db, key_id,
+        name=body.name,
+        plain_key=body.api_key,
+        enabled=body.enabled,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Key không tồn tại.")
+
+    logger.info("Admin %s updated pool key %s", admin.email, key_id)
+    return _pool_key_to_out(record)
+
+
+@router.delete("/groq-keys/{key_id}", response_model=MessageOut)
+async def delete_groq_pool_key(
+    key_id: UUID,
+    admin: AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a key from the pool."""
+    from backend.services import groq_key_pool_service as pool_svc
+
+    deleted = await pool_svc.delete_key(db, key_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Key không tồn tại.")
+
+    logger.info("Admin %s deleted pool key %s", admin.email, key_id)
+    return MessageOut(success=True, message="Đã xoá key khỏi pool.")

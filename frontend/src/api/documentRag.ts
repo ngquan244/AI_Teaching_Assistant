@@ -479,3 +479,29 @@ export const asyncExtractTopics = async (): Promise<AsyncJobResponse> => {
   );
   return response.data;
 };
+
+/**
+ * Re-extract topics for a single uploaded document via Celery.
+ */
+export const asyncExtractTopicsForDocument = async (
+  filename: string,
+): Promise<AsyncJobResponse> => {
+  const response = await apiClient.post<AsyncJobResponse>(
+    '/api/document-rag/async/document-extract-topics',
+    { filename },
+  );
+  return response.data;
+};
+
+/**
+ * Remove the RAG index (collection + topics + DB row) for a single
+ * uploaded document. The on-disk PDF is preserved.
+ */
+export const removeDocumentIndex = async (
+  filename: string,
+): Promise<{ success: boolean; message?: string; filename?: string }> => {
+  const response = await apiClient.delete(
+    `/api/document-rag/index/${encodeURIComponent(filename)}`,
+  );
+  return response.data;
+};

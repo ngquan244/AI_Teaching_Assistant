@@ -16,6 +16,7 @@ Collection Naming Strategy:
 """
 
 import logging
+import os
 import re
 import threading
 from pathlib import Path
@@ -24,7 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings  # noqa: F401  (kept for backwards-compat type hints)
 from langchain_core.documents import Document
 
 from .config import rag_config
@@ -97,11 +99,19 @@ class CollectionNameGenerator:
             Deterministic collection name
         """
         hash_prefix = file_hash[:cls.HASH_PREFIX_LENGTH]
-        
+
+        # Phase-2: encode the active embedding model into the name. Two
+        # benefits: (1) future model swaps don't silently mix incompatible
+        # vector dimensions inside the same Chroma store, (2) the name itself
+        # is self-documenting in logs ("canvas_e5s_..." vs "canvas_bgem3_...").
+        # We import lazily to avoid an import cycle with ``embeddings.py``.
+        from .embeddings import model_slug
+        slug = model_slug(rag_config.EMBEDDING_MODEL)
+
         if course_id is not None:
-            name = f"canvas_{course_id}_{hash_prefix}"
+            name = f"canvas_{slug}_{course_id}_{hash_prefix}"
         else:
-            name = f"doc_{hash_prefix}"
+            name = f"doc_{slug}_{hash_prefix}"
         
         return cls._sanitize_name(name)
     
@@ -411,7 +421,7 @@ class PerFileCollectionManager:
     This is the core component that enables concurrent multi-user indexing.
     """
     
-    _embedding_model: Optional[HuggingFaceEmbeddings] = None
+    _embedding_model: Optional[Embeddings] = None
     _embedding_lock = threading.Lock()
     
     def __init__(
@@ -559,12 +569,38 @@ class PerFileCollectionManager:
 
                 logger.info(f"Loading embedding model: {self.embedding_model_name}")
                 logger.info(f"Using device: {self.device}")
-                
-                PerFileCollectionManager._embedding_model = HuggingFaceEmbeddings(
-                    model_name=self.embedding_model_name,
-                    model_kwargs={'device': self.device},
-                    encode_kwargs={'normalize_embeddings': rag_config.NORMALIZE_EMBEDDINGS}
+
+                # Phase-1 instrumentation: capture model identity, device, and
+                # the HF cache directory hint so the next benchmark run can
+                # tell apart "model load" cost from "first-time download" cost.
+                from .bench import bench_emit, bench_stage  # local import: keep startup light
+                hf_cache = (
+                    os.environ.get("HF_HOME")
+                    or os.environ.get("TRANSFORMERS_CACHE")
+                    or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+                    or "<default ~/.cache/huggingface>"
                 )
+                bench_emit(
+                    "embedding_model_load_start",
+                    model=self.embedding_model_name,
+                    device=self.device,
+                    batch_size=rag_config.EMBEDDING_BATCH_SIZE,
+                    normalize=rag_config.NORMALIZE_EMBEDDINGS,
+                    hf_cache=hf_cache,
+                )
+
+                with bench_stage(
+                    "embedding_model_loaded",
+                    model=self.embedding_model_name,
+                    device=self.device,
+                ):
+                    from .embeddings import build_embeddings  # local: avoid cycles
+                    PerFileCollectionManager._embedding_model = build_embeddings(
+                        model_name=self.embedding_model_name,
+                        device=self.device,
+                        batch_size=rag_config.EMBEDDING_BATCH_SIZE,
+                        normalize=rag_config.NORMALIZE_EMBEDDINGS,
+                    )
                 logger.info("Embedding model loaded successfully")
 
                 # Share with ChromaVectorStore so it doesn't reload
@@ -578,7 +614,7 @@ class PerFileCollectionManager:
             self._embeddings_loaded = True
     
     @property
-    def embeddings(self) -> HuggingFaceEmbeddings:
+    def embeddings(self) -> Embeddings:
         """Lazy-loaded embedding model. Only loads on first access."""
         if not self._embeddings_loaded:
             self._init_embeddings()
@@ -717,7 +753,14 @@ class PerFileCollectionManager:
             
             # Add documents
             logger.debug(f"Adding {len(documents)} documents to collection: {collection_name}")
-            collection.add_documents(documents=documents, ids=ids)
+            from .bench import bench_stage  # local import: keeps import graph cheap
+            with bench_stage(
+                "embed_chunks",
+                file_hash=file_hash[:8],
+                chunks=len(documents),
+                course_id=course_id,
+            ):
+                collection.add_documents(documents=documents, ids=ids)
             
             # Update registry
             self.registry.register(
@@ -810,7 +853,16 @@ class PerFileCollectionManager:
         else:
             collection = self._collections[collection_name]
         
-        return collection.similarity_search(query, k=k, **kwargs)
+        from .bench import bench_stage  # local import for instrumentation
+        with bench_stage(
+            "query_collection",
+            file_hash=file_hash[:8],
+            k=k,
+            q_chars=len(query),
+        ) as _bench:
+            results = collection.similarity_search(query, k=k, **kwargs)
+            _bench["hits"] = len(results)
+        return results
     
     def query_multiple_collections(
         self,

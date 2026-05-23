@@ -8,6 +8,8 @@ Completely independent from existing chatbot routes.
 import os
 import io
 import shutil
+import hashlib
+import json
 import logging
 import zipfile
 from pathlib import Path
@@ -28,6 +30,106 @@ from backend.services.url_safety import validate_download_url
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ===== Upload limits =====
+# Hard cap on PDF uploads. Larger than this and the worker would spend
+# minutes parsing while the user just sees a spinner -> bad UX.
+MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+PDF_MAGIC = b"%PDF-"
+
+
+def _validate_pdf_upload(file: UploadFile) -> None:
+    """
+    Reject PDF uploads that are obviously bad before we touch the disk.
+
+    Checks (in order):
+      * filename ends with .pdf
+      * declared content_type is application/pdf (best-effort: many browsers
+        send empty / octet-stream, so this is a soft check)
+      * size <= MAX_PDF_SIZE_BYTES (when reported by the client)
+
+    Magic-byte verification happens after the file lands on disk so we can
+    also delete the bogus file. See ``_assert_pdf_magic_bytes``.
+    """
+    name = (file.filename or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên tệp không hợp lệ.")
+    if not name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp PDF.")
+
+    declared_type = (file.content_type or "").lower()
+    # Browsers sometimes omit content_type; only reject when it is set AND wrong.
+    if declared_type and declared_type not in ("application/pdf", "application/octet-stream", "binary/octet-stream"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tệp phải là PDF (nhận được: {declared_type}).",
+        )
+
+    size = getattr(file, "size", None)
+    if size is not None and size > MAX_PDF_SIZE_BYTES:
+        mb = size / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Tệp quá lớn ({mb:.1f} MB). Giới hạn là "
+                f"{MAX_PDF_SIZE_BYTES // (1024 * 1024)} MB."
+            ),
+        )
+
+
+def _assert_pdf_magic_bytes(path: Path) -> None:
+    """Ensure the uploaded file actually starts with the PDF magic header.
+    Removes the file and raises 400 if not."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(PDF_MAGIC))
+    except OSError:
+        header = b""
+    if header != PDF_MAGIC:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=400,
+            detail="Tệp không phải định dạng PDF hợp lệ (magic bytes sai).",
+        )
+
+
+def _generate_quiz_idempotency_key(
+    *,
+    scope: str,
+    user_id: str,
+    topics: List[str],
+    num_questions: int,
+    difficulty: str,
+    language: str,
+    selected_documents: Optional[List[str]] = None,
+    extra: Optional[dict] = None,
+) -> str:
+    """
+    Build a stable idempotency key for an async quiz-generation request.
+
+    Two requests with the same (user, topics, settings, scope) within the
+    in-flight window will be coalesced into a single job, preventing
+    duplicate Groq quota burn from accidental double-clicks.
+
+    The key is intentionally insensitive to topic ordering so the UI can
+    pass topics in any order without breaking dedupe.
+    """
+    canon = {
+        "scope": scope,
+        "user_id": user_id,
+        "topics": sorted(t.strip() for t in topics if t and t.strip()),
+        "num_questions": int(num_questions),
+        "difficulty": (difficulty or "").lower().strip(),
+        "language": (language or "").lower().strip(),
+        "selected_documents": sorted(selected_documents) if selected_documents else None,
+        "extra": extra or None,
+    }
+    blob = json.dumps(canon, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    digest = hashlib.sha256(blob).hexdigest()
+    return f"genquiz:{scope}:{digest}"
 
 
 # ===== Request/Response Models =====
@@ -119,9 +221,8 @@ def upload_document(user: CurrentUser, file: UploadFile = File(...)):
     """
     logger.info(f"Uploading document: {file.filename} (user={user.id})")
     
-    # Validate file type
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    # Validate file (extension, content_type, size)
+    _validate_pdf_upload(file)
     
     try:
         # Per-user upload directory
@@ -130,6 +231,9 @@ def upload_document(user: CurrentUser, file: UploadFile = File(...)):
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        
+        # Verify magic bytes after writing (cheap; deletes file if bogus)
+        _assert_pdf_magic_bytes(file_path)
         
         logger.debug(f"File saved to: {file_path}")
         
@@ -194,9 +298,8 @@ def upload_and_index(user: CurrentUser, file: UploadFile = File(...)):
     logger.warning("DEPRECATED sync endpoint /upload-and-index called — migrate to /async/upload-and-index")
     logger.info(f"Upload and index: {file.filename} (user={user.id})")
     
-    # Validate file type
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    # Validate file (extension, content_type, size)
+    _validate_pdf_upload(file)
     
     try:
         # Per-user upload directory
@@ -205,6 +308,9 @@ def upload_and_index(user: CurrentUser, file: UploadFile = File(...)):
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        
+        # Verify magic bytes after writing (cheap; deletes file if bogus)
+        _assert_pdf_magic_bytes(file_path)
         
         logger.debug(f"File saved to: {file_path}")
         
@@ -249,7 +355,7 @@ async def download_and_index(request: DownloadAndIndexRequest, user: CurrentUser
     
     # Validate filename
     if not request.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp PDF.")
     
     try:
         # Download file from URL (follow redirects like curl -L) — async I/O
@@ -257,6 +363,22 @@ async def download_and_index(request: DownloadAndIndexRequest, user: CurrentUser
             response = await client.get(validate_download_url(request.url))
             response.raise_for_status()
             content = response.content
+        
+        # Enforce same size cap as direct uploads.
+        if len(content) > MAX_PDF_SIZE_BYTES:
+            mb = len(content) / (1024 * 1024)
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Tệp tải về quá lớn ({mb:.1f} MB). Giới hạn là "
+                    f"{MAX_PDF_SIZE_BYTES // (1024 * 1024)} MB."
+                ),
+            )
+        if not content.startswith(PDF_MAGIC):
+            raise HTTPException(
+                status_code=400,
+                detail="Tệp tải về không phải định dạng PDF hợp lệ.",
+            )
         
         # Sanitize filename
         safe_filename = "".join(c for c in request.filename if c.isalnum() or c in "._- ")
@@ -379,6 +501,9 @@ def get_index_stats(user: CurrentUser):
 def reset_index(user: CurrentUser):
     """
     Reset the document index for the current user.
+
+    Also wipes every uploaded PDF in the user's upload directory so
+    "Xóa toàn bộ dữ liệu" matches the label users see in the UI.
     """
     logger.warning(f"Resetting document index for user={user.id}")
     
@@ -386,7 +511,23 @@ def reset_index(user: CurrentUser):
         rag_service = get_rag_service()
         with SessionLocal() as db:
             result = rag_service.reset_index(user_id=str(user.id), db_session=db)
-        
+
+        # Best-effort cleanup of uploaded PDFs (index reset alone leaves
+        # the source files behind, which is confusing for end users).
+        deleted_files = 0
+        try:
+            user_upload_dir = get_user_rag_dir(str(user.id))
+            for pdf_path in user_upload_dir.glob("*.pdf"):
+                try:
+                    pdf_path.unlink()
+                    deleted_files += 1
+                except OSError as fs_err:
+                    logger.warning(f"Could not delete uploaded file {pdf_path}: {fs_err}")
+        except Exception as fs_err:
+            logger.warning(f"Could not enumerate user upload dir for reset: {fs_err}")
+
+        if isinstance(result, dict):
+            result["deleted_files"] = deleted_files
         return result
         
     except Exception as e:
@@ -476,6 +617,31 @@ def delete_uploaded_file(filename: str, user: CurrentUser):
         
     except Exception as e:
         logger.exception("Error deleting file")
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
+
+
+@router.delete("/index/{filename}")
+def delete_document_index(filename: str, user: CurrentUser):
+    """Remove the RAG index (collection + topics + DB row) for a single uploaded file.
+
+    The on-disk PDF is preserved; use ``DELETE /uploaded-files/{filename}``
+    to delete the file itself.
+    """
+    rag_service = get_rag_service()
+    try:
+        with SessionLocal() as db:
+            result = rag_service.remove_index(
+                filename=filename,
+                user_id=str(user.id),
+                db_session=db,
+            )
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", "Index not found"))
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error removing document index")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
 
 
@@ -783,7 +949,14 @@ def update_document_topics(filename: str, request: UpdateTopicsRequest, user: Cu
             result = rag_service.update_document_topics(
                 filename, topics_dict, user_id=str(user.id), db_session=db,
             )
-        
+            # Persist DB changes before the session closes; otherwise the
+            # transaction is rolled back on context exit and the UI "reverts"
+            # to the previous topic count after a refresh.
+            if result.get("success"):
+                db.commit()
+            else:
+                db.rollback()
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=404,
@@ -924,13 +1097,52 @@ def check_llm_status(user: CurrentUser):
     
     Tests the connection to the current LLM provider
     and returns detailed status information.
+
+    NOTE: result is cached for 30s to avoid hammering Groq with health-check
+    pings (which would consume daily token quota and spam the logs).
     """
+    import time as _time
+
+    cache = getattr(check_llm_status, "_cache", None)
+    if cache and (_time.time() - cache["at"]) < 30:
+        return cache["status"]
+
     try:
         rag_service = get_rag_service()
         status = rag_service.check_llm_status()
-        
+
+        # If singleton key got rate-limited, try pool keys before reporting
+        # disconnected so admins/users see the *aggregate* health.
+        if (
+            isinstance(status, dict)
+            and not status.get("connected")
+            and status.get("error_type") in ("rate_limit", "authentication")
+        ):
+            try:
+                from backend.database.base import SessionLocal
+                from backend.services.groq_key_pool_service import get_pool_keys_sync
+                from backend.modules.document_rag.llm_providers import LLMFactory
+
+                with SessionLocal() as db:
+                    pool_keys = get_pool_keys_sync(db)
+                for key_info in pool_keys:
+                    try:
+                        probe_llm = LLMFactory.create(groq_api_key=key_info["plain_key"])
+                        probe_status = probe_llm.check_connection()
+                        if probe_status.get("connected"):
+                            probe_status["message"] = (
+                                f"Đang dùng key dự phòng: {key_info.get('name', '?')}"
+                            )
+                            status = probe_status
+                            break
+                    except Exception:
+                        continue
+            except Exception as pool_err:
+                logger.warning("LLM-status pool probe failed: %s", pool_err)
+
+        check_llm_status._cache = {"at": _time.time(), "status": status}
         return status
-        
+
     except Exception as e:
         logger.exception("Error checking LLM status")
         return {
@@ -1030,8 +1242,7 @@ async def async_upload_and_index(
     
     The file is saved synchronously (fast), then indexing runs in background.
     """
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    _validate_pdf_upload(file)
     
     try:
         # Save file synchronously (fast)
@@ -1039,6 +1250,9 @@ async def async_upload_and_index(
         file_path = user_upload_dir / file.filename
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+
+        # Reject non-PDF content before queueing the job (avoids wasting a worker slot)
+        _assert_pdf_magic_bytes(file_path)
         
         job_service = JobService(db)
         
@@ -1161,28 +1375,44 @@ async def async_generate_quiz(
             "user_id": str(user.id),
         }
         quiz_logger.info(f"Route async_generate_quiz: topics={topics_list}, selected_documents={request.selected_documents!r}, user={user.id}")
-        
-        job = await job_service.create_job(
+
+        # Idempotency: if the user double-clicks "Generate quiz" we want to
+        # reuse the in-flight job instead of burning a second Groq quota.
+        idem_key = _generate_quiz_idempotency_key(
+            scope="doc",
+            user_id=str(user.id),
+            topics=topics_list,
+            num_questions=request.num_questions,
+            difficulty=request.difficulty,
+            language=request.language,
+            selected_documents=request.selected_documents,
+        )
+        job, created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.GENERATE_QUIZ,
+            idempotency_key=idem_key,
             payload=payload,
         )
         
         # Commit so the task can see the Job row (critical for eager mode)
         await db.commit()
         
-        result = await apply_async_nonblocking(
-            tasks.llm_tasks.generate_quiz,
-            args=[str(job.id)],
-            kwargs=payload,
-        )
-        
-        await job_service.set_celery_task_id(job.id, result.id)
+        if created:
+            result = await apply_async_nonblocking(
+                tasks.llm_tasks.generate_quiz,
+                args=[str(job.id)],
+                kwargs=payload,
+            )
+            await job_service.set_celery_task_id(job.id, result.id)
+            message = f"Quiz generation queued for topics: {', '.join(topics_list)}"
+        else:
+            logger.info(f"Reusing in-flight quiz job {job.id} for idempotency_key={idem_key[:12]}…")
+            message = "Yêu cầu tạo quiz tương tự đang chạy, đang theo dõi job hiện có."
         
         return AsyncJobResponse(
             success=True,
             job_id=str(job.id),
-            message=f"Quiz generation queued for topics: {', '.join(topics_list)}",
+            message=message,
             status_url=f"/api/jobs/{job.id}",
             stream_url=f"/api/jobs/{job.id}/stream",
         )
@@ -1232,4 +1462,53 @@ async def async_extract_topics(
         
     except Exception as e:
         logger.exception("Error queueing topic extraction")
+        raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
+
+
+class ExtractDocumentTopicsRequest(BaseModel):
+    """Request body for the per-file async extract-topics endpoint."""
+    filename: str
+
+
+@router.post("/async/document-extract-topics", response_model=AsyncJobResponse)
+async def async_extract_document_topics(
+    request: ExtractDocumentTopicsRequest,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Re-extract topics for a single uploaded document, asynchronously.
+
+    Mirrors ``/api/canvas-rag/async/extract-topics`` but for the upload
+    pipeline. Heavy work runs in the rag worker; the caller polls the
+    returned job for completion.
+    """
+    try:
+        job_service = JobService(db)
+        payload = {
+            "filename": request.filename,
+            "user_id": str(user.id),
+        }
+        job = await job_service.create_job(
+            user_id=user.id,
+            job_type=JobType.EXTRACT_TOPICS,
+            payload=payload,
+        )
+        await db.commit()
+
+        result = await apply_async_nonblocking(
+            tasks.rag_tasks.extract_topics_for_document,
+            args=[str(job.id), request.filename],
+            kwargs={"user_id": str(user.id)},
+        )
+        await job_service.set_celery_task_id(job.id, result.id)
+
+        return AsyncJobResponse(
+            success=True,
+            job_id=str(job.id),
+            message=f"Topic extraction queued for {request.filename}",
+            status_url=f"/api/jobs/{job.id}",
+            stream_url=f"/api/jobs/{job.id}/stream",
+        )
+    except Exception:
+        logger.exception("Error queueing per-document topic extraction")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")

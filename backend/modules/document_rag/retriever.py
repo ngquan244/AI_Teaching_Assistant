@@ -150,19 +150,8 @@ class DocumentRetriever:
         Returns:
             Formatted context string
         """
-        if not documents:
-            return ""
-        
-        context_parts = []
-        for i, doc in enumerate(documents):
-            source = doc.metadata.get("source", "unknown")
-            page = doc.metadata.get("page", "?")
-            
-            context_parts.append(
-                f"[Document {i+1}] (Source: {source}, Page: {page})\n{doc.page_content}"
-            )
-        
-        return "\n\n---\n\n".join(context_parts)
+        from .document_payload import format_context_documents
+        return format_context_documents(documents)
     
     def extract_citations(self, documents: List[Document]) -> List[Dict[str, Any]]:
         """
@@ -330,6 +319,14 @@ class MultiCollectionRetriever:
         round_one_cap: int = 2,
         round_n_cap: int = 1,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        # ---- V1 course-level domain knowledge extensions (all optional) ----
+        roles_by_hash: Optional[Dict[str, str]] = None,
+        language_by_hash: Optional[Dict[str, str]] = None,
+        topic_language: Optional[str] = None,
+        domain_quota_ratio: Optional[float] = None,
+        translation_cache: Optional[Dict[str, str]] = None,
+        llm_for_translation: Optional[Any] = None,
+        lecture_floor: float = 0.60,
     ) -> List[Document]:
         """
         Retrieve documents with a global budget instead of a fixed per-collection k.
@@ -338,6 +335,21 @@ class MultiCollectionRetriever:
         - Single collection: allow that collection to use the whole budget.
         - Multiple collections: fetch a per-collection candidate pool, then allocate
           results using a round-based soft cap (2 docs in round 1, then 1 doc/round).
+
+        V1 extensions
+        -------------
+        When ``roles_by_hash`` is supplied (mapping ``file_hash -> "lecture"|"domain"``),
+        the budget is split into a *lecture* bucket and a *domain* bucket. The
+        lecture bucket is guaranteed at least ``lecture_floor`` (default 60%);
+        ``domain_quota_ratio`` (default 0.3) controls the upper bound for
+        domain. Lecture chunks always come first in the merged result, and slack
+        flows from lecture → domain only (never the reverse).
+
+        When ``topic_language`` and ``language_by_hash`` are supplied, the
+        retriever runs a one-shot translated query against any cross-language
+        collection and merges the hits (deduped) into that collection's pool.
+        Translations are cached in ``translation_cache`` to avoid repeated
+        LLM calls in the same request.
         """
         max_total_docs = max(1, max_total_docs)
 
@@ -371,6 +383,43 @@ class MultiCollectionRetriever:
             max(6, (max_total_docs // max(1, min(len(resolved_hashes), 6))) + 4),
         )
 
+        # Resolve translated query (once per request, cached) for cross-language
+        # fan-out. Only computed if both topic_language and language_by_hash are
+        # provided AND at least one collection's language differs from the topic.
+        translated_query: Optional[str] = None
+        translated_target_lang: Optional[str] = None
+        fanout_used = False
+        if (
+            topic_language
+            and language_by_hash
+            and llm_for_translation is not None
+        ):
+            cross_lang_targets = {
+                lang for h, lang in language_by_hash.items()
+                if h in resolved_hashes
+                and lang
+                and lang != "mixed"
+                and lang != topic_language
+            }
+            if len(cross_lang_targets) == 1:
+                translated_target_lang = next(iter(cross_lang_targets))
+                cache_key = f"{topic_language}->{translated_target_lang}::{query}"
+                if translation_cache is not None and cache_key in translation_cache:
+                    translated_query = translation_cache[cache_key]
+                else:
+                    try:
+                        from .lang_utils import translate_topic
+                        translated_query = translate_topic(
+                            query, translated_target_lang, llm_for_translation,
+                        )
+                    except Exception as exc:
+                        logger.warning("translate_topic failed: %s", exc)
+                        translated_query = None
+                    if translation_cache is not None and translated_query:
+                        translation_cache[cache_key] = translated_query
+                if translated_query:
+                    fanout_used = True
+
         per_collection_docs: Dict[str, List[Document]] = {}
         for file_hash in resolved_hashes:
             try:
@@ -381,10 +430,109 @@ class MultiCollectionRetriever:
                     user_id=user_id,
                     override_collection_name=_override_map.get(file_hash),
                 )
-                per_collection_docs[file_hash] = docs
             except Exception as e:
                 logger.warning(f"Error querying collection for {file_hash}: {e}")
-                per_collection_docs[file_hash] = []
+                docs = []
+
+            # Cross-language fan-out: if this collection's language differs
+            # from the topic language and we have a translated query, run a
+            # second similarity search and merge (deduped).
+            if (
+                translated_query
+                and language_by_hash
+                and language_by_hash.get(file_hash) == translated_target_lang
+            ):
+                try:
+                    extra = self.collection_manager.query_collection(
+                        file_hash=file_hash,
+                        query=translated_query,
+                        k=fetch_per_collection,
+                        user_id=user_id,
+                        override_collection_name=_override_map.get(file_hash),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "fan-out query failed for %s: %s", file_hash[:8], exc,
+                    )
+                    extra = []
+                if extra:
+                    seen = {
+                        (
+                            d.metadata.get("file_hash", ""),
+                            d.metadata.get("page", -1),
+                            (d.page_content or "")[:120],
+                        )
+                        for d in docs
+                    }
+                    for d in extra:
+                        sig = (
+                            d.metadata.get("file_hash", ""),
+                            d.metadata.get("page", -1),
+                            (d.page_content or "")[:120],
+                        )
+                        if sig not in seen:
+                            docs.append(d)
+                            seen.add(sig)
+
+            per_collection_docs[file_hash] = docs
+
+        # Stamp source_kind metadata so downstream prompts can label chunks.
+        if roles_by_hash:
+            for fh, docs in per_collection_docs.items():
+                role = roles_by_hash.get(fh, "lecture")
+                for d in docs:
+                    d.metadata["source_kind"] = role
+
+        # Role-bucketed allocation when we have role info.
+        if roles_by_hash and any(
+            r == "domain" for r in roles_by_hash.values()
+        ):
+            ratio = (
+                domain_quota_ratio
+                if domain_quota_ratio is not None
+                else 0.0
+            )
+            ratio = max(0.0, min(ratio, max(0.0, 1.0 - lecture_floor)))
+            domain_quota = int(round(max_total_docs * ratio))
+            lecture_quota = max_total_docs - domain_quota
+
+            lecture_buckets = {
+                fh: docs for fh, docs in per_collection_docs.items()
+                if roles_by_hash.get(fh, "lecture") == "lecture"
+            }
+            domain_buckets = {
+                fh: docs for fh, docs in per_collection_docs.items()
+                if roles_by_hash.get(fh) == "domain"
+            }
+
+            lecture_selected = self._round_robin_allocate(
+                per_collection_docs=lecture_buckets,
+                max_total_docs=max(0, lecture_quota),
+                round_one_cap=round_one_cap,
+                round_n_cap=round_n_cap,
+            )
+            # Slack flows lecture -> domain only.
+            slack = max(0, lecture_quota - len(lecture_selected))
+            effective_domain_quota = max(0, domain_quota + slack)
+            domain_selected = self._round_robin_allocate(
+                per_collection_docs=domain_buckets,
+                max_total_docs=effective_domain_quota,
+                round_one_cap=1,
+                round_n_cap=1,
+            )
+
+            selected = lecture_selected + domain_selected
+            logger.info(
+                "Budgeted retrieval (role-bucketed): budget=%s lecture=%s/%s "
+                "domain=%s/%s fanout=%s",
+                max_total_docs,
+                len(lecture_selected),
+                lecture_quota,
+                len(domain_selected),
+                domain_quota,
+                fanout_used,
+            )
+            return selected[:max_total_docs]
 
         selected = self._round_robin_allocate(
             per_collection_docs=per_collection_docs,
@@ -394,10 +542,11 @@ class MultiCollectionRetriever:
         )
 
         logger.info(
-            "Budgeted retrieval (multi collection): budget=%s selected=%s sources=%s",
+            "Budgeted retrieval (multi collection): budget=%s selected=%s sources=%s fanout=%s",
             max_total_docs,
             len(selected),
             len([docs for docs in per_collection_docs.values() if docs]),
+            fanout_used,
         )
         return selected
 
@@ -480,19 +629,8 @@ class MultiCollectionRetriever:
     
     def format_context(self, documents: List[Document]) -> str:
         """Format retrieved documents into a context string."""
-        if not documents:
-            return ""
-        
-        context_parts = []
-        for i, doc in enumerate(documents):
-            source = doc.metadata.get("source", "unknown")
-            page = doc.metadata.get("page", "?")
-            
-            context_parts.append(
-                f"[Document {i+1}] (Source: {source}, Page: {page})\n{doc.page_content}"
-            )
-        
-        return "\n\n---\n\n".join(context_parts)
+        from .document_payload import format_context_documents
+        return format_context_documents(documents)
     
     def extract_citations(self, documents: List[Document]) -> List[Dict[str, Any]]:
         """Extract citation information from documents."""

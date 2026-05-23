@@ -93,11 +93,11 @@ class Settings(BaseSettings):
         return f"{self.REDIS_URL}/1"
     
     # Celery eager mode (run tasks synchronously — no Redis/workers needed)
-    CELERY_TASK_ALWAYS_EAGER: bool = False
+    CELERY_TASK_ALWAYS_EAGER: bool = True
     
-    # Rate limits
-    LLM_RATE_LIMIT: str = "10/m"  # 10 requests per minute for LLM tasks
-    CANVAS_RATE_LIMIT: str = "30/m"  # 30 requests per minute for Canvas API
+    # Rate limits (production defaults; dev overrides applied in model_validator)
+    LLM_RATE_LIMIT: str = "10/m"  # 10 LLM requests per minute
+    CANVAS_RATE_LIMIT: str = "30/m"  # 30 Canvas API requests per minute
     
     @property
     def DATABASE_URL(self) -> str:
@@ -250,6 +250,11 @@ class Settings(BaseSettings):
                         f"Using development {name} — set {name} in .env before deploying.",
                         UserWarning,
                     )
+            # Relax rate limits for faster dev iteration (only when not overridden via .env)
+            if self.LLM_RATE_LIMIT == "10/m":
+                self.LLM_RATE_LIMIT = "30/m"
+            if self.CANVAS_RATE_LIMIT == "30/m":
+                self.CANVAS_RATE_LIMIT = "60/m"
         else:
             # Hard fail — production / staging must not use dev defaults
             insecure: list[str] = []
@@ -330,6 +335,18 @@ class Settings(BaseSettings):
     
     # AI Model settings
     TEMPERATURE: float = 0.3
+
+    # ==========================================================================
+    # Feature flags — Course-level domain knowledge (RAG V1)
+    # ==========================================================================
+    # When False, quiz generation ignores course_domain marks entirely
+    # (per-request `include_course_domain` is also ignored).
+    ENABLE_COURSE_DOMAIN_DOCS: bool = False
+
+    # Default fraction of the retrieval budget reserved for domain chunks
+    # when the per-request value is not provided. Clamped to [0.0, 0.4]
+    # at the retriever (lecture floor 60%).
+    DEFAULT_DOMAIN_QUOTA_RATIO: float = 0.3
     
     # ==========================================================================
     # UI Configuration (Gradio — legacy, set via .env if needed)

@@ -50,7 +50,13 @@ def deserialize_documents(payload: List[Dict[str, Any]]) -> List[Document]:
 
 
 def format_context_documents(documents: List[Document]) -> str:
-    """Render retrieved documents into the shared prompt context format."""
+    """Render retrieved documents into the shared prompt context format.
+
+    When a chunk's metadata carries ``source_kind`` (set by the role-aware
+    multi-collection retriever in V1), the chunk header is prefixed with
+    ``[lecture]`` or ``[domain]`` so the LLM can apply the SOURCE ROLES
+    policy. Chunks without ``source_kind`` get no tag (backward-compatible).
+    """
     if not documents:
         return ""
 
@@ -58,8 +64,14 @@ def format_context_documents(documents: List[Document]) -> str:
     for index, document in enumerate(documents, start=1):
         source = document.metadata.get("source", "unknown")
         page = document.metadata.get("page", "?")
+        source_kind = document.metadata.get("source_kind")
+        role_tag = ""
+        if source_kind == "lecture":
+            role_tag = "[lecture] "
+        elif source_kind == "domain":
+            role_tag = "[domain] "
         context_parts.append(
-            f"[Document {index}] (Source: {source}, Page: {page})\n{document.page_content}"
+            f"[Document {index}] {role_tag}(Source: {source}, Page: {page})\n{document.page_content}"
         )
     return "\n\n---\n\n".join(context_parts)
 

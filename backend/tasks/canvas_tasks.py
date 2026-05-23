@@ -19,13 +19,26 @@ logger = logging.getLogger(__name__)
 
 
 def run_async(coro):
-    """Run async function in sync context."""
+    """Run an async coroutine from a sync Celery task.
+
+    Works in three contexts:
+      1. Real Celery worker process (no loop exists) -> ``asyncio.run``.
+      2. Eager mode dispatched via ``run_in_executor`` (thread has no running
+         loop) -> ``asyncio.run``.
+      3. Called from a thread that already has a running loop (edge-case,
+         e.g. nested eager) -> run the coroutine in a fresh loop on a helper
+         thread so we never hit ``RuntimeError: This event loop is already
+         running`` or reuse a closed loop.
+    """
     try:
-        loop = asyncio.get_event_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        # No running loop in this thread — the common path for Celery tasks.
+        return asyncio.run(coro)
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _resolve_canvas_credentials_for_worker(

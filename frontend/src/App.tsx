@@ -4,7 +4,8 @@ import { AppProvider, useApp } from './context/AppContext';
 import { usePanelConfig, getFirstVisibleTab } from './context/PanelConfigContext';
 import { useAuth } from './context/AuthContext';
 import { useToast } from './context/ToastContext';
-import { Sidebar, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
+import { SESSION_EXPIRED_EVENT } from './api/client';
+import { Sidebar, SettingsPanel, DocumentRAGPanel, CanvasFilesPanel, QuizBuilderPanel, SavedQuizzesPanel, GuidePanel, CanvasSimulationPanel, CanvasResultsPanel } from './components';
 import { Loader2 } from 'lucide-react';
 import { TABS, TAB_PATHS, pathToTab } from './types';
 import type { QuizQuestion } from './api/documentRag';
@@ -18,6 +19,7 @@ const TAB_LABELS: Record<string, string> = {
   document_rag: 'Tài liệu RAG',
   canvas: 'Canvas',
   canvas_quiz: 'Quiz Builder',
+  saved_quizzes: 'Kho Đề Thi',
   canvas_simulation: 'Giả lập Quiz',
   canvas_results: 'Kết quả Canvas',
   guide: 'Hướng dẫn',
@@ -58,6 +60,25 @@ const AppContent: React.FC = () => {
     }
   }, [activeTab, isPanelVisible, panelConfigLoaded, isAdmin, navigate, showToast]);
 
+  // Listen for session-expired signal from the API client (refresh token failed).
+  // Show a friendly toast first, then redirect — so the user understands WHY
+  // they're being sent to /login instead of being yanked mid-action.
+  useEffect(() => {
+    const handler = () => {
+      showToast(
+        'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để tiếp tục.',
+        'warning',
+        4000,
+      );
+      // Give the toast a moment to render before navigation tears the tree down.
+      setTimeout(() => {
+        navigate('/login', { replace: true });
+      }, 1200);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
+  }, [navigate, showToast]);
+
   // Shared state: questions to inject into QuizBuilder from other panels
   const [quizBuilderQuestions, setQuizBuilderQuestions] = useState<QuizBuilderQuestion[]>([]);
 
@@ -74,6 +95,12 @@ const AppContent: React.FC = () => {
       };
     });
     setQuizBuilderQuestions(mapped);
+    navigate('/' + TAB_PATHS[TABS.CANVAS_QUIZ], { replace: false });
+  }, [navigate]);
+
+  /** Called by SavedQuizzesPanel — already provides QuizBuilderQuestion[] */
+  const handleLoadSavedToBuilder = useCallback((questions: QuizBuilderQuestion[]) => {
+    setQuizBuilderQuestions(questions);
     navigate('/' + TAB_PATHS[TABS.CANVAS_QUIZ], { replace: false });
   }, [navigate]);
 
@@ -109,6 +136,11 @@ const AppContent: React.FC = () => {
               questions={quizBuilderQuestions}
               onQuestionsClear={() => setQuizBuilderQuestions([])}
             />
+          </div>
+        )}
+        {checkVisible(TABS.SAVED_QUIZZES) && (
+          <div style={{ display: activeTab === TABS.SAVED_QUIZZES ? 'block' : 'none', height: '100%' }}>
+            <SavedQuizzesPanel onLoadToBuilder={handleLoadSavedToBuilder} />
           </div>
         )}
         {checkVisible(TABS.CANVAS_SIMULATION) && (

@@ -50,7 +50,7 @@ const AdminJobs: React.FC = () => {
       setError(null);
       const result = await adminApi.listAllJobs({
         page,
-        page_size: 20,
+        page_size: 5,
         status: statusFilter || undefined,
         job_type: typeFilter || undefined,
       });
@@ -227,26 +227,24 @@ const AdminJobs: React.FC = () => {
 
           {/* Pagination */}
           {data.pages > 1 && (
-            <div className="admin-pagination">
-              <span>
+            <div className="admin-pagination admin-pagination--compact">
+              <button
+                className="admin-pagination-btn"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                ‹ Trước
+              </button>
+              <span className="admin-pagination-info">
                 Trang {data.page} / {data.pages}
               </span>
-              <div className="admin-pagination-btns">
-                <button
-                  className="admin-pagination-btn"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  Trước
-                </button>
-                <button
-                  className="admin-pagination-btn"
-                  disabled={page >= data.pages}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  Sau
-                </button>
-              </div>
+              <button
+                className="admin-pagination-btn"
+                disabled={page >= data.pages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Sau ›
+              </button>
             </div>
           )}
         </>

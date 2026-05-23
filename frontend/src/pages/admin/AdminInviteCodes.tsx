@@ -106,7 +106,7 @@ const AdminInviteCodes: React.FC = () => {
       setLoading(true);
       setError(null);
       const [codesRes, statsRes, settingsRes] = await Promise.all([
-        adminApi.listInviteCodes(page, 20, activeOnly),
+        adminApi.listInviteCodes(page, 5, activeOnly),
         adminApi.getInviteCodeStats(),
         adminApi.getSignupSettings(),
       ]);
@@ -565,23 +565,23 @@ const AdminInviteCodes: React.FC = () => {
 
           {/* Pagination */}
           {codes.pages > 1 && (
-            <div className="admin-pagination">
+            <div className="admin-pagination admin-pagination--compact">
               <button
-                className="admin-btn admin-btn-secondary"
+                className="admin-pagination-btn"
                 disabled={page <= 1}
                 onClick={() => setPage(page - 1)}
               >
-                ← Trước
+                ‹ Trước
               </button>
-              <span className="admin-page-info">
+              <span className="admin-pagination-info">
                 Trang {codes.page} / {codes.pages}
               </span>
               <button
-                className="admin-btn admin-btn-secondary"
+                className="admin-pagination-btn"
                 disabled={page >= codes.pages}
                 onClick={() => setPage(page + 1)}
               >
-                Sau →
+                Sau ›
               </button>
             </div>
           )}

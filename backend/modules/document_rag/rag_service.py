@@ -189,6 +189,8 @@ class RAGService:
         extract_topics: bool = True,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a PDF document into the vector store.
@@ -308,7 +310,11 @@ class RAGService:
             if extract_topics:
                 try:
                     logger.debug(f"Extracting topics for {filename}...")
-                    topics_result = self._extract_topics_from_chunks(chunks, file_meta)
+                    topics_result = self._extract_topics_from_chunks(
+                        chunks, file_meta,
+                        groq_api_key=groq_api_key,
+                        key_pool=key_pool,
+                    )
                     if topics_result.get("success") and topics_result.get("topics"):
                         topics_extracted = topics_result["topics"]
                         # Save to DB if session available
@@ -352,26 +358,117 @@ class RAGService:
     def _extract_topics_from_chunks(
         self,
         chunks: List[Document],
-        file_meta: Dict[str, Any]
+        file_meta: Dict[str, Any],
+        groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Extract topics from document chunks using LLM.
-        
-        Args:
-            chunks: Document chunks
-            file_meta: File metadata
-            
-        Returns:
-            Dictionary with topics
+
+        Supports an optional Groq key pool for round-robin rotation when
+        the default key is rate-limited / disabled (mirrors canvas pattern).
         """
         # Get sample content from chunks (limit to avoid token overflow)
         sample_chunks = chunks[:15]
         context = "\n\n---\n\n".join([c.page_content for c in sample_chunks])
-        
-        return self._quiz_generator.extract_topics_from_context(
+        return self._extract_topics_with_pool(
             context=context[:8000],
-            max_topics=10
+            max_topics=10,
+            groq_api_key=groq_api_key,
+            key_pool=key_pool,
         )
+
+    def _build_quiz_generator(self, api_key: Optional[str]):
+        """Build a fresh QuizGenerator bound to ``api_key`` when provided."""
+        if not api_key:
+            return self._quiz_generator
+        from .llm_providers import LLMFactory as _LLMFactory
+        return QuizGenerator(
+            retriever=self._multi_retriever,
+            llm_provider=_LLMFactory.create(groq_api_key=api_key),
+        )
+
+    @staticmethod
+    def _is_rate_limit_or_auth_error_msg(msg: str) -> bool:
+        msg = (msg or "").lower()
+        return any(
+            sig in msg
+            for sig in (
+                "429", "rate_limit", "rate limit", "quota",
+                "401", "invalid_api_key", "invalid api key",
+                "unauthorized",
+            )
+        )
+
+    def _extract_topics_with_pool(
+        self,
+        context: str,
+        max_topics: int,
+        groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Run topic extraction with optional pool-based key rotation.
+
+        QuizGenerator.extract_topics_from_context catches its own exceptions
+        and returns ``success=False`` with the error message, so we look at
+        the message to decide whether a rotate-and-retry is worthwhile.
+        """
+        current_key_info = None
+        current_api_key = groq_api_key
+        if key_pool is not None and getattr(key_pool, "size", 0) > 0:
+            info = key_pool.next_key()
+            if info:
+                current_key_info = info
+                current_api_key = info["plain_key"]
+
+        max_attempts = max(1, key_pool.size) if key_pool is not None else 1
+        last_result: Dict[str, Any] = {"success": False, "topics": []}
+        for attempt in range(max_attempts):
+            quiz_gen = self._build_quiz_generator(current_api_key)
+            try:
+                result = quiz_gen.extract_topics_from_context(
+                    context=context, max_topics=max_topics,
+                )
+            except Exception as err:  # defensive — should be caught inside
+                result = {"success": False, "topics": [], "message": str(err)}
+
+            if result.get("success") and result.get("topics"):
+                if key_pool is not None and current_key_info is not None:
+                    try:
+                        key_pool.mark_success(current_key_info["id"])
+                    except Exception:
+                        pass
+                return result
+
+            last_result = result
+            err_msg = str(result.get("message") or "")
+            is_rl = self._is_rate_limit_or_auth_error_msg(err_msg)
+            if key_pool is not None and current_key_info is not None:
+                try:
+                    if is_rl:
+                        key_pool.mark_error(current_key_info["id"])
+                    else:
+                        # Non-rate-limit failure: don't penalise the key.
+                        key_pool.mark_success(current_key_info["id"])
+                except Exception:
+                    pass
+
+            logger.warning(
+                "Topic-extract attempt %d/%d failed (rate_limit=%s, key=%s): %s",
+                attempt + 1, max_attempts, is_rl,
+                (current_key_info or {}).get("name", "<env>"),
+                err_msg or "empty result",
+            )
+            if not is_rl or key_pool is None:
+                break
+            next_info = key_pool.next_key()
+            if next_info is None:
+                logger.error("Topic-extract: key pool exhausted")
+                break
+            current_key_info = next_info
+            current_api_key = next_info["plain_key"]
+
+        return last_result
     
     def query(
         self,
@@ -674,6 +771,93 @@ class RAGService:
                 "success": False,
                 "error": str(e)
             }
+    
+    def remove_index(
+        self,
+        filename: str,
+        user_id: Optional[str] = None,
+        db_session: Optional[Session] = None,
+    ) -> Dict[str, Any]:
+        """Remove the index for a single uploaded document.
+
+        Cleans up: per-file ChromaDB collection, cached topic JSON, and the
+        PostgreSQL ``rag_collection`` row. The on-disk PDF in the user's
+        upload directory is left untouched (use ``DELETE /uploaded-files``
+        to remove the file itself). Mirrors ``CanvasRAGService.remove_index``.
+        """
+        self._ensure_initialized()
+
+        try:
+            self._collection_manager.ensure_fresh_state()
+
+            file_hash: Optional[str] = None
+
+            # Source 1: PostgreSQL
+            if db_session and user_id:
+                try:
+                    row = SyncRAGCollectionRepository.get_by_filename(
+                        db_session,
+                        filename,
+                        uuid.UUID(user_id),
+                        source=RAGSourceType.UPLOAD,
+                    )
+                    if row:
+                        file_hash = row.file_hash
+                except Exception as e:
+                    logger.warning(f"DB lookup failed in remove_index: {e}")
+                    db_session.rollback()
+
+            # Source 2: collection registry
+            if not file_hash:
+                for meta in self._collection_manager.registry.get_all(user_id=user_id):
+                    if not self._is_upload_collection_entry(meta):
+                        continue
+                    if meta.filename == filename:
+                        file_hash = meta.file_hash
+                        break
+
+            if not file_hash:
+                return {
+                    "success": False,
+                    "error": f"File chưa được index: {filename}",
+                }
+
+            # Drop per-file Chroma collection
+            try:
+                self._collection_manager.delete_collection(file_hash, user_id=user_id)
+                self._collection_manager._cleanup_orphaned_directories()
+            except Exception as e:
+                logger.warning(f"Could not delete collection for {file_hash}: {e}")
+
+            # Drop cached topics (legacy JSON)
+            try:
+                topic_storage.remove_document(file_hash, user_id=user_id)
+            except Exception as e:
+                logger.warning(f"Could not remove topic_storage entry: {e}")
+
+            # Drop PostgreSQL row
+            if db_session and user_id:
+                try:
+                    SyncRAGCollectionRepository.unregister(
+                        db_session,
+                        file_hash=file_hash,
+                        user_id=uuid.UUID(user_id),
+                        source=RAGSourceType.UPLOAD,
+                    )
+                    db_session.commit()
+                except Exception as e:
+                    logger.warning(f"Could not unregister DB row: {e}")
+                    db_session.rollback()
+
+            return {
+                "success": True,
+                "message": f"Đã xóa index cho: {filename}",
+                "filename": filename,
+                "file_hash": file_hash,
+            }
+        except Exception as e:
+            logger.error(f"Error removing index for {filename}: {e}")
+            return {"success": False, "error": str(e)}
     
     def check_llm_status(self) -> Dict[str, Any]:
         """
@@ -1040,6 +1224,13 @@ class RAGService:
         """
         logger.info(f"Getting topics for document: {filename} (user={user_id})")
         
+        # Pick up worker-written collection registry changes (cross-process)
+        if self._collection_manager:
+            try:
+                self._collection_manager.ensure_fresh_state()
+            except Exception as e:
+                logger.debug(f"ensure_fresh_state failed (non-fatal): {e}")
+        
         topics = None
         if db_session and user_id:
             try:
@@ -1082,6 +1273,8 @@ class RAGService:
         filename: str,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        groq_api_key: Optional[str] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Extract and cache topics for a specific document.
@@ -1151,10 +1344,12 @@ class RAGService:
             # Use content as context
             context = "\n\n---\n\n".join(all_docs[:15])
             
-            # Extract topics using LLM
-            result = self._quiz_generator.extract_topics_from_context(
+            # Extract topics using LLM with optional Groq key-pool rotation
+            result = self._extract_topics_with_pool(
                 context=context[:8000],
-                max_topics=10
+                max_topics=10,
+                groq_api_key=groq_api_key,
+                key_pool=key_pool,
             )
             
             if result.get("success") and result.get("topics"):
@@ -1211,9 +1406,19 @@ class RAGService:
             user_id: User ID for per-user scoping
             db_session: Sync DB session for metadata lookup
         """
-        registry = self._collection_manager.registry if self._collection_manager else CollectionRegistry(
-            str(Path(self.persist_directory) / "collection_registry.json")
-        )
+        # Pick up cross-process writes from the Celery worker so freshly
+        # indexed documents appear immediately in the FastAPI process
+        # without needing a server restart.
+        if self._collection_manager:
+            try:
+                self._collection_manager.ensure_fresh_state()
+            except Exception as e:
+                logger.debug(f"ensure_fresh_state failed (non-fatal): {e}")
+            registry = self._collection_manager.registry
+        else:
+            registry = CollectionRegistry(
+                str(Path(self.persist_directory) / "collection_registry.json")
+            )
         
         if db_session and user_id:
             # DB path — single authoritative query

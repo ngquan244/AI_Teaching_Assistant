@@ -10,6 +10,8 @@ from sqlalchemy.pool import NullPool
 
 from backend.core.config import settings
 
+_is_dev = settings.ENVIRONMENT == "development"
+
 
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models."""
@@ -32,10 +34,17 @@ SessionLocal = sessionmaker(
 )
 
 # Async engine (for FastAPI endpoints)
+# Dev: use connection pool for faster responses
+# Prod: NullPool to avoid stale connections across process forks
+_async_engine_kwargs = (
+    dict(pool_size=10, max_overflow=20, pool_pre_ping=True, pool_recycle=1800)
+    if _is_dev
+    else dict(poolclass=NullPool)
+)
 async_engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    poolclass=NullPool,  # Disable connection pooling for async
+    **_async_engine_kwargs,
 )
 
 # Async session factory

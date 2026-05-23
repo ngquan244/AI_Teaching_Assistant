@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   PanelTop,
   Ticket,
+  Key,
   Menu,
   X,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ const ADMIN_NAV = [
   { to: '/admin/jobs', icon: Activity, label: 'Quản lý Jobs' },
   { to: '/admin/panels', icon: PanelTop, label: 'Quản lý Panel' },
   { to: '/admin/invite-codes', icon: Ticket, label: 'Quản lý Mã mời' },
+  { to: '/admin/groq-keys', icon: Key, label: 'Quản lý API Keys' },
 ];
 
 const AdminLayout: React.FC = () => {

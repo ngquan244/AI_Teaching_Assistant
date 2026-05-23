@@ -23,6 +23,7 @@ from backend.database.models.rag_document import (
     RAGCollection,
     RAGDocumentTopic,
     RAGSourceType,
+    CanvasCourseDomainDoc,
 )
 
 logger = logging.getLogger(__name__)
@@ -428,27 +429,33 @@ class SyncRAGCollectionRepository:
         course_id: Optional[int] = None,
         chunk_count: int = 0,
         is_indexed: bool = True,
+        language: Optional[str] = None,
     ) -> RAGCollection:
+        values: Dict[str, Any] = dict(
+            user_id=user_id,
+            file_hash=file_hash,
+            filename=filename,
+            collection_name=collection_name,
+            source=source,
+            course_id=course_id,
+            chunk_count=chunk_count,
+            is_indexed=is_indexed,
+        )
+        update_set: Dict[str, Any] = {
+            "chunk_count": chunk_count,
+            "is_indexed": is_indexed,
+            "collection_name": collection_name,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if language is not None:
+            values["language"] = language
+            update_set["language"] = language
         stmt = (
             pg_insert(RAGCollection)
-            .values(
-                user_id=user_id,
-                file_hash=file_hash,
-                filename=filename,
-                collection_name=collection_name,
-                source=source,
-                course_id=course_id,
-                chunk_count=chunk_count,
-                is_indexed=is_indexed,
-            )
+            .values(**values)
             .on_conflict_do_update(
                 constraint="uq_rag_user_file_source",
-                set_={
-                    "chunk_count": chunk_count,
-                    "is_indexed": is_indexed,
-                    "collection_name": collection_name,
-                    "updated_at": datetime.now(timezone.utc),
-                },
+                set_=update_set,
             )
             .returning(RAGCollection)
         )
@@ -479,14 +486,40 @@ class SyncRAGCollectionRepository:
         user_id: uuid.UUID,
         source: RAGSourceType = RAGSourceType.UPLOAD,
     ) -> Optional[RAGCollection]:
-        """Look up a collection by filename + user + source."""
+        """Look up a collection by filename + user + source.
+
+        Falls back to a case/whitespace/comma-insensitive match so the
+        frontend can pass either the canonical filename or a sanitized
+        display name (the two diverge for Canvas files with commas / odd
+        spacing).
+        """
         stmt = select(RAGCollection).where(
             RAGCollection.filename == filename,
             RAGCollection.user_id == user_id,
             RAGCollection.source == source,
         )
-        result = session.execute(stmt)
-        return result.scalar_one_or_none()
+        row = session.execute(stmt).scalar_one_or_none()
+        if row is not None:
+            return row
+
+        def _norm(name: str) -> str:
+            return " ".join(name.lower().replace(",", "").split())
+
+        target = _norm(filename)
+        target_base = target[:-4] if target.endswith(".pdf") else target
+
+        all_stmt = select(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.source == source,
+        )
+        for candidate in session.execute(all_stmt).scalars():
+            cand = _norm(candidate.filename or "")
+            cand_base = cand[:-4] if cand.endswith(".pdf") else cand
+            if cand == target or cand_base == target_base:
+                return candidate
+            if target_base and (target_base in cand_base or cand_base in target_base):
+                return candidate
+        return None
 
     @staticmethod
     def get_all(
@@ -740,3 +773,225 @@ class SyncRAGCollectionRepository:
                 "indexed_at": row.created_at.isoformat() if row.created_at else None,
             })
         return documents
+
+    # ── Language helpers (V1 course domain knowledge) ────────────────
+
+    @staticmethod
+    def get_language_by_hash(
+        session: Session,
+        file_hash: str,
+    ) -> Optional[str]:
+        """Best-effort language lookup keyed only by file_hash.
+
+        Cross-user: any indexed copy of the same file should agree on
+        language. Returns the first non-NULL language found.
+        """
+        stmt = (
+            select(RAGCollection.language)
+            .where(
+                RAGCollection.file_hash == file_hash,
+                RAGCollection.language.is_not(None),
+            )
+            .limit(1)
+        )
+        result = session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def get_language_by_hashes(
+        session: Session,
+        hashes: List[str],
+    ) -> Dict[str, str]:
+        """Bulk language lookup; returns only entries that have a value."""
+        if not hashes:
+            return {}
+        stmt = (
+            select(RAGCollection.file_hash, RAGCollection.language)
+            .where(
+                RAGCollection.file_hash.in_(hashes),
+                RAGCollection.language.is_not(None),
+            )
+        )
+        result = session.execute(stmt)
+        out: Dict[str, str] = {}
+        for fh, lang in result.all():
+            if fh and lang and fh not in out:
+                out[fh] = lang
+        return out
+
+    @staticmethod
+    def get_by_hashes(
+        session: Session,
+        hashes: List[str],
+        source: Optional[RAGSourceType] = None,
+        course_id: Optional[int] = None,
+    ) -> List[RAGCollection]:
+        """Return all RAGCollection rows matching any of ``hashes``.
+
+        Optional filters narrow the result by ``source`` (e.g. CANVAS only)
+        and/or by ``course_id``. Used by V2 eligibility validation:
+        domain-doc mark requests must verify that every requested hash
+        corresponds to a Canvas-indexed file in the target course.
+        """
+        if not hashes:
+            return []
+        stmt = select(RAGCollection).where(RAGCollection.file_hash.in_(hashes))
+        if source is not None:
+            stmt = stmt.where(RAGCollection.source == source)
+        if course_id is not None:
+            stmt = stmt.where(RAGCollection.course_id == course_id)
+        return list(session.execute(stmt).scalars().all())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Course-level domain document marks (V1)
+# ═══════════════════════════════════════════════════════════════════════
+
+class SyncCanvasCourseDomainDocRepository:
+    """
+    Sync repository for ``canvas_course_domain_docs``.
+
+    Marks a Canvas-indexed file as **course-level shared domain knowledge**.
+    Identity is by ``(course_id, file_hash)`` so any user's per-file Chroma
+    collection (deterministic name) can be reused without re-indexing.
+    """
+
+    @staticmethod
+    def get_enabled(
+        session: Session,
+        course_id: int,
+    ) -> List[CanvasCourseDomainDoc]:
+        """Return enabled domain marks for a course."""
+        stmt = (
+            select(CanvasCourseDomainDoc)
+            .where(
+                CanvasCourseDomainDoc.course_id == course_id,
+                CanvasCourseDomainDoc.enabled.is_(True),
+            )
+        )
+        result = session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    def get_enabled_hashes(
+        session: Session,
+        course_id: int,
+    ) -> List[str]:
+        """Return file_hash values of enabled domain marks for a course."""
+        stmt = (
+            select(CanvasCourseDomainDoc.file_hash)
+            .where(
+                CanvasCourseDomainDoc.course_id == course_id,
+                CanvasCourseDomainDoc.enabled.is_(True),
+            )
+        )
+        result = session.execute(stmt)
+        return [row for row in result.scalars().all()]
+
+    @staticmethod
+    def is_marked(
+        session: Session,
+        course_id: int,
+        file_hash: str,
+    ) -> bool:
+        stmt = (
+            select(func.count())
+            .select_from(CanvasCourseDomainDoc)
+            .where(
+                CanvasCourseDomainDoc.course_id == course_id,
+                CanvasCourseDomainDoc.file_hash == file_hash,
+                CanvasCourseDomainDoc.enabled.is_(True),
+            )
+        )
+        result = session.execute(stmt)
+        return (result.scalar_one() or 0) > 0
+
+    @staticmethod
+    def get_marked_subset(
+        session: Session,
+        course_id: int,
+        hashes: List[str],
+    ) -> set:
+        """Return the subset of given hashes that are enabled domain marks."""
+        if not hashes:
+            return set()
+        stmt = (
+            select(CanvasCourseDomainDoc.file_hash)
+            .where(
+                CanvasCourseDomainDoc.course_id == course_id,
+                CanvasCourseDomainDoc.file_hash.in_(hashes),
+                CanvasCourseDomainDoc.enabled.is_(True),
+            )
+        )
+        result = session.execute(stmt)
+        return {row for row in result.scalars().all()}
+
+    @staticmethod
+    def upsert_many(
+        session: Session,
+        *,
+        course_id: int,
+        file_hashes: List[str],
+        marked_by_user_id: Optional[uuid.UUID] = None,
+    ) -> int:
+        """Idempotent mark — re-enables previously disabled rows.
+
+        Returns the number of input hashes processed (not new rows).
+        """
+        if not file_hashes:
+            return 0
+        now = datetime.now(timezone.utc)
+        for fh in file_hashes:
+            stmt = (
+                pg_insert(CanvasCourseDomainDoc)
+                .values(
+                    course_id=course_id,
+                    file_hash=fh,
+                    marked_by_user_id=marked_by_user_id,
+                    enabled=True,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_course_domain_doc",
+                    set_={
+                        "enabled": True,
+                        "marked_by_user_id": marked_by_user_id,
+                        "updated_at": now,
+                    },
+                )
+            )
+            session.execute(stmt)
+        session.flush()
+        return len(file_hashes)
+
+    @staticmethod
+    def disable(
+        session: Session,
+        *,
+        course_id: int,
+        file_hash: str,
+    ) -> bool:
+        """Soft-delete (reversible). Returns True if a row was updated."""
+        stmt = (
+            update(CanvasCourseDomainDoc)
+            .where(
+                CanvasCourseDomainDoc.course_id == course_id,
+                CanvasCourseDomainDoc.file_hash == file_hash,
+            )
+            .values(enabled=False, updated_at=datetime.now(timezone.utc))
+        )
+        result = session.execute(stmt)
+        session.flush()
+        return result.rowcount > 0
+
+    @staticmethod
+    def list_for_course(
+        session: Session,
+        course_id: int,
+        include_disabled: bool = False,
+    ) -> List[CanvasCourseDomainDoc]:
+        conditions = [CanvasCourseDomainDoc.course_id == course_id]
+        if not include_disabled:
+            conditions.append(CanvasCourseDomainDoc.enabled.is_(True))
+        stmt = select(CanvasCourseDomainDoc).where(*conditions)
+        result = session.execute(stmt)
+        return list(result.scalars().all())

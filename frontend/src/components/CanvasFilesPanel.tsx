@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FileText,
   Download,
@@ -18,8 +18,6 @@ import {
   X,
   Plus,
   Save,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   ChevronUp,
   WifiOff,
@@ -39,6 +37,7 @@ const generateCanvasStars = (count: number) =>
     size: `${1.5 + Math.random() * 1.5}px`,
   }));
 import { useAuth } from '../context/AuthContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { canvasApi } from '../api/canvas';
 import {
   downloadCanvasFile,
@@ -50,7 +49,13 @@ import {
   updateCanvasDocumentTopics,
   removeCanvasFileIndex,
   CanvasPermissionError,
+  // V2 — course-shared domain knowledge
+  listCourseDocuments,
+  markDomainDocuments,
+  unmarkDomainDocument,
+  getPublicConfig,
   type CanvasIndexedDocument,
+  type PublicConfig,
 } from '../api/canvasRag';
 import { getJob, TERMINAL_STATUSES } from '../api/jobs';
 import {
@@ -132,17 +137,43 @@ const sanitizeCanvasFilename = (name: string) =>
 
 const stripPdfExtension = (name: string) => name.replace(/\.pdf$/i, '');
 
+// Backend strips non-alphanumeric chars (except `._- `) when saving Canvas
+// downloads (see canvas_service.py:205). To match the canonical filename in
+// allIndexedDocs, we must mirror that sanitization on the frontend display
+// name. Without this, files with parens/brackets/&/etc. silently fail to
+// match — UI shows "chưa index" while backend rejects re-index as duplicate.
+const aggressiveSanitize = (name: string) =>
+  name
+    .toLowerCase()
+    .split('')
+    .map((c) => (/[a-z0-9._\- ]/.test(c) ? c : ''))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 const filenamesMatch = (left: string, right: string) => {
   const leftSanitized = sanitizeCanvasFilename(left);
   const rightSanitized = sanitizeCanvasFilename(right);
   const leftBase = stripPdfExtension(leftSanitized);
   const rightBase = stripPdfExtension(rightSanitized);
 
-  return (
+  if (
     leftSanitized === rightSanitized ||
     leftBase === rightBase ||
     leftSanitized.includes(rightBase) ||
     rightSanitized.includes(leftBase)
+  ) {
+    return true;
+  }
+
+  // Aggressive fallback to mirror backend's safe_filename sanitization.
+  const leftAggr = stripPdfExtension(aggressiveSanitize(left));
+  const rightAggr = stripPdfExtension(aggressiveSanitize(right));
+  if (!leftAggr || !rightAggr) return false;
+  return (
+    leftAggr === rightAggr ||
+    leftAggr.includes(rightAggr) ||
+    rightAggr.includes(leftAggr)
   );
 };
 
@@ -153,6 +184,7 @@ const findMatchingIndexedDoc = (
 
 const CanvasFilesPanel: React.FC = () => {
   const { isAuthenticated, canvasTokens } = useAuth();
+  const confirmDialog = useConfirm();
   const canvasStars = useMemo(() => generateCanvasStars(30), []);
   
   // Remote files state (from Canvas API)
@@ -179,6 +211,12 @@ const CanvasFilesPanel: React.FC = () => {
 
   // Action states for indexed files (extract/edit/remove)
   const [fileActionStates, setFileActionStates] = useState<Map<string, ExtendedFileStatus>>(new Map());
+
+  // Track filenames whose index was just removed in this session. The next
+  // time the user re-indexes one of these files we send `force_reindex=true`
+  // so a stale cross-process registry/DB row from the recent delete cannot
+  // short-circuit the worker into `already_indexed=true`.
+  const recentlyRemovedRef = useRef<Set<string>>(new Set());
   
   // Pagination state
   const [remoteCurrentPage, setRemoteCurrentPage] = useState(1);
@@ -196,6 +234,97 @@ const CanvasFilesPanel: React.FC = () => {
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isSavingTopics, setIsSavingTopics] = useState(false);
 
+  // V2 — course-shared domain knowledge
+  const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
+  const [domainTogglePending, setDomainTogglePending] = useState<Set<string>>(new Set());
+  const [domainToggleError, setDomainToggleError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getPublicConfig()
+      .then((cfg) => {
+        if (alive) setPublicConfig(cfg);
+      })
+      .catch((err) => {
+        console.warn('Failed to load public config:', err);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** V2: load per-course documents (with language + is_course_domain) and
+   *  merge into `indexedDocs` / `allIndexedDocs`. Called whenever the
+   *  course view refreshes if the feature is enabled. */
+  const loadCourseDocuments = async (courseId?: number) => {
+    if (!courseId || !publicConfig?.enable_course_domain_docs) return;
+    try {
+      const res = await listCourseDocuments(courseId);
+      if (!res.success) return;
+      const byHash = new Map(res.documents.map((d) => [d.file_hash, d]));
+      const merge = (doc: CanvasIndexedDocument): CanvasIndexedDocument => {
+        const enriched = byHash.get(doc.file_hash);
+        if (!enriched) return doc;
+        return {
+          ...doc,
+          language: enriched.language ?? doc.language,
+          is_course_domain: enriched.is_course_domain ?? doc.is_course_domain,
+          marked_by_user_id: enriched.marked_by_user_id ?? doc.marked_by_user_id,
+        };
+      };
+      setIndexedDocs((prev) => prev.map(merge));
+      setAllIndexedDocs((prev) => prev.map(merge));
+    } catch (err) {
+      if (err instanceof CanvasPermissionError) {
+        // Token missing / no access — silently skip; main flow already errors.
+        return;
+      }
+      console.warn('Failed to load course documents:', err);
+    }
+  };
+
+  /** V2: toggle a single document's course-domain mark.
+   *  Uploaded (non-Canvas) docs cannot reach this UI per the binding rule. */
+  const handleToggleDomain = async (
+    doc: CanvasIndexedDocument,
+    nextEnabled: boolean,
+  ) => {
+    if (!selectedCourse || !publicConfig?.enable_course_domain_docs) return;
+    setDomainToggleError(null);
+    setDomainTogglePending((prev) => {
+      const next = new Set(prev);
+      next.add(doc.file_hash);
+      return next;
+    });
+    try {
+      if (nextEnabled) {
+        await markDomainDocuments(selectedCourse.id, [doc.file_hash]);
+      } else {
+        await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
+      }
+      // Optimistic local update
+      const apply = (d: CanvasIndexedDocument): CanvasIndexedDocument =>
+        d.file_hash === doc.file_hash ? { ...d, is_course_domain: nextEnabled } : d;
+      setIndexedDocs((prev) => prev.map(apply));
+      setAllIndexedDocs((prev) => prev.map(apply));
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: { message?: string; error?: string } } } })
+          ?.response?.data?.detail?.message ||
+        (err as { response?: { data?: { detail?: { error?: string } } } })
+          ?.response?.data?.detail?.error ||
+        (err as Error)?.message ||
+        'Không thể cập nhật trạng thái domain knowledge.';
+      setDomainToggleError(msg);
+    } finally {
+      setDomainTogglePending((prev) => {
+        const next = new Set(prev);
+        next.delete(doc.file_hash);
+        return next;
+      });
+    }
+  };
+
   const loadAllIndexedDocs = async (courseId?: number) => {
     try {
       const docs = await listAllIndexedCanvasDocuments(courseId);
@@ -203,7 +332,7 @@ const CanvasFilesPanel: React.FC = () => {
       return docs;
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
-        setError('KhÃ´ng cÃ³ quyá»n truy cáº­p khÃ³a há»c nÃ y. Vui lÃ²ng kiá»ƒm tra Canvas token.');
+        setError('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
       }
       console.error('Error loading all indexed docs:', err);
       return [];
@@ -215,24 +344,40 @@ const CanvasFilesPanel: React.FC = () => {
       loadIndexedDocs(courseId, page),
       loadAllIndexedDocs(courseId),
     ]);
+    // V2: enrich with course-domain + language info (no-op when flag off).
+    await loadCourseDocuments(courseId);
   };
 
   // Load selected course on mount
   useEffect(() => {
     const stored = getSelectedCourse();
     if (stored) {
+      // Setting selectedCourse will trigger the [selectedCourse] effect
+      // below which calls fetchRemoteFiles (already loads indexed docs).
       setSelectedCourse(stored);
+    } else {
+      // No stored course → fetchRemoteFiles won't run; still show indexed view.
+      refreshIndexedData(undefined, 1);
     }
-    // Always load indexed docs on mount (works offline)
-    refreshIndexedData(stored?.id, 1);
   }, []);
 
-  // Fetch remote files when course changes
+  // Race guard: ignore stale responses when user switches course quickly.
+  const courseReqRef = useRef(0);
+
+  // Fetch remote files when course changes.
+  // NOTE: fetchRemoteFiles already loads indexed + all-indexed in parallel,
+  // so we don't call refreshIndexedData here — that would double every request.
+  // We still need loadCourseDocuments (V2 enrich) to merge language /
+  // is_course_domain into the indexed view; that runs after fetchRemoteFiles.
   useEffect(() => {
-    if (selectedCourse) {
-      fetchRemoteFiles(selectedCourse.id);
-      refreshIndexedData(selectedCourse.id, 1);
-    }
+    if (!selectedCourse) return;
+    const reqId = ++courseReqRef.current;
+    const courseId = selectedCourse.id;
+    (async () => {
+      await fetchRemoteFiles(courseId);
+      if (courseReqRef.current !== reqId) return; // user switched course
+      await loadCourseDocuments(courseId);
+    })();
   }, [selectedCourse]);
 
   // Reset pagination when data changes
@@ -434,7 +579,31 @@ const CanvasFilesPanel: React.FC = () => {
     updateFileStatus(file.id, { status: 'indexing' });
     
     try {
-      const asyncResp = await asyncIndexCanvasFile(filenameToIndex, selectedCourse?.id);
+      // Force re-index whenever we have evidence the prior index was removed:
+      //   1. Session-local mark from a delete the user just performed, OR
+      //   2. Local file exists (download returned 'duplicate') but the file
+      //      is NOT in the current indexed list — i.e. user deleted the
+      //      index in a previous session / different tab and the cross-process
+      //      registry may still hold a stale entry.
+      const sessionMark =
+        recentlyRemovedRef.current.has(filenameToIndex) ||
+        recentlyRemovedRef.current.has(file.display_name);
+      const inferredFromState =
+        downloadResult.status === 'duplicate' &&
+        !allIndexedDocs.some((doc) => filenamesMatch(filenameToIndex, doc.filename));
+      const forceReindex = sessionMark || inferredFromState;
+      console.log('[canvas-rag] asyncIndexCanvasFile', {
+        filename: filenameToIndex,
+        courseId: selectedCourse?.id,
+        forceReindex,
+        sessionMark,
+        inferredFromState,
+      });
+      const asyncResp = await asyncIndexCanvasFile(
+        filenameToIndex,
+        selectedCourse?.id,
+        forceReindex,
+      );
       const jobId = asyncResp.job_id;
 
       // Poll until job completes
@@ -451,6 +620,9 @@ const CanvasFilesPanel: React.FC = () => {
           error?: string;
         };
         if (result.success) {
+          // Re-index attempt completed; clear any "recently removed" mark.
+          recentlyRemovedRef.current.delete(filenameToIndex);
+          recentlyRemovedRef.current.delete(file.display_name);
           if (result.already_indexed) {
             updateFileStatus(file.id, { status: 'indexed' });
           } else {
@@ -544,6 +716,10 @@ const CanvasFilesPanel: React.FC = () => {
       }
 
       if (jobResult.status === 'SUCCEEDED') {
+        // Job completed — but the extraction itself may still have failed
+        // (e.g. Groq token exhausted). In that case the indexed document
+        // is preserved (topic_count = 0) and the user can retry.
+        const payload = (jobResult.result || {}) as { success?: boolean; error?: string; topics?: string[] };
         setFileActionStates(prev => {
           const newMap = new Map(prev);
           newMap.delete(filename);
@@ -551,25 +727,44 @@ const CanvasFilesPanel: React.FC = () => {
         });
         await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
+        if (payload.success === false) {
+          console.warn(
+            `[extract-topics] Failed for "${filename}": ${payload.error || 'unknown error'}`,
+          );
+        }
       } else {
         setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
+        const errMsg = (jobResult as { error?: string }).error;
+        console.warn(
+          `[extract-topics] Job failed for "${filename}": ${errMsg || 'unknown'}`,
+        );
       }
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
-        alert('Không có quyền truy cập khóa học này. Vui lòng kiểm tra Canvas token.');
+        console.warn('[extract-topics] Canvas permission denied');
       }
       setFileActionStates(prev => new Map(prev).set(filename, 'failed'));
     }
   };
 
   const handleRemoveIndex = async (filename: string) => {
-    if (!confirm(`Xóa index nội bộ cho "${filename}"?\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống.\nFile trên Canvas LMS không bị ảnh hưởng.`)) {
+    const ok = await confirmDialog({
+      title: 'Xóa index nội bộ?',
+      message: `Xóa index nội bộ cho "${filename}"?\n\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống. File trên Canvas LMS không bị ảnh hưởng.`,
+      confirmLabel: 'Xóa index',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
     
     try {
+      console.log('[canvas-rag] removeCanvasFileIndex', { filename, courseId: selectedCourse?.id });
       const result = await removeCanvasFileIndex(filename);
+      console.log('[canvas-rag] removeCanvasFileIndex response', result);
       if (result.success) {
+        recentlyRemovedRef.current.add(filename);
         await refreshIndexedData(selectedCourse?.id, 1);
         window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
       }
@@ -581,19 +776,30 @@ const CanvasFilesPanel: React.FC = () => {
   // Remove index for remote file (from Canvas file list)
   const handleRemoveIndexForRemoteFile = async (file: CanvasFile) => {
     const sanitizedName = file.display_name.replace(/[,]/g, '');
-    
-    if (!confirm(`Xóa index nội bộ cho "${file.display_name}"?\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống.\nFile trên Canvas LMS không bị ảnh hưởng.`)) {
+
+    const ok = await confirmDialog({
+      title: 'Xóa index nội bộ?',
+      message: `Xóa index nội bộ cho "${file.display_name}"?\n\nHành động này chỉ xóa dữ liệu vector và chủ đề trên hệ thống. File trên Canvas LMS không bị ảnh hưởng.`,
+      confirmLabel: 'Xóa index',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
     
     try {
       // Try with both original and sanitized name
+      console.log('[canvas-rag] removeCanvasFileIndex (remote)', { filename: file.display_name, sanitizedName, fileId: file.id });
       let result = await removeCanvasFileIndex(sanitizedName);
       if (!result.success) {
         result = await removeCanvasFileIndex(file.display_name);
       }
-      
+      console.log('[canvas-rag] removeCanvasFileIndex (remote) response', result);
+
       if (result.success) {
+        recentlyRemovedRef.current.add(file.display_name);
+        recentlyRemovedRef.current.add(sanitizedName);
         // Reset status — no longer indexed
         setDownloadStates(prev => {
           const newMap = new Map(prev);
@@ -939,9 +1145,13 @@ const CanvasFilesPanel: React.FC = () => {
                               const state = downloadStates.get(file.id);
                               const indexedDoc = findMatchingIndexedDoc(file.display_name, allIndexedDocs);
                               const isIndexed = state?.status === 'indexed' || Boolean(indexedDoc);
-                              const actionState = fileActionStates.get(
-                                indexedDoc?.filename || file.display_name.replace(/[,]/g, '')
-                              );
+                              // Filename used for extract/edit actions. Falls back to a sanitized
+                              // display_name when the document is indexed but missing from
+                              // allIndexedDocs (e.g. /indexed endpoint filtered it out due to a
+                              // transient Canvas-permission check failure).
+                              const actionFilename = indexedDoc?.filename || file.display_name.replace(/[,]/g, '');
+                              const actionState = fileActionStates.get(actionFilename);
+                              const topicCount = indexedDoc?.topic_count ?? 0;
                               return (
                                 <tr key={file.id}>
                                   <td>
@@ -962,7 +1172,7 @@ const CanvasFilesPanel: React.FC = () => {
                                         <StatusIcon status={state.status} />
                                         <span>
                                           {statusLabels[state.status]}
-                                          {isIndexed && indexedDoc && ` · ${indexedDoc.topic_count} topics`}
+                                          {isIndexed && ` · ${topicCount} chủ đề`}
                                         </span>
                                       </div>
                                     ) : (
@@ -984,24 +1194,29 @@ const CanvasFilesPanel: React.FC = () => {
                                           </button>
                                         </>
                                       )}
-                                      {/* Indexed: extract topics, edit topics, remove index */}
-                                      {isIndexed && indexedDoc && (
+                                      {/* Indexed: extract topics, edit topics, remove index.
+                                          We render these even when indexedDoc is missing, using
+                                          the sanitized filename, so a transient list-filter
+                                          mismatch does not strip the user's controls. */}
+                                      {isIndexed && (
                                         <>
                                           <button
                                             className="btn-action"
-                                            onClick={() => handleExtractTopics(indexedDoc.filename)}
+                                            onClick={() => handleExtractTopics(actionFilename)}
                                             disabled={actionState === 'extracting'}
-                                            title="Trích xuất chủ đề"
+                                            title={topicCount === 0 ? 'Trích xuất chủ đề (chưa có)' : 'Trích xuất lại chủ đề'}
                                           >
                                             <Sparkles size={14} />
                                           </button>
-                                          <button
-                                            className="btn-action"
-                                            onClick={() => openEditTopicsModal(indexedDoc.filename)}
-                                            title="Sửa chủ đề"
-                                          >
-                                            <Edit2 size={14} />
-                                          </button>
+                                          {indexedDoc && (
+                                            <button
+                                              className="btn-action"
+                                              onClick={() => openEditTopicsModal(indexedDoc.filename)}
+                                              title="Sửa chủ đề"
+                                            >
+                                              <Edit2 size={14} />
+                                            </button>
+                                          )}
                                           <button
                                             className="btn-action warning"
                                             onClick={() => handleRemoveIndexForRemoteFile(file)}
@@ -1010,16 +1225,6 @@ const CanvasFilesPanel: React.FC = () => {
                                             <Trash size={14} />
                                           </button>
                                         </>
-                                      )}
-                                      {/* Indexed but no doc found — just show remove */}
-                                      {isIndexed && !indexedDoc && (
-                                        <button
-                                          className="btn-action warning"
-                                          onClick={() => handleRemoveIndexForRemoteFile(file)}
-                                          title="Xóa index nội bộ (không ảnh hưởng Canvas)"
-                                        >
-                                          <Trash size={14} />
-                                        </button>
                                       )}
                                     </div>
                                   </td>
@@ -1038,38 +1243,24 @@ const CanvasFilesPanel: React.FC = () => {
                     </div>
                     
                     {/* Pagination */}
-                    <div className="pagination">
+                    <div className="pagination pagination--compact">
                       <button
                         className="pagination-btn"
                         onClick={() => setRemoteCurrentPage(p => Math.max(1, p - 1))}
                         disabled={remoteCurrentPage === 1}
                       >
-                        <ChevronLeft size={16} />
+                        ‹ Trước
                       </button>
-                      <div className="pagination-pages">
-                        {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                          <button
-                            key={page}
-                            className={`pagination-page ${page === remoteCurrentPage ? 'active' : ''}`}
-                            onClick={() => setRemoteCurrentPage(page)}
-                          >
-                            {page}
-                          </button>
-                        ))}
-                      </div>
+                      <span className="pagination-info">
+                        Trang {remoteCurrentPage} / {Math.max(totalPages, 1)}
+                      </span>
                       <button
                         className="pagination-btn"
                         onClick={() => setRemoteCurrentPage(p => Math.min(totalPages, p + 1))}
                         disabled={remoteCurrentPage === totalPages}
                       >
-                        <ChevronRight size={16} />
+                        Sau ›
                       </button>
-                      <span className="pagination-info">
-                        {remoteFiles.length > 0 
-                          ? `${startIndex + 1}-${Math.min(startIndex + ITEMS_PER_PAGE, remoteFiles.length)} / ${remoteFiles.length}`
-                          : '0 / 0'
-                        }
-                      </span>
                     </div>
                   </>
                 );
@@ -1112,8 +1303,45 @@ const CanvasFilesPanel: React.FC = () => {
             )}
 
             {!indexedLoading && (() => {
+              const showDomainCols = !!publicConfig?.enable_course_domain_docs && !!selectedCourse;
+              const totalCols = showDomainCols ? 6 : 4;
               return (
                 <>
+                  {showDomainCols && (
+                    <div
+                      className="info-banner"
+                      style={{
+                        margin: '0 0 12px',
+                        padding: '8px 12px',
+                        borderRadius: 6,
+                        background: 'rgba(56, 189, 248, 0.08)',
+                        border: '1px solid rgba(56, 189, 248, 0.3)',
+                        color: '#7dd3fc',
+                        fontSize: 12,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      <strong>Course-shared domain knowledge</strong> is available
+                      only for indexed Canvas course documents. Uploaded personal
+                      documents cannot be marked.
+                    </div>
+                  )}
+                  {showDomainCols && domainToggleError && (
+                    <div
+                      className="error-banner"
+                      style={{
+                        margin: '0 0 12px',
+                        padding: '8px 12px',
+                        borderRadius: 6,
+                        background: 'rgba(248, 113, 113, 0.10)',
+                        border: '1px solid rgba(248, 113, 113, 0.4)',
+                        color: '#fca5a5',
+                        fontSize: 12,
+                      }}
+                    >
+                      {domainToggleError}
+                    </div>
+                  )}
                   <div className="files-list">
                     <table className="files-table">
                       <thead>
@@ -1121,6 +1349,7 @@ const CanvasFilesPanel: React.FC = () => {
                           <th>Tên file</th>
                           <th>Chunks</th>
                           <th>Topics</th>
+                          {showDomainCols && <th>Domain</th>}
                           <th>Thao tác</th>
                         </tr>
                       </thead>
@@ -1128,6 +1357,7 @@ const CanvasFilesPanel: React.FC = () => {
                         {indexedDocs.length > 0 ? (
                           indexedDocs.map((doc) => {
                             const actionState = fileActionStates.get(doc.filename);
+                            const togglePending = domainTogglePending.has(doc.file_hash);
                             return (
                               <tr key={doc.file_hash}>
                                 <td>
@@ -1144,6 +1374,36 @@ const CanvasFilesPanel: React.FC = () => {
                                     {doc.topic_count > 0 ? `${doc.topic_count} topics` : '—'}
                                   </span>
                                 </td>
+                                {showDomainCols && (
+                                  <td>
+                                    <label
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        cursor: togglePending ? 'wait' : 'pointer',
+                                        opacity: togglePending ? 0.6 : 1,
+                                      }}
+                                      title={
+                                        doc.is_course_domain
+                                          ? 'Currently shared with the course. Click to unmark.'
+                                          : 'Click to share this Canvas document with the entire course.'
+                                      }
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={!!doc.is_course_domain}
+                                        disabled={togglePending}
+                                        onChange={(e) =>
+                                          handleToggleDomain(doc, e.target.checked)
+                                        }
+                                      />
+                                      <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                                        {doc.is_course_domain ? 'Shared' : 'Personal'}
+                                      </span>
+                                    </label>
+                                  </td>
+                                )}
                                 <td>
                                   <div className="action-buttons">
                                     {actionState ? (
@@ -1182,7 +1442,7 @@ const CanvasFilesPanel: React.FC = () => {
                           })
                         ) : (
                           <tr>
-                            <td colSpan={4} className="empty-table-message">
+                            <td colSpan={totalCols} className="empty-table-message">
                               Chưa có tài liệu nào được index.
                             </td>
                           </tr>
@@ -1193,35 +1453,24 @@ const CanvasFilesPanel: React.FC = () => {
 
                   {/* Pagination */}
                   {indexedTotalPages > 1 && (
-                    <div className="pagination">
+                    <div className="pagination pagination--compact">
                       <button
                         className="pagination-btn"
                         onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage - 1)}
                         disabled={indexedCurrentPage <= 1}
                       >
-                        <ChevronLeft size={16} />
+                        ‹ Trước
                       </button>
-                      <div className="pagination-pages">
-                        {Array.from({ length: indexedTotalPages }, (_, i) => i + 1).map(page => (
-                          <button
-                            key={page}
-                            className={`pagination-page ${page === indexedCurrentPage ? 'active' : ''}`}
-                            onClick={() => loadIndexedDocs(selectedCourse?.id, page)}
-                          >
-                            {page}
-                          </button>
-                        ))}
-                      </div>
+                      <span className="pagination-info">
+                        Trang {indexedCurrentPage} / {indexedTotalPages}
+                      </span>
                       <button
                         className="pagination-btn"
                         onClick={() => loadIndexedDocs(selectedCourse?.id, indexedCurrentPage + 1)}
                         disabled={indexedCurrentPage >= indexedTotalPages}
                       >
-                        <ChevronRight size={16} />
+                        Sau ›
                       </button>
-                      <span className="pagination-info">
-                        {`${(indexedCurrentPage - 1) * ITEMS_PER_PAGE + 1}-${Math.min(indexedCurrentPage * ITEMS_PER_PAGE, indexedTotal)} / ${indexedTotal}`}
-                      </span>
                     </div>
                   )}
                 </>

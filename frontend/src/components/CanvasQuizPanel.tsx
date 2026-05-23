@@ -417,7 +417,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
             <p>Tạo quiz trên Canvas từ Question Bank</p>
           </div>
           <PanelHelpButton panelKey="canvas_quiz" />
-          <button className="cqp-btn-hero-refresh" onClick={resetWizard} title="Tạo quiz mới">
+          <button className="cqp-btn-hero-refresh" onClick={resetWizard} title="Tạo quiz mới" aria-label="Tạo quiz mới">
             <RefreshCw size={18} />
           </button>
         </div>

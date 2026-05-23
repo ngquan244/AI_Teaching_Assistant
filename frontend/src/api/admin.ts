@@ -330,6 +330,63 @@ export async function getInviteCodeUsages(
   return response.data;
 }
 
+// =============================================================================
+// Groq Key Pool
+// =============================================================================
+
+export interface GroqPoolKey {
+  id: string;
+  name: string;
+  enabled: boolean;
+  masked_key: string;
+  error_count: number;
+  last_error_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AddGroqPoolKeyRequest {
+  name: string;
+  api_key: string;
+  enabled?: boolean;
+}
+
+export interface UpdateGroqPoolKeyRequest {
+  name?: string;
+  api_key?: string;
+  enabled?: boolean;
+}
+
+/** List all Groq API keys in the rotation pool */
+export async function listGroqPoolKeys(): Promise<GroqPoolKey[]> {
+  const response = await apiClient.get<GroqPoolKey[]>('/api/admin/groq-keys');
+  return response.data;
+}
+
+/** Add a new Groq API key to the pool */
+export async function addGroqPoolKey(data: AddGroqPoolKeyRequest): Promise<GroqPoolKey> {
+  const response = await apiClient.post<GroqPoolKey>('/api/admin/groq-keys', data);
+  return response.data;
+}
+
+/** Update a Groq pool key */
+export async function updateGroqPoolKey(
+  keyId: string,
+  data: UpdateGroqPoolKeyRequest,
+): Promise<GroqPoolKey> {
+  const response = await apiClient.patch<GroqPoolKey>(`/api/admin/groq-keys/${keyId}`, data);
+  return response.data;
+}
+
+/** Delete a Groq pool key */
+export async function deleteGroqPoolKey(keyId: string): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.delete<{ success: boolean; message: string }>(
+    `/api/admin/groq-keys/${keyId}`,
+  );
+  return response.data;
+}
+
 export const adminApi = {
   getDashboardStats,
   listUsers,
@@ -352,4 +409,9 @@ export const adminApi = {
   toggleInviteCode,
   deleteInviteCode,
   getInviteCodeUsages,
+  // Groq Key Pool
+  listGroqPoolKeys,
+  addGroqPoolKey,
+  updateGroqPoolKey,
+  deleteGroqPoolKey,
 };

@@ -13,12 +13,15 @@ import {
   ClipboardList,
   History,
   Shield,
+  FileSpreadsheet,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
+import CanvasStudentImportPanel from './CanvasStudentImportPanel';
 import { canvasSimApi } from '../api/canvasSim';
 import { canvasApi } from '../api/canvas';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import type { CanvasCourse, CanvasQuiz } from '../types/canvas';
+import { useConfirm } from '../context/ConfirmContext';
 import type {
   TestStudent,
   PreCheckResponse,
@@ -48,13 +51,14 @@ const STARS = makeStars(25);
 // Sub-tabs
 // ============================================================================
 
-type SimTab = 'execute' | 'students' | 'history' | 'audit';
+type SimTab = 'execute' | 'students' | 'import' | 'history' | 'audit';
 
 // ============================================================================
 // Component
 // ============================================================================
 
 const CanvasSimulationPanel: React.FC = () => {
+  const confirmDialog = useConfirm();
   const [activeTab, setActiveTab] = useState<SimTab>('execute');
 
   // Course + Quiz
@@ -189,7 +193,14 @@ const CanvasSimulationPanel: React.FC = () => {
 
   // ---- Delete test student ----
   const handleDeleteStudent = async (id: string) => {
-    if (!confirm('Xóa test student này?')) return;
+    const ok = await confirmDialog({
+      title: 'Xóa test student?',
+      message: 'Xóa test student này khỏi danh sách mô phỏng?',
+      confirmLabel: 'Xóa',
+      cancelLabel: 'Hủy',
+      tone: 'danger',
+    });
+    if (!ok) return;
     await canvasSimApi.deleteTestStudent(id);
     fetchStudents();
   };
@@ -310,6 +321,7 @@ const CanvasSimulationPanel: React.FC = () => {
           {([
             { id: 'execute' as SimTab, label: 'Thực thi', icon: Play },
             { id: 'students' as SimTab, label: 'Test Students', icon: Users },
+            { id: 'import' as SimTab, label: 'Import Excel', icon: FileSpreadsheet },
             { id: 'history' as SimTab, label: 'Lịch sử', icon: History },
             { id: 'audit' as SimTab, label: 'Audit Log', icon: Shield },
           ]).map((t) => {
@@ -632,6 +644,11 @@ const CanvasSimulationPanel: React.FC = () => {
                 )}
               </div>
             </div>
+          )}
+
+          {/* ====================== IMPORT TAB ====================== */}
+          {activeTab === 'import' && (
+            <CanvasStudentImportPanel />
           )}
 
           {/* ====================== HISTORY TAB ====================== */}

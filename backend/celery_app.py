@@ -181,12 +181,19 @@ class BaseTaskWithRetry(Task):
             )
 
 
+# In eager mode there is no broker/worker pool, and Celery still enforces
+# per-task rate_limit via a token bucket inside the calling thread. That would
+# freeze FastAPI request handlers for up to 60s once the bucket is empty, so we
+# disable rate limiting entirely when running eagerly (local dev without Redis).
+_EAGER = settings.CELERY_TASK_ALWAYS_EAGER
+
+
 class RateLimitedLLMTask(BaseTaskWithRetry):
     """
     Task for LLM operations with rate limiting.
     """
     abstract = True
-    rate_limit = settings.LLM_RATE_LIMIT
+    rate_limit = None if _EAGER else settings.LLM_RATE_LIMIT
 
 
 class RateLimitedCanvasTask(BaseTaskWithRetry):
@@ -194,7 +201,7 @@ class RateLimitedCanvasTask(BaseTaskWithRetry):
     Task for Canvas API operations with rate limiting.
     """
     abstract = True
-    rate_limit = settings.CANVAS_RATE_LIMIT
+    rate_limit = None if _EAGER else settings.CANVAS_RATE_LIMIT
     
     # Canvas-specific retry for transient errors
     autoretry_for = (Exception,)
@@ -248,18 +255,84 @@ def task_failure_handler(sender, task_id, exception, args, kwargs, traceback, ei
 # Utility Functions
 # =============================================================================
 
+class _EagerDispatchHandle:
+    """Stand-in for celery AsyncResult returned when dispatching eagerly in
+    the background. Only exposes ``.id`` which is what callers persist."""
+
+    __slots__ = ("id",)
+
+    def __init__(self, task_id: str):
+        self.id = task_id
+
+
 async def apply_async_nonblocking(task, args=None, kwargs=None, **options):
     """
-    Call task.apply_async() without blocking the event loop.
+    Dispatch a Celery task without blocking the FastAPI event loop.
 
-    In eager mode (CELERY_TASK_ALWAYS_EAGER=true), apply_async() runs the task
-    synchronously inline which blocks the entire FastAPI/uvicorn event loop.
-    This helper offloads it to a thread so the endpoint returns immediately.
+    Production (eager=False):
+        ``apply_async`` only enqueues to Redis and returns instantly; we still
+        offload to a thread to keep the endpoint fully non-blocking.
 
-    In production (eager=False), apply_async() just enqueues to Redis and
-    returns instantly, so the thread overhead is negligible.
+    Eager mode (CELERY_TASK_ALWAYS_EAGER=true, no broker/worker):
+        ``apply_async`` would run the entire task body inline, which defeats
+        the async-job semantics of the endpoint and causes two problems:
+          1. The HTTP response is delayed until the task finishes (minutes).
+          2. If the task raises (``task_eager_propagates=True``) the caller's
+             ``set_celery_task_id`` never runs, and the endpoint returns 500
+             for a job that already marked itself failed.
+        We fix both by pre-generating a ``task_id``, returning immediately
+        with a stub handle, and running the task in a background thread.
     """
     import asyncio
+    import uuid
+
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        task_id = options.pop("task_id", None) or str(uuid.uuid4())
+        # Strip routing options that are meaningful only for the broker; they
+        # cause Celery to acquire a producer (and therefore touch the broker)
+        # even when task_always_eager is True.
+        for _broker_only in ("queue", "routing_key", "exchange", "priority", "expires", "countdown", "eta"):
+            options.pop(_broker_only, None)
+
+        task_name = task.name
+
+        def _run_eager():
+            celery_logger.info(
+                "EAGER_DISPATCH_START | task=%s | task_id=%s", task_name, task_id
+            )
+            try:
+                # task.apply() runs the task body synchronously in-process and
+                # never touches the broker, regardless of celery's eager-check
+                # path. ``throw=False`` mirrors apply_async semantics: errors
+                # are recorded on the EagerResult instead of re-raised here,
+                # since the task body itself already calls fail_job().
+                task.apply(args=args, kwargs=kwargs, task_id=task_id, throw=False)
+                celery_logger.info(
+                    "EAGER_DISPATCH_DONE | task=%s | task_id=%s", task_name, task_id
+                )
+            except Exception:
+                celery_logger.exception(
+                    "EAGER_DISPATCH_FAILED | task=%s | task_id=%s",
+                    task_name,
+                    task_id,
+                )
+
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, _run_eager)
+
+        def _surface_executor_error(fut):
+            exc = fut.exception()
+            if exc is not None:
+                celery_logger.error(
+                    "EAGER_EXECUTOR_ERROR | task=%s | task_id=%s | error=%s",
+                    task_name,
+                    task_id,
+                    exc,
+                )
+
+        future.add_done_callback(_surface_executor_error)
+        return _EagerDispatchHandle(task_id)
+
     return await asyncio.to_thread(
         task.apply_async, args=args, kwargs=kwargs, **options
     )

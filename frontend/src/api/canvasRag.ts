@@ -87,6 +87,13 @@ export interface CanvasDownloadResponse {
 export interface CanvasIndexRequest {
   filename: string;
   course_id?: number;  // Canvas course ID for collection naming
+  /**
+   * When true, the backend purges any prior index/topic/registry state for
+   * this file before indexing. Used by the UI's "re-index after delete" path
+   * so a stale cross-process registry can't short-circuit into
+   * `already_indexed=true`.
+   */
+  force_reindex?: boolean;
 }
 
 export interface CanvasIndexResponse {
@@ -135,6 +142,12 @@ export interface CanvasIndexedDocument {
   topic_count: number;
   course_id?: number;
   course_name?: string;
+  /** ISO 639-1 language code detected at indexing time (V1). */
+  language?: string | null;
+  /** Whether this Canvas doc is marked as course-shared domain knowledge (V2). */
+  is_course_domain?: boolean;
+  /** UUID of the user who marked the doc (only for instructors). */
+  marked_by_user_id?: string | null;
 }
 
 export interface CanvasIndexedDocumentsListResponse {
@@ -180,6 +193,10 @@ export interface CanvasQuizRequest {
   language?: 'vi' | 'en';
   k?: number;
   selected_documents?: string[];
+  /** V2: include course-shared domain knowledge in retrieval. */
+  include_course_domain?: boolean;
+  /** V2: ratio (0.0–0.6) of context budget allocated to domain docs. */
+  domain_quota_ratio?: number;
 }
 
 export interface CanvasQuizQuestion {
@@ -223,13 +240,14 @@ export async function downloadCanvasFile(
  */
 export async function indexCanvasFile(
   filename: string,
-  courseId?: number
+  courseId?: number,
+  forceReindex: boolean = false,
 ): Promise<CanvasIndexResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<CanvasIndexResponse>(
       `${API_BASE}/index`,
-      { filename, course_id: courseId },
+      { filename, course_id: courseId, force_reindex: forceReindex },
       cfg,
     );
     return response.data;
@@ -439,12 +457,13 @@ export async function asyncCanvasGenerateQuiz(
 export async function asyncIndexCanvasFile(
   filename: string,
   courseId?: number,
+  forceReindex: boolean = false,
 ): Promise<AsyncJobResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<AsyncJobResponse>(
       `${API_BASE}/async/index`,
-      { filename, course_id: courseId },
+      { filename, course_id: courseId, force_reindex: forceReindex },
       cfg,
     );
     return response.data;
@@ -473,6 +492,151 @@ export async function asyncExtractCanvasTopics(
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// V2 — Course-shared domain knowledge
+// ──────────────────────────────────────────────────────────────────────
+
+export interface CourseDocumentsListResponse {
+  success: boolean;
+  documents: CanvasIndexedDocument[];
+  count: number;
+}
+
+export interface CourseDomainDocument {
+  course_id: number;
+  file_hash: string;
+  collection_name: string;
+  language?: string | null;
+  marked_by_user_id: string | null;
+  marked_at: string;
+  enabled: boolean;
+}
+
+export interface CourseDomainDocumentsListResponse {
+  success: boolean;
+  course_id: number;
+  documents: CourseDomainDocument[];
+  count: number;
+}
+
+export interface CourseDomainMarkResponse {
+  success: boolean;
+  course_id: number;
+  marked_count: number;
+  file_hashes: string[];
+}
+
+export interface CourseDomainUnmarkResponse {
+  success: boolean;
+  course_id: number;
+  file_hash: string;
+}
+
+export interface PublicConfig {
+  enable_course_domain_docs: boolean;
+  default_domain_quota_ratio: number;
+}
+
+/**
+ * V2: list all Canvas documents indexed under a specific course, including
+ * per-document language and `is_course_domain` flag.
+ */
+export async function listCourseDocuments(
+  courseId: number,
+): Promise<CourseDocumentsListResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.get<CourseDocumentsListResponse>(
+      `${API_BASE}/courses/${courseId}/documents`,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+    throw error;
+  }
+}
+
+/**
+ * V2: mark one or more Canvas documents as course-shared domain knowledge.
+ *
+ * **Eligibility (binding):** every hash MUST already be indexed through the
+ * Canvas course-document pipeline AND belong to ``courseId``. Mixed payloads
+ * are rejected atomically.
+ *
+ * On the backend the caller must hold a teacher / TA / designer enrollment
+ * on the course; otherwise a 403 INSUFFICIENT_ROLE is returned.
+ */
+export async function markDomainDocuments(
+  courseId: number,
+  fileHashes: string[],
+): Promise<CourseDomainMarkResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.post<CourseDomainMarkResponse>(
+      `${API_BASE}/courses/${courseId}/domain-documents`,
+      { file_hashes: fileHashes },
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+    throw error;
+  }
+}
+
+/**
+ * V2: soft-disable an existing course-domain mark.
+ */
+export async function unmarkDomainDocument(
+  courseId: number,
+  fileHash: string,
+): Promise<CourseDomainUnmarkResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.delete<CourseDomainUnmarkResponse>(
+      `${API_BASE}/courses/${courseId}/domain-documents/${encodeURIComponent(fileHash)}`,
+      cfg,
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+    throw error;
+  }
+}
+
+/**
+ * V2: list course-shared domain marks for a course.
+ *
+ * @param includeDisabled  also return soft-disabled rows (default false).
+ */
+export async function listDomainDocuments(
+  courseId: number,
+  includeDisabled = false,
+): Promise<CourseDomainDocumentsListResponse> {
+  try {
+    const cfg = await canvasConfig();
+    const response = await apiClient.get<CourseDomainDocumentsListResponse>(
+      `${API_BASE}/courses/${courseId}/domain-documents`,
+      { ...cfg, params: { include_disabled: includeDisabled } },
+    );
+    return response.data;
+  } catch (error) {
+    handlePermissionError(error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch the unauthenticated public-config block (feature flags + defaults).
+ * Cached by the caller; safe to call before login.
+ */
+export async function getPublicConfig(): Promise<PublicConfig> {
+  const response = await apiClient.get<PublicConfig>(`/api/config/public`);
+  return response.data;
+}
+
+
 export const canvasRagApi = {
   downloadCanvasFile,
   indexCanvasFile,
@@ -488,6 +652,12 @@ export const canvasRagApi = {
   asyncCanvasGenerateQuiz,
   asyncIndexCanvasFile,
   asyncExtractCanvasTopics,
+  // V2 — course-shared domain knowledge
+  listCourseDocuments,
+  markDomainDocuments,
+  unmarkDomainDocument,
+  listDomainDocuments,
+  getPublicConfig,
 };
 
 export default canvasRagApi;

@@ -1204,20 +1204,31 @@ async def create_canvas_user(
     email: str,
     *,
     skip_registration: bool = True,
+    sis_user_id: str | None = None,
+    password: str | None = None,
 ) -> dict:
     """
     Create a new user in a Canvas account.
     POST /api/v1/accounts/:account_id/users
+
+    If ``sis_user_id`` is provided, it is attached to the pseudonym so the
+    user can later be looked up by SIS ID (e.g. MSSV).
     """
     url = f"{base_url.rstrip('/')}/api/v1/accounts/{account_id}/users"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    pseudonym: dict = {
+        "unique_id": email,
+        "send_confirmation": False,
+    }
+    if sis_user_id:
+        pseudonym["sis_user_id"] = sis_user_id
+    if password:
+        pseudonym["password"] = password
+
     payload = {
         "user": {"name": name, "skip_registration": skip_registration},
-        "pseudonym": {
-            "unique_id": email,
-            "send_confirmation": False,
-        },
+        "pseudonym": pseudonym,
         "communication_channel": {
             "type": "email",
             "address": email,
@@ -1604,3 +1615,134 @@ async def get_assignment_submissions(
             return {"success": False, "error": f"Canvas API {e.response.status_code}", "submissions": []}
         except httpx.RequestError as e:
             return {"success": False, "error": "Network error", "submissions": []}
+
+
+# ── Account user search & per-user enrollments (used by import flow) ─────
+
+async def search_account_users(
+    token: str,
+    base_url: str,
+    account_id: str | int,
+    search_term: str,
+    *,
+    per_page: int = 20,
+) -> dict:
+    """
+    Search users in an account by name / login_id / sis_user_id / email.
+    GET /api/v1/accounts/:account_id/users?search_term=...
+
+    Returns up to ``per_page`` matches in a single request (no pagination
+    follow-up — Canvas already ranks the most-relevant results first).
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/accounts/{account_id}/users"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"search_term": search_term, "per_page": per_page}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            return {"success": True, "users": resp.json()}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300]
+            logger.warning(
+                "search_account_users failed (%s): %s",
+                e.response.status_code,
+                body,
+            )
+            return {
+                "success": False,
+                "error": f"Canvas API {e.response.status_code}",
+                "users": [],
+            }
+        except httpx.RequestError as e:
+            logger.warning("search_account_users network error: %s", e)
+            return {"success": False, "error": "Network error", "users": []}
+
+
+async def list_user_enrollments_in_course(
+    token: str,
+    base_url: str,
+    course_id: int,
+    canvas_user_id: int,
+    *,
+    states: tuple[str, ...] = (
+        "active",
+        "invited",
+        "inactive",
+        "completed",
+        "deleted",
+    ),
+) -> dict:
+    """
+    List a single user's enrollments in a specific course (all states).
+    GET /api/v1/courses/:course_id/enrollments?user_id=...&type[]=StudentEnrollment&state[]=...
+
+    Returns every matching enrollment row (one per role/state) so the caller
+    can decide whether the user is already enrolled, deactivated, completed
+    or soft-deleted.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/enrollments"
+    headers = {"Authorization": f"Bearer {token}"}
+    # httpx serialises list values as repeated keys (state[]=a&state[]=b)
+    params: list[tuple[str, str | int]] = [
+        ("user_id", canvas_user_id),
+        ("type[]", "StudentEnrollment"),
+        ("per_page", 50),
+    ]
+    for s in states:
+        params.append(("state[]", s))
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            return {"success": True, "enrollments": resp.json()}
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300]
+            logger.warning(
+                "list_user_enrollments_in_course failed (%s): %s",
+                e.response.status_code,
+                body,
+            )
+            return {
+                "success": False,
+                "error": f"Canvas API {e.response.status_code}",
+                "enrollments": [],
+            }
+        except httpx.RequestError as e:
+            logger.warning("list_user_enrollments_in_course network error: %s", e)
+            return {"success": False, "error": "Network error", "enrollments": []}
+
+
+async def get_canvas_user_profile(
+    token: str,
+    base_url: str,
+    canvas_user_id: int,
+) -> dict:
+    """
+    Fetch a single user's profile (login_id, primary_email, sis_user_id when
+    the caller has account-admin permissions).
+    GET /api/v1/users/:id
+
+    Used as a fallback when search results omit fields needed to confirm an
+    exact match.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/users/{canvas_user_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            return {"success": True, "user": resp.json()}
+        except httpx.HTTPStatusError as e:
+            return {
+                "success": False,
+                "error": f"Canvas API {e.response.status_code}",
+                "user": None,
+            }
+        except httpx.RequestError as e:
+            logger.warning("get_canvas_user_profile network error: %s", e)
+            return {"success": False, "error": "Network error", "user": None}
+

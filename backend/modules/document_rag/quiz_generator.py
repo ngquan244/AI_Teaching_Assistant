@@ -12,6 +12,7 @@ import math
 import random
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from xml.dom import minidom
 from typing import List, Dict, Any, Optional, Iterable, Tuple
 from datetime import datetime
@@ -358,6 +359,79 @@ TARGETS:
 - Keep wrong options plausible and same-domain.
 - Keep explanations brief and grounded.
 - Do not mention option letters in explanations.
+- If the existing accepted questions are mostly recall/definition questions, generate at least one additional application or scenario-based question when the source material supports it.
+- Application questions should ask learners to use a concept in a realistic situation, not just recall a definition.
+
+LOW-VALUE QUESTION RESTRICTIONS:
+- Avoid questions that only test administrative, biographical, or trivial metadata details.
+- Do NOT generate questions whose primary purpose is recalling: instructor names, student names, phone numbers, email addresses, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata.
+- Prefer questions that assess conceptual understanding, reasoning, application, comparison, cause-effect relationships, process understanding, or meaningful learning outcomes.
+- Personal names should only appear when they are academically important to the learning content itself.
+- Questions should prioritize educational and conceptual value over memorization of administrative details.
+
+BAD QUESTION EXAMPLES (do NOT generate):
+- "Giảng viên của khóa học Tương tác người máy là ai?"
+- "Mã học phần của môn học là gì?"
+GOOD QUESTION EXAMPLES (preferred style):
+- "Gulf of execution mô tả khoảng cách nào trong tương tác người-máy?"
+- "Khi người dùng hình thành ý định sai do mô hình tinh thần lệch, loại lỗi này được gọi là gì?"
+
+MCQ STRUCTURAL CONSTRAINTS (HARD BAN — strictly enforced by post-validator):
+1. EXACTLY ONE option is fully correct. The other 3 must each be independently wrong.
+2. BANNED option phrases (DO NOT generate any option that matches or is semantically equivalent to these):
+   - "all of the above", "none of the above", "all of these", "none of these"
+   - "both A and B", "A and B only", "A and C", "B and C", "A, B and C", "all three answers"
+   - "tất cả các đáp án trên", "tất cả đáp án trên", "tất cả đều đúng", "các ý trên đều đúng"
+   - "cả 3 đáp án trên", "cả ba đáp án trên", "cả hai đáp án trên"
+   - "không có đáp án nào đúng", "không đáp án nào đúng", "không có ý nào đúng"
+   - "A và B", "A và C", "B và C", "A, B và C", "cả A và B", "cả A và C"
+   - any option referencing other option letters/numbers, or aggregating them.
+3. NO COMBINED / CUMULATIVE ANSWERS: an option must not be a superset or merger of other options' meanings.
+4. INDEPENDENCE: the 4 options must be mutually exclusive; no two can be simultaneously true.
+5. PARALLEL FORM: same grammatical type, roughly the same length. Correct option must not be noticeably longer than the longest distractor.
+6. NO LEXICAL GIVEAWAY: correct option must not uniquely echo distinctive stem keywords or carry unique hedges ("always / never / chỉ / luôn luôn").
+
+DISTRACTOR QUALITY RESTRICTIONS:
+- Avoid answer choices that make the correct answer obvious by simple completeness.
+- Do NOT create distractors that are merely extreme negations or artificial opposites of the correct answer.
+- Avoid option sets where the choices follow a simplistic pattern such as:
+  - only X
+  - only Y
+  - neither X nor Y
+  - both X and Y
+- Wrong options must be plausible misconceptions, not mechanically incomplete versions of the correct answer.
+- All options should have a similar level of specificity, length, and conceptual depth.
+- The correct answer should require understanding the concept, not just choosing the most complete or least extreme option.
+- For questions about model components, processes, or frameworks, distractors should use plausible but incorrect components, relationships, or interpretations from the same domain.
+
+BAD QUESTION (do NOT generate this style):
+"Mô hình tương tác Abowd & Beale mô tả những thành phần nào trong tương tác người máy?"
+A. Chỉ mô tả phía hệ thống
+B. Không mô tả cả hai phía
+C. Chỉ mô tả phía người dùng
+D. Mô tả cả phía người dùng và phía hệ thống
+Reason: The correct answer is obvious because it is the most complete option, while the distractors are simple incomplete opposites.
+
+GOOD QUESTION (preferred style):
+"Mô hình tương tác Abowd & Beale giúp phân tích tương tác người máy theo hướng nào?"
+A. Phân tích tương tác thông qua các bước chuyển đổi giữa mục tiêu, thao tác, trạng thái hệ thống và phản hồi
+B. Đánh giá giao diện chủ yếu dựa trên màu sắc, bố cục và mức độ thẩm mỹ trực quan
+C. Mô tả hiệu năng hệ thống bằng các chỉ số phần cứng như bộ nhớ, CPU và tốc độ xử lý
+D. Xác định vai trò của người dùng bằng cách phân loại họ theo trình độ kỹ thuật
+
+BAD QUESTION (do NOT generate this style):
+"Thiết kế giao diện tốt mang lại lợi ích gì?"
+A. Không mang lại lợi ích nào
+B. Chỉ giúp hệ thống đẹp hơn
+C. Chỉ giúp người dùng thao tác nhanh hơn
+D. Giúp cải thiện trải nghiệm, hiệu quả sử dụng và khả năng tiếp cận
+
+GOOD QUESTION (preferred style):
+"Trong HCI, vì sao thiết kế giao diện tốt có thể cải thiện hiệu quả sử dụng hệ thống?"
+A. Vì nó giúp người dùng hiểu thao tác cần thực hiện, giảm lỗi và hoàn thành nhiệm vụ thuận lợi hơn
+B. Vì nó thay thế hoàn toàn nhu cầu kiểm thử hệ thống với người dùng thật
+C. Vì nó làm cho hệ thống có tốc độ xử lý cao hơn dù không thay đổi phần mềm bên trong
+D. Vì nó đảm bảo mọi người dùng sẽ có cùng hành vi và cùng mức độ thành thạo
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -403,6 +477,79 @@ TARGETS:
 - Keep wrong options plausible and same-domain.
 - Keep explanations brief and grounded.
 - Do not mention option letters in explanations.
+- If the existing accepted questions are mostly recall/definition questions, generate at least one additional application or scenario-based question when the source material supports it.
+- Application questions should ask learners to use a concept in a realistic situation, not just recall a definition.
+
+LOW-VALUE QUESTION RESTRICTIONS:
+- Avoid questions that only test administrative, biographical, or trivial metadata details.
+- Do NOT generate questions whose primary purpose is recalling: instructor names, student names, phone numbers, email addresses, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata.
+- Prefer questions that assess conceptual understanding, reasoning, application, comparison, cause-effect relationships, process understanding, or meaningful learning outcomes.
+- Personal names should only appear when they are academically important to the learning content itself.
+- Questions should prioritize educational and conceptual value over memorization of administrative details.
+
+BAD QUESTION EXAMPLES (do NOT generate):
+- "Who is the instructor of the Human-Computer Interaction course?"
+- "What is the course code of this subject?"
+GOOD QUESTION EXAMPLES (preferred style):
+- "Which gap does the gulf of execution describe in human-computer interaction?"
+- "When a user forms an incorrect intention because of a flawed mental model, what type of interaction error is this?"
+
+MCQ STRUCTURAL CONSTRAINTS (HARD BAN — strictly enforced by post-validator):
+1. EXACTLY ONE option is fully correct. The other 3 must each be independently wrong.
+2. BANNED option phrases (DO NOT generate any option that matches or is semantically equivalent to these, in any language):
+   - "all of the above", "none of the above", "all of these", "none of these"
+   - "both A and B", "A and B only", "A and C", "B and C", "A, B and C", "all three answers"
+   - "tất cả các đáp án trên", "tất cả đáp án trên", "tất cả đều đúng", "các ý trên đều đúng"
+   - "cả 3 đáp án trên", "cả ba đáp án trên", "cả hai đáp án trên"
+   - "không có đáp án nào đúng", "không đáp án nào đúng", "không có ý nào đúng"
+   - "A và B", "A và C", "B và C", "A, B và C", "cả A và B", "cả A và C"
+   - any option referencing other option letters/numbers, or aggregating them.
+3. NO COMBINED / CUMULATIVE ANSWERS: an option must not be a superset or merger of other options' meanings.
+4. INDEPENDENCE: the 4 options must be mutually exclusive; no two can be simultaneously true.
+5. PARALLEL FORM: same grammatical type, roughly the same length. Correct option must not be noticeably longer than the longest distractor.
+6. NO LEXICAL GIVEAWAY: correct option must not uniquely echo distinctive stem keywords or carry unique hedges ("always / never").
+
+DISTRACTOR QUALITY RESTRICTIONS:
+- Avoid answer choices that make the correct answer obvious by simple completeness.
+- Do NOT create distractors that are merely extreme negations or artificial opposites of the correct answer.
+- Avoid option sets where the choices follow a simplistic pattern such as:
+  - only X
+  - only Y
+  - neither X nor Y
+  - both X and Y
+- Wrong options must be plausible misconceptions, not mechanically incomplete versions of the correct answer.
+- All options should have a similar level of specificity, length, and conceptual depth.
+- The correct answer should require understanding the concept, not just choosing the most complete or least extreme option.
+- For questions about model components, processes, or frameworks, distractors should use plausible but incorrect components, relationships, or interpretations from the same domain.
+
+BAD QUESTION (do NOT generate this style):
+"Which components does the Abowd & Beale interaction model describe in human-computer interaction?"
+A. Only the system side
+B. Neither side is described
+C. Only the user side
+D. Both the user side and the system side
+Reason: The correct answer is obvious because it is the most complete option, while the distractors are simple incomplete opposites.
+
+GOOD QUESTION (preferred style):
+"In what way does the Abowd & Beale interaction model help analyze human-computer interaction?"
+A. It analyzes interaction through transitions between goals, actions, system state, and feedback
+B. It evaluates the interface mainly based on color, layout, and visual aesthetics
+C. It describes system performance using hardware metrics such as memory, CPU, and processing speed
+D. It defines user roles by classifying them according to technical proficiency
+
+BAD QUESTION (do NOT generate this style):
+"What are the benefits of good interface design?"
+A. It provides no benefits
+B. It only makes the system look nicer
+C. It only helps users operate faster
+D. It improves user experience, efficiency, and accessibility
+
+GOOD QUESTION (preferred style):
+"In HCI, why can good interface design improve the effective use of a system?"
+A. Because it helps users understand which actions to perform, reducing errors and easing task completion
+B. Because it fully replaces the need for testing the system with real users
+C. Because it makes the system process faster without changing the underlying software
+D. Because it guarantees every user will exhibit the same behavior and proficiency level
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -508,6 +655,15 @@ QUESTION_FORMS = [
     "negative_form",
 ]
 
+# Hard-mode-only question forms requiring deeper reasoning
+HARD_QUESTION_FORMS = [
+    "multi_step_reasoning",
+    "calculation",
+    "scenario_application",
+]
+
+ALL_QUESTION_FORMS = QUESTION_FORMS + HARD_QUESTION_FORMS
+
 TRAP_TYPES = [
     "near_miss",
     "reversed_condition",
@@ -518,21 +674,114 @@ TRAP_TYPES = [
     "step_order_confusion",
 ]
 
+# Hard-mode-only trap types requiring analytical errors
+HARD_TRAP_TYPES = [
+    "plausible_miscalculation",
+    "incomplete_reasoning",
+    "overgeneralization",
+]
+
+ALL_TRAP_TYPES = TRAP_TYPES + HARD_TRAP_TYPES
+
 SUPPORTED_LEVELS = [
     "direct_source",
     "close_inference",
     "adjacent_in_scope",
 ]
 
+# Hard-mode-only support level: answer synthesises info from 2+ source chunks
+HARD_SUPPORTED_LEVELS = [
+    "cross_chunk_synthesis",
+]
+
+ALL_SUPPORTED_LEVELS = SUPPORTED_LEVELS + HARD_SUPPORTED_LEVELS
+
+# ---------------------------------------------------------------------------
+# Difficulty policies – control question form mix, support levels, grounding,
+# and prompt instructions per difficulty level.
+# ---------------------------------------------------------------------------
+DIFFICULTY_POLICIES: Dict[str, Dict[str, Any]] = {
+    "easy": {
+        "allowed_support_levels": ["direct_source"],
+        "preferred_question_forms": ["definition", "process", "negative_form", "condition"],
+        "allowed_question_forms": ["definition", "comparison", "cause_effect", "condition", "process", "negative_form"],
+        "allowed_trap_types": TRAP_TYPES,
+        "grounding": "strict",
+        "blueprint_instruction": (
+            "All slots must use support_level=direct_source only. "
+            "Prefer simple question forms: definition, process, negative_form, condition. "
+            "Coverage items should test recall of directly stated facts."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (easy):\n"
+            "- Questions must test direct recall of facts explicitly stated in the source.\n"
+            "- Do NOT require inference, comparison across sections, or multi-step reasoning.\n"
+            "- Distractors should be clearly wrong but plausible within the domain.\n"
+            "- Each question should be answerable by reading a single relevant paragraph."
+        ),
+    },
+    "medium": {
+        "allowed_support_levels": ["direct_source", "close_inference"],
+        "preferred_question_forms": QUESTION_FORMS,
+        "allowed_question_forms": QUESTION_FORMS,
+        "allowed_trap_types": TRAP_TYPES,
+        "grounding": "standard",
+        "blueprint_instruction": (
+            "Use a balanced mix of support_level=direct_source and close_inference. "
+            "Diversify question forms across definition, comparison, cause_effect, condition, "
+            "process, light_application, and negative_form."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (medium):\n"
+            "- Questions should test understanding and application of concepts from the source.\n"
+            "- Mix direct recall with light inference from nearby supported details.\n"
+            "- Distractors should be plausible alternatives that require careful reading to eliminate.\n"
+            "- Some questions may require connecting two closely related ideas from the source."
+        ),
+    },
+    "hard": {
+        "allowed_support_levels": ["direct_source", "close_inference", "cross_chunk_synthesis"],
+        "preferred_question_forms": [
+            "cause_effect", "comparison", "light_application",
+            "multi_step_reasoning", "calculation", "scenario_application",
+        ],
+        "allowed_question_forms": ALL_QUESTION_FORMS,
+        "allowed_trap_types": ALL_TRAP_TYPES,
+        "grounding": "relaxed_with_guardrails",
+        "blueprint_instruction": (
+            "Allocate at least 30%% of slots to support_level=cross_chunk_synthesis "
+            "(answer requires combining info from 2+ parts of the source). "
+            "Prefer advanced question forms: multi_step_reasoning, calculation, "
+            "scenario_application, cause_effect, comparison. "
+            "Coverage items should target deeper analysis, not surface-level recall."
+        ),
+        "generation_instruction": (
+            "DIFFICULTY POLICY (hard):\n"
+            "- Questions MUST require genuine analytical thinking, not just recall.\n"
+            "- For cross_chunk_synthesis slots: combine information from multiple parts of the source "
+            "to form a question that cannot be answered from a single paragraph alone.\n"
+            "- For multi_step_reasoning slots: require 2 or more logical steps to reach the answer.\n"
+            "- For calculation slots: apply a formula, method, or quantitative relationship from the source to derive the answer.\n"
+            "- For scenario_application slots: present a new but realistic scenario solvable using knowledge from the source.\n"
+            "- Distractors MUST be plausible analytical errors (e.g., reversed causality, incomplete reasoning, "
+            "overgeneralization, plausible miscalculation) — NOT simple factual alternatives.\n"
+            "- Do NOT create trick questions or ambiguous questions. The correct answer must still be "
+            "unambiguously derivable from the source material.\n"
+            "- Every correct answer must remain traceable to the source — no outside knowledge required."
+        ),
+    },
+}
+
 LARGE_REQUEST_QUESTION_THRESHOLD = 36
-BLUEPRINT_SKIP_QUESTION_THRESHOLD = 40
-BLUEPRINT_SKIP_TOPIC_THRESHOLD = 8
-MAX_LLM_CALLS_PER_LARGE_QUIZ_NO_BLUEPRINT = 6
-MAX_LLM_CALLS_PER_LARGE_QUIZ_WITH_BLUEPRINT = 7
-MAX_EST_COMPLETION_TOKENS_PER_LARGE_QUIZ = 15_000
+MAX_LLM_CALLS_PER_LARGE_QUIZ_NO_BLUEPRINT = 8
+MAX_LLM_CALLS_PER_LARGE_QUIZ_WITH_BLUEPRINT = 10
+MAX_EST_COMPLETION_TOKENS_PER_LARGE_QUIZ = 20_000
 PARTIAL_SUCCESS_RATIO = 0.95
 
-QUIZ_GENERATION_PROMPT_VNEXT_VI = """You are an expert teacher creating professional multiple-choice quiz questions.
+# Chunked blueprint: max slots per single blueprint LLM call
+BLUEPRINT_CHUNK_SIZE = 20
+
+QUIZ_GENERATION_PROMPT_VNEXT_VI = """You are an expert university-level Human-Computer Interaction (HCI) teacher creating professional multiple-choice quiz questions for students.
 
 QUIZ OUTPUT LANGUAGE: Vietnamese
 GENERATION MODE: {generation_mode}
@@ -545,6 +794,8 @@ TOPIC / LEARNING SCOPE:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 ASSIGNED SLOTS:
 {slot_section}
 
@@ -554,28 +805,199 @@ ALREADY GENERATED QUESTIONS (DO NOT REPEAT OR PARAPHRASE):
 SOURCE MATERIAL:
 {context}
 
+PEDAGOGICAL GOAL:
+Generate multiple-choice questions for Human-Computer Interaction that cover multiple cognitive levels, not only memorization and not only difficult application.
+
+The quiz should include a balanced mix of:
+- Recognition / Understanding: recall key concepts, identify definitions, distinguish related terms.
+- Application: apply a concept, model, principle, or interaction style to a realistic HCI situation.
+- Advanced Application / Analysis: diagnose a design problem, compare alternatives, reason across multiple concepts, or select the best design decision under constraints.
+
+DEFAULT COGNITIVE LEVEL DISTRIBUTION:
+Unless ASSIGNED SLOTS specify otherwise, use approximately:
+- 30% recognition_understanding
+- 50% application
+- 20% advanced_application_analysis
+
+For a 10-question quiz, prefer:
+- 3 recognition_understanding questions
+- 5 application questions
+- 2 advanced_application_analysis questions
+
+COGNITIVE LEVEL DEFINITIONS:
+1. recognition_understanding:
+   - Ask students to recognize, define, classify, or distinguish important concepts from the source.
+   - Suitable forms: definition, concept identification, term matching, simple comparison.
+   - Avoid copying exact sentences from the source.
+   - The question should still require understanding, not merely spotting a word.
+
+2. application:
+   - Present a simple but realistic HCI scenario.
+   - Require students to apply one concept from the source to choose the best answer.
+   - Suitable forms: scenario_application, simple diagnosis, choosing a suitable interaction style, identifying a gulf/error/interface element.
+
+3. advanced_application_analysis:
+   - Present a richer scenario with constraints, trade-offs, or multiple interacting concepts.
+   - Require at least two reasoning steps.
+   - Suitable forms: multi_step_reasoning, comparison, diagnosis, design_improvement.
+   - The answer should not be directly copied from the source, but must be grounded in it.
+
 GROUNDING POLICY:
 1. Every correct answer must stay anchored to the source material.
 2. support_level=direct_source means the answer is directly stated in the source.
 3. support_level=close_inference means the answer is a short inference from nearby supported details.
-4. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
-5. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
-6. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+4. support_level=cross_chunk_synthesis means the answer requires combining information from 2 or more distinct parts of the source material.
+5. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
+6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
+7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+
+SOURCE ROLES:
+- Each chunk in SOURCE MATERIAL may be tagged [lecture] or [domain]. Untagged chunks are treated as [lecture].
+- [lecture] chunks define the in-scope topics that questions MUST be about.
+- [domain] chunks are course-level shared knowledge meant to add depth, examples, or precise terminology to a concept that is already covered by a [lecture] chunk.
+- Do NOT generate any question whose answer is supported ONLY by [domain] chunks.
+- Every question's anchoring evidence must include at least one [lecture] chunk.
+- When a fact appears in both [lecture] and [domain] chunks, prefer the wording, scope, and emphasis of the [lecture] chunk.
 
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
-- Follow each slot's topic_group, coverage_item, support_level, question_form, and trap_type.
+- Follow each slot's topic_group, coverage_item, support_level, question_form, trap_type, and cognitive_level if provided.
 - Keep questions diverse, in-scope, and non-redundant.
 - Provide exactly 4 plausible options in the same domain and level of specificity.
+- The correct option must be clearly best according to the source material.
+- Distractors must be plausible HCI misunderstandings, not obviously wrong or unrelated choices.
+- Avoid negative questions such as "Which is NOT correct?" unless required by the trap_type.
 - Do not output explanations or feedback text.
+
+LOW-VALUE QUESTION RESTRICTIONS:
+- Avoid questions that only test administrative, biographical, or trivial metadata details.
+- Do NOT generate questions whose primary purpose is recalling: instructor names, student names, phone numbers, email addresses, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata.
+- Prefer questions that assess conceptual understanding, reasoning, application, comparison, cause-effect relationships, process understanding, or meaningful learning outcomes.
+- Personal names should only appear when they are academically important to the learning content itself.
+- Questions should prioritize educational and conceptual value over memorization of administrative details.
+
+APPLICATION QUESTION GUIDELINES:
+- When a slot has cognitive_level=concept_application, scenario_application, or advanced_application_analysis, write a question that requires applying the source concept to a realistic situation.
+- The scenario should be concise but meaningful.
+- The correct answer should require reasoning from the source concept, not merely repeating a phrase from the source.
+- Distractors should represent plausible but flawed decisions, misconceptions, or trade-offs.
+- Avoid making the correct option obvious by being the only complete or positive answer.
+- Keep the scenario realistic for the learning domain, such as user behavior, interface design, system use, classroom learning, product design, or decision-making contexts.
+- Do not introduce outside facts that are not needed to answer the question.
+
+BAD QUESTION EXAMPLES (do NOT generate):
+- "Giảng viên của khóa học Tương tác người máy là ai?"
+- "Mã học phần của môn học là gì?"
+GOOD QUESTION EXAMPLES (preferred style):
+- "Gulf of execution mô tả khoảng cách nào trong tương tác người-máy?"
+- "Khi người dùng hình thành ý định sai do mô hình tinh thần lệch, loại lỗi này được gọi là gì?"
+
+MCQ STRUCTURAL CONSTRAINTS (HARD BAN — strictly enforced by post-validator):
+1. EXACTLY ONE option is fully correct. The other 3 must each contain at least one factual or reasoning error that makes them clearly wrong on their own.
+2. BANNED option phrases (DO NOT generate any option that matches or is semantically equivalent to these, in any language):
+   - "all of the above", "none of the above", "all of these", "none of these"
+   - "both A and B", "A and B only", "A and C", "B and C", "A, B and C", "all three answers"
+   - "tất cả các đáp án trên", "tất cả đáp án trên", "tất cả đều đúng", "các ý trên đều đúng"
+   - "cả 3 đáp án trên", "cả ba đáp án trên", "cả hai đáp án trên"
+   - "không có đáp án nào đúng", "không đáp án nào đúng", "không có ý nào đúng"
+   - "A và B", "A và C", "B và C", "A, B và C", "cả A và B", "cả A và C"
+   - any option that references other option letters / numbers, or aggregates them.
+3. NO COMBINED / CUMULATIVE ANSWERS: an option must not be a superset, sum, or merger of the meaning of other options. Each option must be independently true-or-false.
+4. INDEPENDENCE & EXCLUSIVITY: the 4 options must be mutually exclusive — no two options can be simultaneously true given the stem.
+5. PARALLEL FORM: all 4 options must be the same grammatical type (all noun phrases, OR all full sentences, OR all numeric values) and roughly the same length. The correct option must NOT be noticeably longer than the longest distractor.
+6. NO LEXICAL GIVEAWAY: the correct option must not be the only one that echoes distinctive keywords from the stem, and must not be the only one carrying hedges like "always / never / chỉ / luôn luôn" unless all 4 do.
+7. SINGLE BEST ANSWER TEST: if a careful student can defend 2+ options as correct from the source, REWRITE the stem or the options before returning.
+
+DISTRACTOR QUALITY RESTRICTIONS:
+- Avoid answer choices that make the correct answer obvious by simple completeness.
+- Do NOT create distractors that are merely extreme negations or artificial opposites of the correct answer.
+- Avoid option sets where the choices follow a simplistic pattern such as:
+  - only X
+  - only Y
+  - neither X nor Y
+  - both X and Y
+- Wrong options must be plausible misconceptions, not mechanically incomplete versions of the correct answer.
+- All options should have a similar level of specificity, length, and conceptual depth.
+- The correct answer should require understanding the concept, not just choosing the most complete or least extreme option.
+- For questions about model components, processes, or frameworks, distractors should use plausible but incorrect components, relationships, or interpretations from the same domain.
+
+BAD QUESTION (do NOT generate this style):
+"Mô hình tương tác Abowd & Beale mô tả những thành phần nào trong tương tác người máy?"
+A. Chỉ mô tả phía hệ thống
+B. Không mô tả cả hai phía
+C. Chỉ mô tả phía người dùng
+D. Mô tả cả phía người dùng và phía hệ thống
+Reason: The correct answer is obvious because it is the most complete option, while the distractors are simple incomplete opposites.
+
+GOOD QUESTION (preferred style):
+"Mô hình tương tác Abowd & Beale giúp phân tích tương tác người máy theo hướng nào?"
+A. Phân tích tương tác thông qua các bước chuyển đổi giữa mục tiêu, thao tác, trạng thái hệ thống và phản hồi
+B. Đánh giá giao diện chủ yếu dựa trên màu sắc, bố cục và mức độ thẩm mỹ trực quan
+C. Mô tả hiệu năng hệ thống bằng các chỉ số phần cứng như bộ nhớ, CPU và tốc độ xử lý
+D. Xác định vai trò của người dùng bằng cách phân loại họ theo trình độ kỹ thuật
+
+BAD QUESTION (do NOT generate this style):
+"Thiết kế giao diện tốt mang lại lợi ích gì?"
+A. Không mang lại lợi ích nào
+B. Chỉ giúp hệ thống đẹp hơn
+C. Chỉ giúp người dùng thao tác nhanh hơn
+D. Giúp cải thiện trải nghiệm, hiệu quả sử dụng và khả năng tiếp cận
+
+GOOD QUESTION (preferred style):
+"Trong HCI, vì sao thiết kế giao diện tốt có thể cải thiện hiệu quả sử dụng hệ thống?"
+A. Vì nó giúp người dùng hiểu thao tác cần thực hiện, giảm lỗi và hoàn thành nhiệm vụ thuận lợi hơn
+B. Vì nó thay thế hoàn toàn nhu cầu kiểm thử hệ thống với người dùng thật
+C. Vì nó làm cho hệ thống có tốc độ xử lý cao hơn dù không thay đổi phần mềm bên trong
+D. Vì nó đảm bảo mọi người dùng sẽ có cùng hành vi và cùng mức độ thành thạo
+
+BAD QUESTION (recall-only, do NOT generate this style for application slots):
+"Thiết kế giao diện tốt mang lại lợi ích gì?"
+A. Không có lợi ích gì
+B. Chỉ giúp giao diện đẹp hơn
+C. Chỉ giúp hệ thống chạy nhanh hơn
+D. Giúp cải thiện trải nghiệm người dùng và hiệu quả sử dụng
+
+GOOD APPLICATION QUESTION (preferred style for application/scenario slots):
+"Một nhóm phát triển ứng dụng đang phân vân giữa phát hành nhanh với giao diện đơn giản chưa kiểm thử và đầu tư thêm vào UI/UX trước khi ra mắt. Dựa trên lợi ích của thiết kế giao diện tốt, lập luận nào hỗ trợ tốt nhất việc đầu tư thêm vào UI/UX?"
+A. UI/UX chỉ làm tăng thời gian phát triển và không ảnh hưởng đến người dùng.
+B. Chỉ cần có nhiều chức năng thì người dùng sẽ tự thích nghi với giao diện.
+C. Thiết kế UI tốt có thể tăng khả năng chấp nhận sản phẩm, giảm lỗi sử dụng và giảm chi phí sửa lỗi giao diện về sau.
+D. Giao diện chỉ cần đẹp, không cần hỗ trợ hiệu quả thao tác.
+
+QUESTION FORM GUIDANCE:
+- recognition_understanding questions may ask about key terms such as domain, task, goal, intention, gulf of execution, gulf of evaluation, slip, mistake, ergonomics, WIMP elements, or interaction styles.
+- application questions should use short scenarios such as printing a document, filling a form, using an ATM, using menus, command line, voice input, or WIMP elements.
+- advanced_application_analysis questions should involve trade-offs, diagnosing the root cause of an interaction failure, or choosing a design improvement under constraints.
+
+TRAP / DISTRACTOR POLICY:
+Use distractors to test common HCI misconceptions, such as:
+- confusing gulf of execution with gulf of evaluation,
+- confusing slip with mistake,
+- confusing recognition-based menu interaction with recall-based command interaction,
+- assuming a visually attractive interface is always more usable,
+- assuming natural language interfaces are always easy for machines to understand,
+- confusing input-side issues with output-side issues in the interaction framework,
+- choosing more features instead of reducing cognitive or physical burden.
+
+QUALITY CHECK BEFORE OUTPUT:
+Before returning JSON, silently verify:
+1. The quiz follows the intended cognitive level distribution.
+2. Each question is answerable from the source material.
+3. Recognition questions are not too trivial.
+4. Application questions require applying a concept to a situation.
+5. Advanced questions require at least two reasoning steps or a meaningful trade-off.
+6. The correct answer is uniquely best.
+7. All distractors are plausible but clearly less suitable.
+8. The output is valid JSON only.
 
 OUTPUT FORMAT (JSON only):
 {{
   "quiz": [
     {{
       "slot_id": "S01",
-      "question": "Noi dung cau hoi?",
-      "options": ["Lua chon A", "Lua chon B", "Lua chon C", "Lua chon D"],
+      "cognitive_level": "recognition_understanding",
+      "question": "Nội dung câu hỏi?",
+      "options": ["Lựa chọn A", "Lựa chọn B", "Lựa chọn C", "Lựa chọn D"],
       "correct_answer": "A"
     }}
   ],
@@ -598,6 +1020,8 @@ TOPIC / LEARNING SCOPE:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 ASSIGNED SLOTS:
 {slot_section}
 
@@ -611,16 +1035,122 @@ GROUNDING POLICY:
 1. Every correct answer must stay anchored to the source material.
 2. support_level=direct_source means the answer is directly stated in the source.
 3. support_level=close_inference means the answer is a short inference from nearby supported details.
-4. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
-5. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
-6. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+4. support_level=cross_chunk_synthesis means the answer requires combining information from 2 or more distinct parts of the source material.
+5. support_level=adjacent_in_scope is allowed only for missing-slot refill and must remain very close to supported concepts from the source.
+6. Never require outside facts such as dates, authors, formulas, benchmarks, or advanced concepts not supported by the source.
+7. Background knowledge may only help phrasing, simple in-scope scenarios, and plausible distractors.
+
+SOURCE ROLES:
+- Each chunk in SOURCE MATERIAL may be tagged [lecture] or [domain]. Untagged chunks are treated as [lecture].
+- [lecture] chunks define the in-scope topics that questions MUST be about.
+- [domain] chunks are course-level shared knowledge meant to add depth, examples, or precise terminology to a concept that is already covered by a [lecture] chunk.
+- Do NOT generate any question whose answer is supported ONLY by [domain] chunks. Every question's anchoring evidence must include at least one [lecture] chunk.
+- When a fact appears in both [lecture] and [domain] chunks, prefer the wording, scope, and emphasis of the [lecture] chunk.
 
 QUESTION RULES:
 - Produce exactly one question per slot and preserve every slot_id.
-- Follow each slot's topic_group, coverage_item, support_level, question_form, and trap_type.
+- Follow each slot's topic_group, coverage_item, support_level, question_form, trap_type, and cognitive_level if provided.
 - Keep questions diverse, in-scope, and non-redundant.
 - Provide exactly 4 plausible options in the same domain and level of specificity.
 - Do not output explanations or feedback text.
+- question_form=multi_step_reasoning: require 2+ logical steps to reach the answer.
+- question_form=calculation: apply a formula or quantitative relationship from the source.
+- question_form=scenario_application: present a realistic new scenario solvable using source knowledge.
+
+APPLICATION QUESTION GUIDELINES:
+- When a slot has cognitive_level=concept_application, scenario_application, or advanced_application_analysis, write a question that requires applying the source concept to a realistic situation.
+- The scenario should be concise but meaningful.
+- The correct answer should require reasoning from the source concept, not merely repeating a phrase from the source.
+- Distractors should represent plausible but flawed decisions, misconceptions, or trade-offs.
+- Avoid making the correct option obvious by being the only complete or positive answer.
+- Keep the scenario realistic for the learning domain, such as user behavior, interface design, system use, classroom learning, product design, or decision-making contexts.
+- Do not introduce outside facts that are not needed to answer the question.
+
+LOW-VALUE QUESTION RESTRICTIONS:
+- Avoid questions that only test administrative, biographical, or trivial metadata details.
+- Do NOT generate questions whose primary purpose is recalling: instructor names, student names, phone numbers, email addresses, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata.
+- Prefer questions that assess conceptual understanding, reasoning, application, comparison, cause-effect relationships, process understanding, or meaningful learning outcomes.
+- Personal names should only appear when they are academically important to the learning content itself.
+- Questions should prioritize educational and conceptual value over memorization of administrative details.
+
+BAD QUESTION EXAMPLES (do NOT generate):
+- "Who is the instructor of the Human-Computer Interaction course?"
+- "What is the course code of this subject?"
+GOOD QUESTION EXAMPLES (preferred style):
+- "Which gap does the gulf of execution describe in human-computer interaction?"
+- "When a user forms an incorrect intention because of a flawed mental model, what type of interaction error is this?"
+
+MCQ STRUCTURAL CONSTRAINTS (HARD BAN — strictly enforced by post-validator):
+1. EXACTLY ONE option is fully correct. The other 3 must each contain at least one factual or reasoning error that makes them clearly wrong on their own.
+2. BANNED option phrases (DO NOT generate any option that matches or is semantically equivalent to these, in any language):
+   - "all of the above", "none of the above", "all of these", "none of these"
+   - "both A and B", "A and B only", "A and C", "B and C", "A, B and C", "all three answers"
+   - "tất cả các đáp án trên", "tất cả đáp án trên", "tất cả đều đúng", "các ý trên đều đúng"
+   - "cả 3 đáp án trên", "cả ba đáp án trên", "cả hai đáp án trên"
+   - "không có đáp án nào đúng", "không đáp án nào đúng", "không có ý nào đúng"
+   - "A và B", "A và C", "B và C", "A, B và C", "cả A và B", "cả A và C"
+   - any option that references other option letters / numbers, or aggregates them.
+3. NO COMBINED / CUMULATIVE ANSWERS: an option must not be a superset, sum, or merger of the meaning of other options. Each option must be independently true-or-false.
+4. INDEPENDENCE & EXCLUSIVITY: the 4 options must be mutually exclusive — no two options can be simultaneously true given the stem.
+5. PARALLEL FORM: all 4 options must be the same grammatical type and roughly the same length. The correct option must NOT be noticeably longer than the longest distractor.
+6. NO LEXICAL GIVEAWAY: the correct option must not uniquely echo distinctive stem keywords, and must not be the only one carrying hedges like "always / never" unless all 4 do.
+7. SINGLE BEST ANSWER TEST: if 2+ options could be defended from the source, REWRITE the stem or the options before returning.
+
+DISTRACTOR QUALITY RESTRICTIONS:
+- Avoid answer choices that make the correct answer obvious by simple completeness.
+- Do NOT create distractors that are merely extreme negations or artificial opposites of the correct answer.
+- Avoid option sets where the choices follow a simplistic pattern such as:
+  - only X
+  - only Y
+  - neither X nor Y
+  - both X and Y
+- Wrong options must be plausible misconceptions, not mechanically incomplete versions of the correct answer.
+- All options should have a similar level of specificity, length, and conceptual depth.
+- The correct answer should require understanding the concept, not just choosing the most complete or least extreme option.
+- For questions about model components, processes, or frameworks, distractors should use plausible but incorrect components, relationships, or interpretations from the same domain.
+
+BAD QUESTION (do NOT generate this style):
+"Which components does the Abowd & Beale interaction model describe in human-computer interaction?"
+A. Only the system side
+B. Neither side is described
+C. Only the user side
+D. Both the user side and the system side
+Reason: The correct answer is obvious because it is the most complete option, while the distractors are simple incomplete opposites.
+
+GOOD QUESTION (preferred style):
+"In what way does the Abowd & Beale interaction model help analyze human-computer interaction?"
+A. It analyzes interaction through transitions between goals, actions, system state, and feedback
+B. It evaluates the interface mainly based on color, layout, and visual aesthetics
+C. It describes system performance using hardware metrics such as memory, CPU, and processing speed
+D. It defines user roles by classifying them according to technical proficiency
+
+BAD QUESTION (do NOT generate this style):
+"What are the benefits of good interface design?"
+A. It provides no benefits
+B. It only makes the system look nicer
+C. It only helps users operate faster
+D. It improves user experience, efficiency, and accessibility
+
+GOOD QUESTION (preferred style):
+"In HCI, why can good interface design improve the effective use of a system?"
+A. Because it helps users understand which actions to perform, reducing errors and easing task completion
+B. Because it fully replaces the need for testing the system with real users
+C. Because it makes the system process faster without changing the underlying software
+D. Because it guarantees every user will exhibit the same behavior and proficiency level
+
+BAD QUESTION (recall-only, do NOT generate this style for application slots):
+"What are the benefits of good interface design?"
+A. It has no benefits
+B. It only makes the interface look nicer
+C. It only makes the system run faster
+D. It improves user experience and effectiveness
+
+GOOD APPLICATION QUESTION (preferred style for application/scenario slots):
+"A development team is debating whether to ship quickly with a simple, untested interface or invest more time in UI/UX before launch. Based on the benefits of good interface design, which argument best supports investing more in UI/UX?"
+A. UI/UX only adds development time and does not affect users.
+B. As long as the app has many features, users will adapt to any interface on their own.
+C. Good UI design can increase product adoption, reduce usage errors, and lower the cost of fixing interface issues later.
+D. The interface only needs to look nice; it does not need to support effective interaction.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -651,14 +1181,28 @@ REQUESTED TOPICS:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 Create an exact slot blueprint for {num_questions} quiz questions.
 
 RULES:
 1. Normalize overlapping requested topics into topic groups when appropriate.
 2. Each slot must stay inside the supported learning scope.
-3. support_level may be only: direct_source or close_inference.
-4. Do NOT write full questions, answer options, correct answers, or explanations.
-5. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+3. support_level may be: direct_source, close_inference, or cross_chunk_synthesis (hard mode only).
+4. question_form may be: definition, comparison, cause_effect, condition, process, light_application, negative_form, multi_step_reasoning, calculation, scenario_application.
+5. trap_type may be: near_miss, reversed_condition, reversed_cause_effect, scope_confusion, true_but_not_answer, close_concept_confusion, step_order_confusion, plausible_miscalculation, incomplete_reasoning, overgeneralization.
+6. cognitive_level may be: remember_understand, concept_application, scenario_application, advanced_application_analysis.
+7. Do NOT write full questions, answer options, correct answers, or explanations.
+8. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+9. LOW-VALUE COVERAGE RESTRICTIONS: Do NOT plan slots that target administrative or biographical metadata such as instructor names, student names, phone numbers, emails, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata. Prefer coverage items that target conceptual understanding, reasoning, application, comparison, cause-effect relationships, or process understanding.
+
+APPLICATION / ANALYSIS SLOT REQUIREMENTS:
+- For quizzes with 5 or more questions, allocate at least 1 slot to application or scenario-based reasoning when the source material supports it.
+- For quizzes with 10 or more questions, allocate 2-3 slots to application, scenario_application, multi_step_reasoning, cause_effect, or advanced comparison when supported by the source.
+- These slots should ask learners to apply concepts to realistic situations, user behaviors, interface problems, product decisions, learning contexts, or design trade-offs.
+- Do not force application slots if the source material only contains isolated administrative facts or very shallow definitions.
+- Application slots must still remain grounded in the lecture/source material.
+- Set cognitive_level=concept_application, scenario_application, or advanced_application_analysis on application/analysis slots; use cognitive_level=remember_understand for recall/definition slots.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -677,7 +1221,8 @@ OUTPUT FORMAT (JSON only):
       "coverage_item": "supported concept",
       "support_level": "direct_source",
       "question_form": "definition",
-      "trap_type": "near_miss"
+      "trap_type": "near_miss",
+      "cognitive_level": "remember_understand"
     }}
   ],
   "notes": ""
@@ -699,14 +1244,28 @@ REQUESTED TOPICS:
 DIFFICULTY:
 {difficulty}
 
+{difficulty_policy}
+
 Create an exact slot blueprint for {num_questions} quiz questions.
 
 RULES:
 1. Normalize overlapping requested topics into topic groups when appropriate.
 2. Each slot must stay inside the supported learning scope.
-3. support_level may be only: direct_source or close_inference.
-4. Do NOT write full questions, answer options, correct answers, or explanations.
-5. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+3. support_level may be: direct_source, close_inference, or cross_chunk_synthesis (hard mode only).
+4. question_form may be: definition, comparison, cause_effect, condition, process, light_application, negative_form, multi_step_reasoning, calculation, scenario_application.
+5. trap_type may be: near_miss, reversed_condition, reversed_cause_effect, scope_confusion, true_but_not_answer, close_concept_confusion, step_order_confusion, plausible_miscalculation, incomplete_reasoning, overgeneralization.
+6. cognitive_level may be: remember_understand, concept_application, scenario_application, advanced_application_analysis.
+7. Do NOT write full questions, answer options, correct answers, or explanations.
+8. Prefer broad coverage and professional diversity instead of paraphrasing the same idea.
+9. LOW-VALUE COVERAGE RESTRICTIONS: Do NOT plan slots that target administrative or biographical metadata such as instructor names, student names, phone numbers, emails, office locations, class schedules, course codes, IDs, document titles, file names, or trivial course metadata. Prefer coverage items that target conceptual understanding, reasoning, application, comparison, cause-effect relationships, or process understanding.
+
+APPLICATION / ANALYSIS SLOT REQUIREMENTS:
+- For quizzes with 5 or more questions, allocate at least 1 slot to application or scenario-based reasoning when the source material supports it.
+- For quizzes with 10 or more questions, allocate 2-3 slots to application, scenario_application, multi_step_reasoning, cause_effect, or advanced comparison when supported by the source.
+- These slots should ask learners to apply concepts to realistic situations, user behaviors, interface problems, product decisions, learning contexts, or design trade-offs.
+- Do not force application slots if the source material only contains isolated administrative facts or very shallow definitions.
+- Application slots must still remain grounded in the lecture/source material.
+- Set cognitive_level=concept_application, scenario_application, or advanced_application_analysis on application/analysis slots; use cognitive_level=remember_understand for recall/definition slots.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -725,13 +1284,339 @@ OUTPUT FORMAT (JSON only):
       "coverage_item": "supported concept",
       "support_level": "direct_source",
       "question_form": "definition",
-      "trap_type": "near_miss"
+      "trap_type": "near_miss",
+      "cognitive_level": "remember_understand"
     }}
   ],
   "notes": ""
 }}
 
 Return ONLY valid JSON, no markdown, no extra text."""
+
+
+# ===========================================================================
+# MCQ Structural Validation (P0)
+# ---------------------------------------------------------------------------
+# Heuristic post-validator that rejects malformed multiple-choice questions
+# such as "All of the above", combined-answer options, length-bias correct
+# answers, and obvious meta-options. Rejected questions are returned to the
+# pipeline as malformed so the slot is refilled via the supplement pass.
+# ===========================================================================
+
+# Hard-banned literal phrases (matched as whole-string equality after
+# normalization). Covers VI + EN aggregator answers.
+_BANNED_OPTION_LITERALS_NORMALIZED = {
+    # English
+    "all of the above",
+    "all the above",
+    "all of these",
+    "none of the above",
+    "none of these",
+    "all answers are correct",
+    "all of the answers are correct",
+    "no correct answer",
+    "no answer is correct",
+    "all three answers",
+    "all four answers",
+    # Vietnamese
+    "tat ca cac dap an tren",
+    "tat ca dap an tren",
+    "tat ca y tren",
+    "tat ca cac y tren",
+    "cac y tren deu dung",
+    "cac dap an tren deu dung",
+    "tat ca deu dung",
+    "tat ca cac phuong an tren",
+    "tat ca phuong an tren",
+    "ca 3 dap an tren",
+    "ca ba dap an tren",
+    "ca hai dap an tren",
+    "ca 2 dap an tren",
+    "khong co dap an nao dung",
+    "khong dap an nao dung",
+    "khong co y nao dung",
+    "khong y nao dung",
+    "khong co phuong an nao dung",
+}
+
+# Regex patterns that catch combined / cumulative answers like
+# "Both A and C", "A and B only", "1 and 3", "Cả A và B", "đáp án A và C".
+# Each pattern is conservative: it requires an option-letter pair anchored
+# to the option string (whole-string or with explicit option/answer marker).
+_BANNED_OPTION_REGEXES = [
+    # English combined
+    re.compile(r"\bboth\s+[abcd1234]\s+and\s+[abcd1234]\b", re.IGNORECASE),
+    re.compile(r"\b[abcd1234]\s+and\s+[abcd1234]\s+only\b", re.IGNORECASE),
+    # Bare "A and C" / "B and C" as the entire option (anchored).
+    re.compile(r"^\s*[abcd1234]\s+and\s+[abcd1234]\s*$", re.IGNORECASE),
+    re.compile(r"\b[abcd1234]\s*,\s*[abcd1234]\s+and\s+[abcd1234]\b", re.IGNORECASE),
+    re.compile(r"\b(options?|answers?|choices?)\s+[abcd1234]\s+and\s+[abcd1234]\b", re.IGNORECASE),
+    # Vietnamese combined — require explicit "cả/đáp án/phương án" marker so
+    # we don't falsely match prose like "phân tích A và C trong sơ đồ".
+    re.compile(r"\b(cả|ca)\s+[abcd1234]\s+(và|va)\s+[abcd1234]\b", re.IGNORECASE),
+    re.compile(r"\b(đáp\s*án|dap\s*an|phương\s*án|phuong\s*an|ý kiến|y kien)\s+[abcd1234]\s+(và|va)\s+[abcd1234]\b", re.IGNORECASE),
+    # Bare "A và C" anchored to the entire option.
+    re.compile(r"^\s*[abcd1234]\s+(và|va)\s+[abcd1234]\s*$", re.IGNORECASE),
+]
+
+# Multi-word phrases that strongly indicate an aggregator option even if not
+# on the literal ban list. Single tokens like "tat ca" / "ca hai" / "deu dung"
+# are deliberately NOT here — they appear in many legitimate options.
+_SUSPICIOUS_META_PHRASES_NORMALIZED = (
+    "all of the above",
+    "none of the above",
+    "tat ca cac y tren",
+    "tat ca y tren",
+    "tat ca dap an tren",
+    "tat ca phuong an tren",
+    "cac y tren deu dung",
+    "cac dap an tren deu dung",
+)
+
+# Connector tokens that must appear in an option before the combined-superset
+# heuristic is allowed to flag it. Without a connector, a long correct option
+# is treated as legitimately detailed, not as a merge of distractors.
+_COMBINED_CONNECTOR_TOKENS = {
+    "and", "both", "all", "or",
+    "va", "ca", "tat", "hoac", "deu",
+}
+
+
+def _strip_diacritics(text: str) -> str:
+    import unicodedata
+    # Vietnamese đ/Đ are atomic letters that NFKD does NOT decompose; map manually.
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase, strip diacritics, collapse whitespace, drop trailing punctuation."""
+    if not text:
+        return ""
+    stripped = _strip_diacritics(str(text)).lower()
+    stripped = re.sub(r"[^\w\s]", " ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped
+
+
+def _option_token_set(text: str) -> set:
+    norm = _normalize_for_match(text)
+    return set(re.findall(r"\w+", norm))
+
+
+def _is_banned_phrase(option: str) -> bool:
+    norm = _normalize_for_match(option)
+    if not norm:
+        return False
+    if norm in _BANNED_OPTION_LITERALS_NORMALIZED:
+        return True
+    # Substring match for literal aggregators (handles trailing fragments).
+    for literal in _BANNED_OPTION_LITERALS_NORMALIZED:
+        if literal in norm:
+            return True
+    for pattern in _BANNED_OPTION_REGEXES:
+        if pattern.search(option):
+            return True
+    return False
+
+
+# Specific multi-word phrases that resolve to an "all_of_above" or
+# "none_of_above" rejection. Each entry is matched as a whole-substring on the
+# normalized option text. Bare single words ("tat ca", "deu dung") are NOT
+# included on purpose — they generate too many false positives.
+_ALL_OF_ABOVE_PHRASES = (
+    "all of the above",
+    "all the above",
+    "all of these",
+    "all answers are correct",
+    "all of the answers are correct",
+    "all three answers",
+    "all four answers",
+    "tat ca cac dap an tren",
+    "tat ca dap an tren",
+    "tat ca y tren",
+    "tat ca cac y tren",
+    "tat ca cac phuong an tren",
+    "tat ca phuong an tren",
+    "cac y tren deu dung",
+    "cac dap an tren deu dung",
+    "tat ca deu dung",
+    "ca 3 dap an tren",
+    "ca ba dap an tren",
+    "ca hai dap an tren",
+    "ca 2 dap an tren",
+    "ca hai y tren",
+    "ca ba y tren",
+)
+
+_NONE_OF_ABOVE_PHRASES = (
+    "none of the above",
+    "none of these",
+    "no correct answer",
+    "no answer is correct",
+    "khong co dap an nao dung",
+    "khong dap an nao dung",
+    "khong co y nao dung",
+    "khong y nao dung",
+    "khong co phuong an nao dung",
+    "deu sai het",
+)
+
+
+def _classify_banned_phrase(option: str) -> Optional[str]:
+    """Return a specific rejection_reason for banned phrases, or None.
+
+    Conservative: only triggers on explicit aggregator/meta patterns. Bare
+    Vietnamese tokens like "tất cả", "cả hai", "đều đúng" are NOT enough on
+    their own — the option must contain a recognizable meta phrase or an
+    option-letter combination pattern.
+    """
+    norm = _normalize_for_match(option)
+    if not norm:
+        return None
+    for phrase in _ALL_OF_ABOVE_PHRASES:
+        if phrase in norm:
+            return "all_of_above"
+    for phrase in _NONE_OF_ABOVE_PHRASES:
+        if phrase in norm:
+            return "none_of_above"
+    for pattern in _BANNED_OPTION_REGEXES:
+        if pattern.search(option):
+            return "combined_answer"
+    return None
+
+
+def _is_suspicious_meta_option(option: str) -> bool:
+    """True only when the option contains a multi-word meta phrase.
+
+    Single Vietnamese function words ("tất cả", "cả hai") are not enough — they
+    appear in many legitimate options. We require a phrase that combines an
+    aggregator with an above-style anchor.
+    """
+    norm = _normalize_for_match(option)
+    if not norm:
+        return False
+    for phrase in _SUSPICIOUS_META_PHRASES_NORMALIZED:
+        if phrase in norm:
+            return True
+    return False
+
+
+def _is_combined_superset(option: str, others: List[str]) -> bool:
+    """
+    Conservative combined-superset check.
+
+    Returns True only when ALL of the following hold:
+      - the option contains an explicit connector token (and / both / cả / và / ...)
+      - its token set strictly contains tokens from >= 2 distinct other options
+      - each subsumed other option is meaningfully shorter than the candidate.
+
+    A long correct option that does NOT contain a connector is treated as a
+    legitimately detailed answer, not as a merger.
+    """
+    own = _option_token_set(option)
+    if len(own) < 6:
+        return False
+    if not (own & _COMBINED_CONNECTOR_TOKENS):
+        return False
+    contained = 0
+    for other in others:
+        other_tokens = _option_token_set(other)
+        if not other_tokens or other_tokens == own:
+            continue
+        # Require the other option to be substantially smaller and a strict subset.
+        if other_tokens.issubset(own) and len(other_tokens) <= max(2, int(len(own) * 0.6)):
+            contained += 1
+    return contained >= 2
+
+
+def _is_correct_length_outlier(
+    options: List[str],
+    correct_index: int,
+    max_ratio: float = 1.8,
+) -> bool:
+    """
+    True if the correct option is noticeably longer than every distractor
+    by more than `max_ratio`x. Cheap proxy for length bias / option that
+    gathers all the right ideas while distractors are short.
+    """
+    correct_len = max(1, len(options[correct_index].strip()))
+    distractor_lens = [len(o.strip()) for i, o in enumerate(options) if i != correct_index]
+    longest_distractor = max(distractor_lens) if distractor_lens else 0
+    if longest_distractor == 0:
+        return False
+    return correct_len >= max_ratio * longest_distractor and (correct_len - longest_distractor) >= 25
+
+
+def _semantic_duplicate_options(options: List[str], jaccard_threshold: float = 0.85) -> bool:
+    """
+    True if any two options have token-set Jaccard similarity >= threshold,
+    indicating a paraphrase/duplicate that breaks single-best-answer.
+    """
+    token_sets = [_option_token_set(o) for o in options]
+    for i in range(len(token_sets)):
+        for j in range(i + 1, len(token_sets)):
+            a, b = token_sets[i], token_sets[j]
+            if not a or not b:
+                continue
+            jac = len(a & b) / len(a | b)
+            if jac >= jaccard_threshold:
+                return True
+    return False
+
+
+def validate_mcq_structure(
+    question: str,
+    options: List[str],
+    correct_index: int,
+) -> Tuple[bool, str]:
+    """
+    Conservative structural validation for a single MCQ.
+
+    Returns ``(ok, rejection_reason)``. When ``ok`` is True, ``rejection_reason``
+    is an empty string. When ``ok`` is False, ``rejection_reason`` is one of:
+
+    - ``invalid_mcq_structure``     – malformed input (missing options / index)
+    - ``all_of_above``              – explicit "all of the above" aggregator
+    - ``none_of_above``             – explicit "none of the above" aggregator
+    - ``combined_answer``           – "A and B" pattern OR superset+connector merge
+    - ``suspicious_meta_option``    – multi-word meta phrase (rare)
+    - ``semantic_duplicate_option`` – two options are near-paraphrases
+
+    Note: option length bias is NO LONGER a hard reject (it produced too many
+    false positives on legitimately detailed correct answers). Callers may
+    inspect it separately via ``_is_correct_length_outlier`` for telemetry.
+    """
+    if not isinstance(options, list) or len(options) != 4:
+        return False, "invalid_mcq_structure"
+    if correct_index is None or not (0 <= correct_index < 4):
+        return False, "invalid_mcq_structure"
+    if any(not isinstance(o, str) or not o.strip() for o in options):
+        return False, "invalid_mcq_structure"
+
+    # 1. Explicit aggregator / combined-letter phrases (highest precision).
+    for opt in options:
+        reason = _classify_banned_phrase(opt)
+        if reason:
+            return False, reason
+
+    # 2. Multi-word meta phrases (rare — single tokens are intentionally NOT enough).
+    for opt in options:
+        if _is_suspicious_meta_option(opt):
+            return False, "suspicious_meta_option"
+
+    # 3. Combined / superset options. Requires an explicit connector token to fire.
+    for i, opt in enumerate(options):
+        others = [o for j, o in enumerate(options) if j != i]
+        if _is_combined_superset(opt, others):
+            return False, "combined_answer"
+
+    # 4. Semantic / lexical duplicate options.
+    if _semantic_duplicate_options(options):
+        return False, "semantic_duplicate_option"
+
+    return True, ""
 
 
 class QuizGenerator:
@@ -746,7 +1631,8 @@ class QuizGenerator:
         llm_provider: Optional[BaseLLM] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        key_pool=None,
     ):
         """
         Initialize Quiz Generator.
@@ -757,8 +1643,10 @@ class QuizGenerator:
             model: Model name override (legacy, for backwards compatibility)
             temperature: Generation temperature (lower = more focused)
             base_url: API base URL (legacy)
+            key_pool: Optional KeyPool for round-robin API key rotation
         """
         self.retriever = retriever
+        self._key_pool = key_pool
         
         # Store legacy params for backwards compatibility
         self._model_override = model
@@ -834,16 +1722,55 @@ class QuizGenerator:
         return num_questions >= LARGE_REQUEST_QUESTION_THRESHOLD
 
     @staticmethod
+    def _plan_topic_group_batches(
+        slots: List[Dict[str, Any]],
+        max_batch: int = 15,
+        min_batch: int = 5,
+    ) -> List[List[Dict[str, Any]]]:
+        """Group *slots* by ``topic_group`` then split large groups.
+
+        Each batch targets a single topic group so the LLM context can be
+        narrowly focused.  Groups with more than *max_batch* slots are split
+        into sub-batches.  Very small groups (< min_batch) are merged with
+        the next small group if possible.
+        """
+        from collections import OrderedDict
+
+        groups: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+        for slot in slots:
+            gid = slot.get("topic_group", "G1")
+            groups.setdefault(gid, []).append(slot)
+
+        raw_batches: List[List[Dict[str, Any]]] = []
+        for _gid, group_slots in groups.items():
+            if len(group_slots) <= max_batch:
+                raw_batches.append(group_slots)
+            else:
+                # Split large group into sub-batches
+                count = math.ceil(len(group_slots) / max_batch)
+                base = len(group_slots) // count
+                rem = len(group_slots) % count
+                offset = 0
+                for i in range(count):
+                    size = base + (1 if i < rem else 0)
+                    raw_batches.append(group_slots[offset:offset + size])
+                    offset += size
+
+        # Merge tiny trailing batches when possible
+        merged: List[List[Dict[str, Any]]] = []
+        for batch in raw_batches:
+            if merged and len(merged[-1]) < min_batch and len(merged[-1]) + len(batch) <= max_batch:
+                merged[-1].extend(batch)
+            else:
+                merged.append(list(batch))
+
+        # Fallback: if somehow empty, return all slots as one batch
+        return merged if merged else [list(slots)]
+
+    @staticmethod
     def _should_skip_blueprint_for_request(num_questions: int, topics: List[str]) -> bool:
-        normalized_topics = [
-            re.sub(r"\s+", " ", str(topic or "").strip())
-            for topic in topics
-            if str(topic or "").strip()
-        ]
-        return (
-            num_questions >= BLUEPRINT_SKIP_QUESTION_THRESHOLD
-            or len(normalized_topics) >= BLUEPRINT_SKIP_TOPIC_THRESHOLD
-        )
+        """Blueprint is now always allowed; chunked blueprint handles large requests."""
+        return False
 
     @staticmethod
     def _max_total_llm_calls(num_questions: int, blueprint_attempted: bool) -> Optional[int]:
@@ -894,9 +1821,19 @@ class QuizGenerator:
         remaining_slots: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         missing_count = max(0, num_questions - final_count)
+        plan_stats = plan_stats or {}
+        rejected_by_structure = int(plan_stats.get("rejected_by_structure_count") or 0)
+
+        # When the shortfall is driven by structural validation rejections we
+        # surface a neutral message instead of blaming the source material.
+        if missing_count > 0 and rejected_by_structure >= missing_count:
+            return (
+                f"Đã tạo được {final_count}/{num_questions} câu hỏi hợp lệ sau kiểm tra chất lượng. "
+                f"Một số câu bị loại do chưa đạt tiêu chí cấu trúc đáp án."
+            )
+
         message_parts = [f"Đã tạo {final_count}/{num_questions} câu hỏi, thiếu {missing_count} câu."]
         reasons: List[str] = []
-        plan_stats = plan_stats or {}
 
         if plan_stats.get("budget_cap_hit"):
             reasons.append("Hệ thống đã dừng ở mức chi phí an toàn để tránh tốn quá nhiều token.")
@@ -907,8 +1844,15 @@ class QuizGenerator:
         }:
             reasons.append("Yêu cầu lớn nên hệ thống dùng chế độ tiết kiệm token, có thể thiếu một vài câu hỏi.")
 
-        if remaining_slots:
-            reasons.append("Nội dung tài liệu chưa đủ phủ hết mọi góc hỏi cần thiết.")
+        # Mention structural rejections only as a partial explanation when they
+        # don't fully account for the shortfall (otherwise the early return above
+        # already handled it).
+        if rejected_by_structure > 0:
+            reasons.append(
+                f"Một số câu ({rejected_by_structure}) bị loại ở bước kiểm tra cấu trúc đáp án."
+            )
+        elif remaining_slots:
+            reasons.append("Một số góc hỏi chưa tìm được đủ căn cứ trong tài liệu.")
 
         if not reasons and blueprint_skip_reason == "blueprint skipped due to parse/generation fallback":
             reasons.append("Hệ thống đã rút gọn bước lập kế hoạch để giữ kết quả ổn định.")
@@ -1228,17 +2172,48 @@ Return ONLY valid JSON, no additional text.""")
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        # ---- V1 course-level domain knowledge extensions ----
+        roles_by_hash: Optional[Dict[str, str]] = None,
+        language_by_hash: Optional[Dict[str, str]] = None,
+        topic_language: Optional[str] = None,
+        domain_quota_ratio: Optional[float] = None,
+        translation_cache: Optional[Dict[str, str]] = None,
+        llm_for_translation: Optional[Any] = None,
     ) -> List[Document]:
         max_total_docs = max(1, max_total_docs)
 
         if hasattr(self.retriever, "retrieve_with_budget"):
-            return self.retriever.retrieve_with_budget(
-                query=query,
-                max_total_docs=max_total_docs,
-                target_file_hashes=target_file_hashes,
-                user_id=user_id,
-                hash_to_collection_name=hash_to_collection_name,
-            )
+            extra_kwargs: Dict[str, Any] = {}
+            if roles_by_hash is not None:
+                extra_kwargs["roles_by_hash"] = roles_by_hash
+            if language_by_hash is not None:
+                extra_kwargs["language_by_hash"] = language_by_hash
+            if topic_language is not None:
+                extra_kwargs["topic_language"] = topic_language
+            if domain_quota_ratio is not None:
+                extra_kwargs["domain_quota_ratio"] = domain_quota_ratio
+            if translation_cache is not None:
+                extra_kwargs["translation_cache"] = translation_cache
+            if llm_for_translation is not None:
+                extra_kwargs["llm_for_translation"] = llm_for_translation
+            try:
+                return self.retriever.retrieve_with_budget(
+                    query=query,
+                    max_total_docs=max_total_docs,
+                    target_file_hashes=target_file_hashes,
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection_name,
+                    **extra_kwargs,
+                )
+            except TypeError:
+                # Older retriever signature (no V1 kwargs) — retry without.
+                return self.retriever.retrieve_with_budget(
+                    query=query,
+                    max_total_docs=max_total_docs,
+                    target_file_hashes=target_file_hashes,
+                    user_id=user_id,
+                    hash_to_collection_name=hash_to_collection_name,
+                )
 
         retrieve_kwargs: Dict[str, Any] = {"k": max_total_docs}
         if hasattr(self.retriever, "resolve_target_file_hashes"):
@@ -1370,14 +2345,13 @@ Return ONLY valid JSON, no additional text.""")
         raw_document_count: int,
         final_budget: int,
     ) -> bool:
-        if self._should_skip_blueprint_for_request(num_questions, topics):
-            return False
+        """Always use blueprint for multi-topic or larger quizzes."""
         normalized_topics = [
             re.sub(r"\s+", " ", str(topic or "").strip())
             for topic in topics
             if str(topic or "").strip()
         ]
-        if num_questions >= 20:
+        if num_questions >= 10:
             return True
         if len(normalized_topics) > 1:
             return True
@@ -1397,10 +2371,12 @@ Return ONLY valid JSON, no additional text.""")
         chain = prompt | llm_json
 
         try:
+            policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
             response = chain.invoke({
                 "context": context,
                 "topic": topic,
                 "difficulty": difficulty,
+                "difficulty_policy": policy["blueprint_instruction"],
                 "num_questions": num_questions,
             })
             content = response.content if hasattr(response, "content") else str(response)
@@ -1410,6 +2386,7 @@ Return ONLY valid JSON, no additional text.""")
                     blueprint=blueprint_data,
                     topic=topic,
                     num_questions=num_questions,
+                    difficulty=difficulty,
                 ), None
             logger.warning("Blueprint generation returned unparseable content; falling back to local slot planner")
             failure_reason = "parse_failed"
@@ -1421,7 +2398,77 @@ Return ONLY valid JSON, no additional text.""")
             blueprint={},
             topic=topic,
             num_questions=num_questions,
+            difficulty=difficulty,
         ), failure_reason
+
+    def _build_blueprint_chunked(
+        self,
+        context: str,
+        topic: str,
+        difficulty: str,
+        language: str,
+        num_questions: int,
+        topics: Optional[List[str]] = None,
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Build a blueprint in chunks for large quizzes.
+
+        When *num_questions* exceeds ``BLUEPRINT_CHUNK_SIZE`` the request is
+        split into several smaller calls whose results are merged and
+        re-normalized to the required total.  For small requests this simply
+        delegates to ``_build_blueprint``.
+        """
+        if num_questions <= BLUEPRINT_CHUNK_SIZE:
+            return self._build_blueprint(context, topic, difficulty, language, num_questions)
+
+        # Split the total into roughly-equal chunks capped at BLUEPRINT_CHUNK_SIZE
+        chunk_count = math.ceil(num_questions / BLUEPRINT_CHUNK_SIZE)
+        base = num_questions // chunk_count
+        remainder = num_questions % chunk_count
+        chunk_sizes = [
+            base + (1 if i < remainder else 0)
+            for i in range(chunk_count)
+        ]
+
+        merged_groups: List[Dict[str, Any]] = []
+        merged_slots: List[Dict[str, Any]] = []
+        seen_group_ids: set = set()
+        last_failure: Optional[str] = None
+
+        for chunk_idx, chunk_size in enumerate(chunk_sizes):
+            chunk_blueprint, failure = self._build_blueprint(
+                context, topic, difficulty, language, chunk_size,
+            )
+            if failure:
+                last_failure = failure
+
+            # Merge topic_groups (deduplicate by group_id)
+            for group in chunk_blueprint.get("topic_groups", []):
+                gid = group["group_id"]
+                if gid not in seen_group_ids:
+                    seen_group_ids.add(gid)
+                    merged_groups.append(group)
+
+            # Merge slots (re-number later)
+            merged_slots.extend(chunk_blueprint.get("slots", []))
+
+        # Re-normalize so we get exactly num_questions slots
+        merged_raw = {
+            "topic_groups": merged_groups,
+            "slots": merged_slots[:num_questions],
+            "notes": "",
+        }
+        normalized = self._normalize_blueprint(
+            blueprint=merged_raw,
+            topic=topic,
+            num_questions=num_questions,
+            difficulty=difficulty,
+        )
+        logger.info(
+            "Chunked blueprint: %d chunks, %d groups, %d slots (target=%d)",
+            chunk_count, len(normalized.get("topic_groups", [])),
+            len(normalized.get("slots", [])), num_questions,
+        )
+        return normalized, last_failure
 
     def _format_blueprint_section(self, blueprint: Optional[Dict[str, Any]]) -> str:
         if not blueprint or not blueprint.get("slots"):
@@ -1500,7 +2547,12 @@ Return ONLY valid JSON, no additional text.""")
         group: Dict[str, Any],
         ordinal: int,
         support_level: Optional[str] = None,
+        difficulty: str = "medium",
     ) -> Dict[str, Any]:
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
+        forms = policy["preferred_question_forms"]
+        traps = policy["allowed_trap_types"]
+        levels = policy["allowed_support_levels"]
         slot_number = slot_index + 1
         return {
             "slot_id": f"S{slot_number:02d}",
@@ -1508,9 +2560,9 @@ Return ONLY valid JSON, no additional text.""")
             "topic_group_label": group["label"],
             "source_topics": group.get("source_topics", [group["label"]]),
             "coverage_item": group["label"] if ordinal == 0 else f"{group['label']} focus {ordinal + 1}",
-            "support_level": support_level or ("direct_source" if slot_index % 3 != 2 else "close_inference"),
-            "question_form": QUESTION_FORMS[slot_index % len(QUESTION_FORMS)],
-            "trap_type": TRAP_TYPES[(slot_index + ordinal) % len(TRAP_TYPES)],
+            "support_level": support_level or levels[slot_index % len(levels)],
+            "question_form": forms[slot_index % len(forms)],
+            "trap_type": traps[(slot_index + ordinal) % len(traps)],
             "evidence_refs": group.get("evidence_refs", [])[:3],
         }
 
@@ -1519,7 +2571,13 @@ Return ONLY valid JSON, no additional text.""")
         blueprint: Dict[str, Any],
         topic: str,
         num_questions: int,
+        difficulty: str = "medium",
     ) -> Dict[str, Any]:
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
+        allowed_levels = set(policy["allowed_support_levels"])
+        allowed_forms = set(policy["allowed_question_forms"])
+        allowed_traps = set(policy["allowed_trap_types"])
+        preferred_forms = policy["preferred_question_forms"]
         requested_topics = [
             segment.strip()
             for segment in re.split(r"[,;\n]", topic)
@@ -1570,16 +2628,16 @@ Return ONLY valid JSON, no additional text.""")
             group = groups_by_id[topic_group]
 
             support_level = str(raw_slot.get("support_level") or "").strip()
-            if support_level not in ("direct_source", "close_inference"):
-                support_level = "direct_source" if len(slots) % 3 != 2 else "close_inference"
+            if support_level not in allowed_levels:
+                support_level = policy["allowed_support_levels"][len(slots) % len(policy["allowed_support_levels"])]
 
             question_form = str(raw_slot.get("question_form") or "").strip()
-            if question_form not in QUESTION_FORMS:
-                question_form = QUESTION_FORMS[len(slots) % len(QUESTION_FORMS)]
+            if question_form not in allowed_forms:
+                question_form = preferred_forms[len(slots) % len(preferred_forms)]
 
             trap_type = str(raw_slot.get("trap_type") or "").strip()
-            if trap_type not in TRAP_TYPES:
-                trap_type = TRAP_TYPES[len(slots) % len(TRAP_TYPES)]
+            if trap_type not in allowed_traps:
+                trap_type = policy["allowed_trap_types"][len(slots) % len(policy["allowed_trap_types"])]
 
             coverage_item = re.sub(r"\s+", " ", str(raw_slot.get("coverage_item") or "").strip()) or group["label"]
             evidence_refs = [
@@ -1611,7 +2669,7 @@ Return ONLY valid JSON, no additional text.""")
                 ),
             )
             ordinal = group_counts[target_group["group_id"]]
-            slots.append(self._build_fallback_slot(len(slots), target_group, ordinal))
+            slots.append(self._build_fallback_slot(len(slots), target_group, ordinal, difficulty=difficulty))
             group_counts[target_group["group_id"]] += 1
 
         return {
@@ -1876,16 +2934,20 @@ Return ONLY valid JSON, no additional text.""")
         batch_slots: List[Dict[str, Any]],
         question_signatures: set[str],
         option_signatures: set[Tuple[str, ...]],
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, Dict[str, int]]:
         requested_slots = {slot["slot_id"]: slot for slot in batch_slots}
         ordered_slot_ids = [slot["slot_id"] for slot in batch_slots]
         used_slot_ids: set[str] = set()
         formatted_questions: List[Dict[str, Any]] = []
         malformed_count = 0
+        rejection_reasons: Counter = Counter()
+        generated_count_before_validation = len(raw_items)
+        length_bias_warning_count = 0
 
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
                 malformed_count += 1
+                rejection_reasons["non_dict_item"] += 1
                 continue
 
             slot_id = self._coerce_slot_id(
@@ -1896,23 +2958,54 @@ Return ONLY valid JSON, no additional text.""")
             )
             if not slot_id:
                 malformed_count += 1
+                rejection_reasons["no_slot_id"] += 1
                 continue
 
             question_text = str(raw_item.get("question") or "").strip()
             option_values = self._normalize_option_values(raw_item.get("options"))
             if not question_text or not option_values:
                 malformed_count += 1
+                rejection_reasons["bad_question_or_options"] += 1
                 continue
 
             correct_index = self._resolve_correct_index(raw_item, option_values)
             if correct_index is None:
                 malformed_count += 1
+                rejection_reasons["unresolvable_correct_answer"] += 1
                 continue
+
+            # P0: structural MCQ validation. Reject (do not auto-fix) so the
+            # slot rolls into missing_slots and the supplement pass refills.
+            structural_ok, structural_reason = validate_mcq_structure(
+                question_text, option_values, correct_index
+            )
+            if not structural_ok:
+                malformed_count += 1
+                rejection_reasons[structural_reason] += 1
+                logger.info(
+                    "MCQ rejected slot=%s reason=%s question=%r",
+                    slot_id,
+                    structural_reason,
+                    question_text[:120],
+                )
+                continue
+
+            # Soft check (warning only, no reject): correct option much longer
+            # than every distractor. Many legitimate detailed answers trip this.
+            if _is_correct_length_outlier(option_values, correct_index):
+                length_bias_warning_count += 1
+                logger.warning(
+                    "MCQ length-bias warning slot=%s correct_len=%s longest_distractor_len=%s",
+                    slot_id,
+                    len(option_values[correct_index]),
+                    max(len(o) for i, o in enumerate(option_values) if i != correct_index),
+                )
 
             question_signature = self._question_signature(question_text)
             option_signature = self._option_signature(option_values)
             if question_signature in question_signatures:
                 malformed_count += 1
+                rejection_reasons["duplicate_question"] += 1
                 continue
 
             options_dict, correct_answer = self._stable_shuffle_options(
@@ -1943,7 +3036,28 @@ Return ONLY valid JSON, no additional text.""")
             for slot in batch_slots
             if slot["slot_id"] not in used_slot_ids
         ]
-        return formatted_questions, missing_slots, malformed_count
+
+        # Counters requested by P0.5 telemetry.
+        structural_reasons = {
+            "all_of_above", "none_of_above", "combined_answer",
+            "suspicious_meta_option", "semantic_duplicate_option",
+            "invalid_mcq_structure",
+        }
+        rejected_by_structure_count = sum(
+            count for reason, count in rejection_reasons.items()
+            if reason in structural_reasons
+        )
+        quiz_logger.info(
+            "MCQ batch telemetry: generated_before_validation=%s "
+            "accepted_after_validation=%s rejected_by_structure=%s "
+            "length_bias_warnings=%s reasons=%s",
+            generated_count_before_validation,
+            len(formatted_questions),
+            rejected_by_structure_count,
+            length_bias_warning_count,
+            dict(rejection_reasons),
+        )
+        return formatted_questions, missing_slots, malformed_count, dict(rejection_reasons)
 
     def _invoke_generation_pass(
         self,
@@ -1959,6 +3073,8 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index: Optional[int] = None,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
+        rejection_hint: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         prompt = self.prompt_vi if language == "vi" else self.prompt_en
         context = self._format_context_documents(context_documents)
@@ -1972,13 +3088,19 @@ Return ONLY valid JSON, no additional text.""")
             max_chars=existing_chars,
         )
         slot_section = self._format_slot_section(batch_slots)
+        if rejection_hint:
+            # Inject rejection feedback at the top of the slot section so the
+            # model sees the structural failures from the previous pass before
+            # writing replacements. Kept short to avoid blowing the prompt.
+            slot_section = f"{rejection_hint}\n\n{slot_section}"
         batch_target = len(batch_slots)
         max_tokens = self._max_tokens_for_generation_pass(
             batch_target=batch_target,
             generation_mode=generation_mode,
             cost_protected=cost_protected,
         )
-        llm_json = self._llm_provider.get_llm(json_mode=True, max_tokens=max_tokens)
+        provider = llm_provider_override or self._llm_provider
+        llm_json = provider.get_llm(json_mode=True, max_tokens=max_tokens)
         chain = prompt | llm_json
 
         logger.info(
@@ -1994,10 +3116,12 @@ Return ONLY valid JSON, no additional text.""")
             max_tokens,
         )
 
+        policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
         response = chain.invoke({
             "context": context,
             "topic": topic,
             "difficulty": difficulty,
+            "difficulty_policy": policy["generation_instruction"],
             "total_target": total_target,
             "batch_target": batch_target,
             "slot_section": slot_section,
@@ -2012,6 +3136,80 @@ Return ONLY valid JSON, no additional text.""")
         raw_items = quiz_data.get("quiz", []) if quiz_data else []
         malformed_from_parse = 0 if quiz_data else batch_target
         return raw_items, malformed_from_parse
+
+    @staticmethod
+    def _build_rejection_hint(
+        rejection_reasons: Dict[str, int],
+        language: str,
+    ) -> Optional[str]:
+        """Translate per-batch rejection reasons into a short prompt nudge.
+
+        Used to feed structural-failure feedback into the next generation pass
+        so the model can avoid repeating the same defect on refill slots.
+        Returns None if there is nothing actionable to say.
+        """
+        if not rejection_reasons:
+            return None
+        reason_to_text_en = {
+            "all_of_above": (
+                "previous answers used 'all of the above' style aggregator options"
+            ),
+            "none_of_above": (
+                "previous answers used 'none of the above' style aggregator options"
+            ),
+            "combined_answer": (
+                "previous answers used combined options like 'A and B' / 'cả A và B' "
+                "that merge other choices"
+            ),
+            "suspicious_meta_option": (
+                "previous answers used meta phrases that reference other options"
+            ),
+            "semantic_duplicate_option": (
+                "previous answers contained two options with near-identical meaning"
+            ),
+        }
+        reason_to_text_vi = {
+            "all_of_above": (
+                "lần trước có đáp án dạng 'tất cả các đáp án trên' / 'all of the above'"
+            ),
+            "none_of_above": (
+                "lần trước có đáp án dạng 'không có đáp án nào đúng' / 'none of the above'"
+            ),
+            "combined_answer": (
+                "lần trước có đáp án dạng 'A và B' / 'cả A và C' gom các lựa chọn khác"
+            ),
+            "suspicious_meta_option": (
+                "lần trước có đáp án meta nhắc đến các lựa chọn khác"
+            ),
+            "semantic_duplicate_option": (
+                "lần trước có hai đáp án gần như giống nhau về nghĩa"
+            ),
+        }
+        translator = reason_to_text_vi if language == "vi" else reason_to_text_en
+        actionable: List[str] = []
+        for reason, count in rejection_reasons.items():
+            text = translator.get(reason)
+            if text:
+                actionable.append(f"- {text} ({count}x)")
+        if not actionable:
+            return None
+        if language == "vi":
+            header = (
+                "REFILL FEEDBACK — các câu lần trước bị loại do lỗi cấu trúc đáp án:"
+            )
+            footer = (
+                "Hãy tạo các câu thay thế với ĐÚNG MỘT đáp án đúng độc lập, "
+                "không có đáp án meta, không gom các lựa chọn khác."
+            )
+        else:
+            header = (
+                "REFILL FEEDBACK — previous questions were rejected for structural defects:"
+            )
+            footer = (
+                "Generate replacement questions with EXACTLY ONE independent correct option, "
+                "no meta-answer choices, and no combined-answer patterns."
+            )
+        return f"{header}\n" + "\n".join(actionable) + f"\n{footer}"
 
     def _run_batch_generation(
         self,
@@ -2029,6 +3227,7 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index_start: int = 1,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         batch_results: List[Dict[str, Any]] = []
         malformed_count = 0
@@ -2057,6 +3256,7 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected=cost_protected,
             call_index=call_index_start,
             planned_calls=planned_calls,
+            llm_provider_override=llm_provider_override,
         )
         call_count += 1
         estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -2065,14 +3265,17 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected,
         )
         malformed_count += parse_failures
-        accepted_items, missing_slots, normalized_failures = self._normalize_generated_batch(
-            raw_items=raw_items,
-            batch_slots=batch_slots,
-            question_signatures=question_signatures,
-            option_signatures=option_signatures,
+        accepted_items, missing_slots, normalized_failures, primary_rejections = (
+            self._normalize_generated_batch(
+                raw_items=raw_items,
+                batch_slots=batch_slots,
+                question_signatures=question_signatures,
+                option_signatures=option_signatures,
+            )
         )
         malformed_count += normalized_failures
         batch_results.extend(accepted_items)
+        aggregated_rejections: Counter = Counter(primary_rejections)
 
         if enable_retry and missing_slots:
             retry_count += 1
@@ -2085,6 +3288,7 @@ Return ONLY valid JSON, no additional text.""")
                     cost_protected=cost_protected,
                 ),
             )
+            retry_hint = self._build_rejection_hint(primary_rejections, language)
             raw_items, parse_failures = self._invoke_generation_pass(
                 context_documents=retry_context_documents,
                 topic=topic,
@@ -2097,6 +3301,8 @@ Return ONLY valid JSON, no additional text.""")
                 cost_protected=cost_protected,
                 call_index=call_index_start + call_count,
                 planned_calls=planned_calls,
+                llm_provider_override=llm_provider_override,
+                rejection_hint=retry_hint,
             )
             call_count += 1
             estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -2105,20 +3311,25 @@ Return ONLY valid JSON, no additional text.""")
                 cost_protected,
             )
             malformed_count += parse_failures
-            accepted_retry, missing_slots, normalized_failures = self._normalize_generated_batch(
-                raw_items=raw_items,
-                batch_slots=missing_slots,
-                question_signatures=question_signatures,
-                option_signatures=option_signatures,
+            accepted_retry, missing_slots, normalized_failures, retry_rejections = (
+                self._normalize_generated_batch(
+                    raw_items=raw_items,
+                    batch_slots=missing_slots,
+                    question_signatures=question_signatures,
+                    option_signatures=option_signatures,
+                )
             )
             malformed_count += normalized_failures
             batch_results.extend(accepted_retry)
+            aggregated_rejections.update(retry_rejections)
 
         return batch_results, missing_slots, {
             "malformed_count": malformed_count,
             "retry_count": retry_count,
+            "refill_attempt_count": retry_count,
             "call_count": call_count,
             "estimated_completion_tokens": estimated_completion_tokens,
+            "rejection_reasons": dict(aggregated_rejections),
         }
 
     def _run_targeted_refill(
@@ -2138,6 +3349,8 @@ Return ONLY valid JSON, no additional text.""")
         cost_protected: bool = False,
         call_index: int = 1,
         planned_calls: Optional[int] = None,
+        llm_provider_override: Optional["BaseLLM"] = None,
+        rejection_hint: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         if not missing_slots:
             return [], [], {
@@ -2175,22 +3388,28 @@ Return ONLY valid JSON, no additional text.""")
             cost_protected=cost_protected,
             call_index=call_index,
             planned_calls=planned_calls,
+            llm_provider_override=llm_provider_override,
+            rejection_hint=rejection_hint,
         )
-        accepted_items, still_missing, normalized_failures = self._normalize_generated_batch(
-            raw_items=raw_items,
-            batch_slots=refill_slots,
-            question_signatures=question_signatures,
-            option_signatures=option_signatures,
+        accepted_items, still_missing, normalized_failures, refill_rejections = (
+            self._normalize_generated_batch(
+                raw_items=raw_items,
+                batch_slots=refill_slots,
+                question_signatures=question_signatures,
+                option_signatures=option_signatures,
+            )
         )
         return accepted_items, still_missing, {
             "malformed_count": parse_failures + normalized_failures,
             "retry_count": 1,
+            "refill_attempt_count": 1,
             "call_count": 1,
             "estimated_completion_tokens": self._max_tokens_for_generation_pass(
                 len(refill_slots),
                 generation_mode,
                 cost_protected,
             ),
+            "rejection_reasons": refill_rejections,
         }
 
     def _execute_exact_count_plan(
@@ -2204,14 +3423,12 @@ Return ONLY valid JSON, no additional text.""")
         num_questions: int,
         cost_protected: bool = False,
         blueprint_attempted: bool = False,
+        key_pool: Optional["KeyPool"] = None,
     ) -> Dict[str, Any]:
         slots = blueprint.get("slots", [])[:num_questions]
-        batch_sizes = self._plan_batch_sizes(num_questions)
-        batch_plan: List[List[Dict[str, Any]]] = []
-        offset = 0
-        for batch_size in batch_sizes:
-            batch_plan.append(slots[offset:offset + batch_size])
-            offset += batch_size
+
+        # --- Topic-group-aligned batching ---
+        batch_plan = self._plan_topic_group_batches(slots)
 
         question_signatures: set[str] = set()
         option_signatures: set[Tuple[str, ...]] = set()
@@ -2225,6 +3442,7 @@ Return ONLY valid JSON, no additional text.""")
         remaining_slots_after_refill_1 = 0
         remaining_slots_after_refill_2 = 0
         budget_cap_hit = False
+        aggregated_rejection_reasons: Counter = Counter()
         planned_generation_calls = len(batch_plan) + (2 if cost_protected else 1)
         max_generation_calls = self._max_generation_calls(num_questions)
         max_completion_budget = self._max_est_completion_tokens(num_questions)
@@ -2232,25 +3450,45 @@ Return ONLY valid JSON, no additional text.""")
         for batch_index, batch_slots in enumerate(batch_plan, start=1):
             if not batch_slots:
                 continue
-            batch_questions, batch_missing, batch_stats = self._run_batch_generation(
-                raw_documents=raw_documents,
-                batch_slots=batch_slots,
-                topic=topic,
-                difficulty=difficulty,
-                language=language,
-                total_target=num_questions,
-                existing_questions=all_questions,
-                question_signatures=question_signatures,
-                option_signatures=option_signatures,
-                enable_retry=not cost_protected,
-                cost_protected=cost_protected,
-                call_index_start=total_generation_calls + 1,
-                planned_calls=planned_generation_calls,
-            )
+
+            # --- Key rotation: pick next key from pool for this batch ---
+            batch_llm_override: Optional[BaseLLM] = None
+            _current_key_info = None
+            if key_pool is not None:
+                _current_key_info = key_pool.next_key()
+                if _current_key_info is not None:
+                    batch_llm_override = LLMFactory.create(
+                        groq_api_key=_current_key_info["plain_key"],
+                    )
+
+            try:
+                batch_questions, batch_missing, batch_stats = self._run_batch_generation(
+                    raw_documents=raw_documents,
+                    batch_slots=batch_slots,
+                    topic=topic,
+                    difficulty=difficulty,
+                    language=language,
+                    total_target=num_questions,
+                    existing_questions=all_questions,
+                    question_signatures=question_signatures,
+                    option_signatures=option_signatures,
+                    enable_retry=not cost_protected,
+                    cost_protected=cost_protected,
+                    call_index_start=total_generation_calls + 1,
+                    planned_calls=planned_generation_calls,
+                    llm_provider_override=batch_llm_override,
+                )
+                if key_pool is not None and _current_key_info is not None:
+                    key_pool.mark_success(_current_key_info["id"])
+            except Exception:
+                if key_pool is not None and _current_key_info is not None:
+                    key_pool.mark_error(_current_key_info["id"])
+                raise
             total_malformed += batch_stats["malformed_count"]
             total_retries += batch_stats["retry_count"]
             total_generation_calls += batch_stats["call_count"]
             estimated_completion_used += batch_stats["estimated_completion_tokens"]
+            aggregated_rejection_reasons.update(batch_stats.get("rejection_reasons", {}))
             all_questions.extend(batch_questions)
             missing_slots.extend(batch_missing)
             logger.info(
@@ -2271,27 +3509,47 @@ Return ONLY valid JSON, no additional text.""")
 
         if remaining_slots:
             if max_generation_calls is None or total_generation_calls < max_generation_calls:
-                refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
-                    raw_documents=raw_documents,
-                    missing_slots=remaining_slots,
-                    topic=topic,
-                    difficulty=difficulty,
-                    language=language,
-                    total_target=num_questions,
-                    existing_questions=all_questions,
-                    question_signatures=question_signatures,
-                    option_signatures=option_signatures,
-                    generation_mode="global_refill_1",
-                    support_level_override=None,
-                    cost_protected=cost_protected,
-                    call_index=total_generation_calls + 1,
-                    planned_calls=planned_generation_calls,
-                )
+                refill_llm_override: Optional[BaseLLM] = None
+                _refill_key = None
+                if key_pool is not None:
+                    _refill_key = key_pool.next_key()
+                    if _refill_key is not None:
+                        refill_llm_override = LLMFactory.create(
+                            groq_api_key=_refill_key["plain_key"],
+                        )
+                try:
+                    refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
+                        raw_documents=raw_documents,
+                        missing_slots=remaining_slots,
+                        topic=topic,
+                        difficulty=difficulty,
+                        language=language,
+                        total_target=num_questions,
+                        existing_questions=all_questions,
+                        question_signatures=question_signatures,
+                        option_signatures=option_signatures,
+                        generation_mode="global_refill_1",
+                        support_level_override=None,
+                        cost_protected=cost_protected,
+                        call_index=total_generation_calls + 1,
+                        planned_calls=planned_generation_calls,
+                        llm_provider_override=refill_llm_override,
+                        rejection_hint=self._build_rejection_hint(
+                            dict(aggregated_rejection_reasons), language
+                        ),
+                    )
+                    if key_pool is not None and _refill_key is not None:
+                        key_pool.mark_success(_refill_key["id"])
+                except Exception:
+                    if key_pool is not None and _refill_key is not None:
+                        key_pool.mark_error(_refill_key["id"])
+                    raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
                 total_retries += refill_stats["retry_count"]
                 total_generation_calls += refill_stats["call_count"]
                 estimated_completion_used += refill_stats["estimated_completion_tokens"]
+                aggregated_rejection_reasons.update(refill_stats.get("rejection_reasons", {}))
                 refill_count += 1
                 remaining_slots_after_refill_1 = len(remaining_slots)
             else:
@@ -2319,27 +3577,47 @@ Return ONLY valid JSON, no additional text.""")
                 budget_cap_hit = True
 
             if can_run_second_refill:
-                refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
-                    raw_documents=raw_documents,
-                    missing_slots=remaining_slots,
-                    topic=topic,
-                    difficulty=difficulty,
-                    language=language,
-                    total_target=num_questions,
-                    existing_questions=all_questions,
-                    question_signatures=question_signatures,
-                    option_signatures=option_signatures,
-                    generation_mode="global_refill_2",
-                    support_level_override="adjacent_in_scope",
-                    cost_protected=True,
-                    call_index=total_generation_calls + 1,
-                    planned_calls=planned_generation_calls,
-                )
+                refill2_llm_override: Optional[BaseLLM] = None
+                _refill2_key = None
+                if key_pool is not None:
+                    _refill2_key = key_pool.next_key()
+                    if _refill2_key is not None:
+                        refill2_llm_override = LLMFactory.create(
+                            groq_api_key=_refill2_key["plain_key"],
+                        )
+                try:
+                    refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
+                        raw_documents=raw_documents,
+                        missing_slots=remaining_slots,
+                        topic=topic,
+                        difficulty=difficulty,
+                        language=language,
+                        total_target=num_questions,
+                        existing_questions=all_questions,
+                        question_signatures=question_signatures,
+                        option_signatures=option_signatures,
+                        generation_mode="global_refill_2",
+                        support_level_override="adjacent_in_scope",
+                        cost_protected=True,
+                        call_index=total_generation_calls + 1,
+                        planned_calls=planned_generation_calls,
+                        llm_provider_override=refill2_llm_override,
+                        rejection_hint=self._build_rejection_hint(
+                            dict(aggregated_rejection_reasons), language
+                        ),
+                    )
+                    if key_pool is not None and _refill2_key is not None:
+                        key_pool.mark_success(_refill2_key["id"])
+                except Exception:
+                    if key_pool is not None and _refill2_key is not None:
+                        key_pool.mark_error(_refill2_key["id"])
+                    raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
                 total_retries += refill_stats["retry_count"]
                 total_generation_calls += refill_stats["call_count"]
                 estimated_completion_used += refill_stats["estimated_completion_tokens"]
+                aggregated_rejection_reasons.update(refill_stats.get("rejection_reasons", {}))
                 refill_count += 1
             elif remaining_slots:
                 budget_cap_hit = True
@@ -2364,14 +3642,31 @@ Return ONLY valid JSON, no additional text.""")
             question.pop("trap_type", None)
 
         group_labels = [group.get("label", group.get("group_id", "group")) for group in blueprint.get("topic_groups", [])]
+        structural_reason_keys = {
+            "all_of_above", "none_of_above", "combined_answer",
+            "suspicious_meta_option", "semantic_duplicate_option",
+            "invalid_mcq_structure",
+        }
+        rejected_by_structure_total = sum(
+            count for reason, count in aggregated_rejection_reasons.items()
+            if reason in structural_reason_keys
+        )
         logger.info(
-            "Quiz exact-count plan: requested=%s planned_slots=%s topic_groups=%s raw_pool=%s malformed=%s retries=%s planned_calls=%s actual_calls=%s refill_count=%s remaining_slots_after_refill_1=%s remaining_slots_after_refill_2=%s budget_cap_hit=%s remaining_slots=%s",
+            "Quiz exact-count plan: requested=%s planned_slots=%s topic_groups=%s raw_pool=%s "
+            "malformed=%s retries=%s refill_attempt_count=%s "
+            "rejected_by_structure=%s rejection_reasons=%s "
+            "planned_calls=%s actual_calls=%s refill_count=%s "
+            "remaining_slots_after_refill_1=%s remaining_slots_after_refill_2=%s "
+            "budget_cap_hit=%s remaining_slots=%s",
             num_questions,
             len(slots),
             group_labels,
             len(raw_documents),
             total_malformed,
             total_retries,
+            refill_count,
+            rejected_by_structure_total,
+            dict(aggregated_rejection_reasons),
             planned_generation_calls + (1 if blueprint_attempted else 0),
             total_generation_calls + (1 if blueprint_attempted else 0),
             refill_count,
@@ -2387,6 +3682,7 @@ Return ONLY valid JSON, no additional text.""")
             "stats": {
                 "malformed_count": total_malformed,
                 "retry_count": total_retries,
+                "refill_attempt_count": refill_count,
                 "planned_calls": planned_generation_calls + (1 if blueprint_attempted else 0),
                 "actual_calls": total_generation_calls + (1 if blueprint_attempted else 0),
                 "refill_count": refill_count,
@@ -2394,6 +3690,8 @@ Return ONLY valid JSON, no additional text.""")
                 "remaining_slots_after_refill_2": remaining_slots_after_refill_2,
                 "budget_cap_hit": budget_cap_hit,
                 "estimated_completion_used": estimated_completion_used,
+                "rejection_reasons": dict(aggregated_rejection_reasons),
+                "rejected_by_structure_count": rejected_by_structure_total,
             },
         }
 
@@ -2444,12 +3742,13 @@ Return ONLY valid JSON, no additional text.""")
                     final_budget=blueprint_context_budget,
                 )
                 blueprint_context = self._format_context_documents(blueprint_context_documents)
-                blueprint, blueprint_failure_reason = self._build_blueprint(
+                blueprint, blueprint_failure_reason = self._build_blueprint_chunked(
                     context=blueprint_context,
                     topic=topic,
                     difficulty=difficulty,
                     language=language,
                     num_questions=num_questions,
+                    topics=topics,
                 )
                 if blueprint_failure_reason == "length_limit":
                     blueprint_skip_reason = "blueprint skipped due to length limit"
@@ -2468,6 +3767,7 @@ Return ONLY valid JSON, no additional text.""")
                     blueprint={},
                     topic=topic,
                     num_questions=num_questions,
+                    difficulty=difficulty,
                 )
 
             logger.info(
@@ -2488,6 +3788,7 @@ Return ONLY valid JSON, no additional text.""")
                 num_questions=num_questions,
                 cost_protected=cost_protected,
                 blueprint_attempted=blueprint_attempted,
+                key_pool=self._key_pool,
             )
             formatted_quiz = plan_result["questions"][:num_questions]
             remaining_slots = plan_result["remaining_slots"]
@@ -2646,6 +3947,11 @@ Return ONLY valid JSON, no additional text.""")
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        # ---- V1 course-level domain knowledge extensions ----
+        roles_by_hash: Optional[Dict[str, str]] = None,
+        language_by_hash: Optional[Dict[str, str]] = None,
+        domain_quota_ratio: Optional[float] = None,
+        groq_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Retrieve and normalize quiz documents without invoking the LLM."""
         topic_list = [item for item in (topics or []) if str(item or "").strip()]
@@ -2660,6 +3966,45 @@ Return ONLY valid JSON, no additional text.""")
                 "sources": [],
             }
 
+        # ── V1: prepare extras for the role-aware retriever ─────────────
+        translation_cache: Dict[str, str] = {}
+        topic_language: Optional[str] = None
+        llm_for_translation = None
+        if language_by_hash:
+            try:
+                from .lang_utils import detect_topic_language
+                # Use the joined topics as a representative query for language
+                # detection (cheap, deterministic).
+                joined = " | ".join(topic_list)
+                topic_language = detect_topic_language(joined)
+            except Exception as exc:
+                logger.warning("topic language detection failed: %s", exc)
+                topic_language = None
+            # Build a translation LLM (lazy); reuse the generator's LLM unless
+            # a fresh key was supplied.
+            if topic_language and any(
+                lang and lang != "mixed" and lang != topic_language
+                for lang in language_by_hash.values()
+            ):
+                try:
+                    if groq_api_key:
+                        from .llm_providers import LLMFactory as _LLMFactory
+                        llm_for_translation = _LLMFactory.create(groq_api_key=groq_api_key)
+                    else:
+                        llm_for_translation = self.llm_provider
+                except Exception as exc:
+                    logger.warning("translation LLM init failed: %s", exc)
+                    llm_for_translation = None
+
+        retrieval_extras: Dict[str, Any] = {
+            "roles_by_hash": roles_by_hash,
+            "language_by_hash": language_by_hash,
+            "topic_language": topic_language,
+            "domain_quota_ratio": domain_quota_ratio,
+            "translation_cache": translation_cache,
+            "llm_for_translation": llm_for_translation,
+        }
+
         if len(topic_list) == 1:
             retrieval_topic = topic_list[0]
             raw_budget = self._raw_pool_budget(num_questions)
@@ -2669,6 +4014,7 @@ Return ONLY valid JSON, no additional text.""")
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
                 hash_to_collection_name=hash_to_collection_name,
+                **retrieval_extras,
             )
             raw_documents = self._annotate_documents(raw_documents, retrieval_topic=retrieval_topic)
             if not raw_documents:
@@ -2718,6 +4064,7 @@ Return ONLY valid JSON, no additional text.""")
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
                 hash_to_collection_name=hash_to_collection_name,
+                **retrieval_extras,
             )
             topic_documents = self._annotate_documents(
                 topic_documents,
@@ -2836,6 +4183,17 @@ Return ONLY valid JSON, no additional text.""")
                 correct_index = self._resolve_correct_index(q, option_values)
                 if correct_index is None:
                     logger.warning("Question %s: could not resolve correct answer", i)
+                    continue
+
+                structural_ok, structural_reason = validate_mcq_structure(
+                    q["question"], option_values, correct_index
+                )
+                if not structural_ok:
+                    logger.warning(
+                        "Question %s rejected by MCQ validator: reason=%s",
+                        i,
+                        structural_reason,
+                    )
                     continue
 
                 options_dict, correct = self._stable_shuffle_options(

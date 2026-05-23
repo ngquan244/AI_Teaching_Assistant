@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { canvasApi } from '../api/canvas';
 import { setSelectedCourse } from '../utils/canvasStorage';
 import type { CanvasCourse } from '../types/canvas';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface CanvasCourseModalProps {
   isOpen: boolean;
@@ -16,6 +17,7 @@ const CanvasCourseModal: React.FC<CanvasCourseModalProps> = ({
   onClose,
   onCourseSelected,
 }) => {
+  useEscapeKey(onClose, isOpen);
   const { isAuthenticated, canvasTokens } = useAuth();
   const [courses, setCourses] = useState<CanvasCourse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -81,7 +83,7 @@ const CanvasCourseModal: React.FC<CanvasCourseModalProps> = ({
             <BookOpen size={24} />
             Select Canvas Course
           </h2>
-          <button className="btn-icon" onClick={onClose}>
+          <button className="btn-icon" onClick={onClose} aria-label="Đóng">
             <X size={20} />
           </button>
         </div>

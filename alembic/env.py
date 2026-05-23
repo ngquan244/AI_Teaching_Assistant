@@ -16,6 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.database.base import Base
 from backend.database.models import User, CanvasToken, Job, JobEvent  # noqa: F401 - Import for metadata
 from backend.database.models import RAGCollection, RAGDocumentTopic  # noqa: F401
+from backend.database.models import GroqApiKey  # noqa: F401
+from backend.database.models import (  # noqa: F401
+    CanvasStudent,
+    CanvasStudentEnrollment,
+    StudentImportBatch,
+    StudentImportRow,
+)
 from backend.core.config import settings
 
 # Alembic Config object

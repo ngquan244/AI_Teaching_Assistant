@@ -34,6 +34,7 @@ class TopicStorage:
         self.storage_dir = Path(storage_dir or rag_config.PERSIST_DIRECTORY)
         self.storage_file = self.storage_dir / "document_topics.json"
         self._topics: Dict[str, Dict[str, Any]] = {}
+        self._last_mtime: float = 0.0
         self._lock = threading.RLock()
         
         # Ensure directory exists
@@ -41,6 +42,20 @@ class TopicStorage:
         
         # Load existing topics
         self._load()
+
+    def _refresh_if_stale(self) -> None:
+        """Reload from disk if the JSON file changed in another process.
+
+        The Celery worker writes ``document_topics.json`` from a separate
+        process, so the FastAPI process keeps a stale in-memory copy until
+        restart. Cheap mtime check avoids re-parsing JSON on every call.
+        """
+        try:
+            disk_mtime = self.storage_file.stat().st_mtime
+        except (OSError, FileNotFoundError):
+            return
+        if disk_mtime != self._last_mtime:
+            self._load()
     
     @staticmethod
     def _make_key(file_hash: str, user_id: Optional[str] = None) -> str:
@@ -54,11 +69,16 @@ class TopicStorage:
         with self._lock:
             try:
                 self._topics = read_json_file(self.storage_file, dict)
+                try:
+                    self._last_mtime = self.storage_file.stat().st_mtime
+                except (OSError, FileNotFoundError):
+                    self._last_mtime = 0.0
                 if self._topics:
                     logger.info(f"Loaded topics for {len(self._topics)} documents")
             except Exception as e:
                 logger.warning(f"Could not load topics: {e}")
                 self._topics = {}
+                self._last_mtime = 0.0
     
     def _save(self):
         """Save topics to disk."""
@@ -68,6 +88,10 @@ class TopicStorage:
                     state.clear()
                     state.update(self._topics)
                     self._topics = dict(state)
+                try:
+                    self._last_mtime = self.storage_file.stat().st_mtime
+                except (OSError, FileNotFoundError):
+                    self._last_mtime = 0.0
                 logger.info(f"Saved topics for {len(self._topics)} documents")
             except Exception as e:
                 logger.error(f"Could not save topics: {e}")
@@ -112,6 +136,7 @@ class TopicStorage:
         """
         key = self._make_key(file_hash, user_id)
         with self._lock:
+            self._refresh_if_stale()
             if key in self._topics:
                 return self._topics[key].get("topics", [])
         return None
@@ -129,17 +154,20 @@ class TopicStorage:
         Returns:
             List of topics or None if not found
         """
-        for key, data in self._topics.items():
-            if data.get("filename") == filename:
-                entry_user = data.get("user_id")
-                if user_id is None or entry_user == user_id:
-                    return data.get("topics", [])
+        with self._lock:
+            self._refresh_if_stale()
+            for key, data in self._topics.items():
+                if data.get("filename") == filename:
+                    entry_user = data.get("user_id")
+                    if user_id is None or entry_user == user_id:
+                        return data.get("topics", [])
         return None
     
     def has_topics(self, file_hash: str, user_id: Optional[str] = None) -> bool:
         """Check if topics exist for a document."""
         key = self._make_key(file_hash, user_id)
         with self._lock:
+            self._refresh_if_stale()
             return key in self._topics
     
     def get_all_documents(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -151,6 +179,7 @@ class TopicStorage:
         """
         documents = []
         with self._lock:
+            self._refresh_if_stale()
             for key, data in self._topics.items():
                 entry_user = data.get("user_id")
                 if user_id is not None and entry_user != user_id:

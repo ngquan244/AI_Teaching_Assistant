@@ -1,7 +1,10 @@
 """
 Document Ingestion Module
 =========================
-Load PDF documents using PyPDFLoader.
+Load PDF documents using PyMuPDF (fitz) — a C-binding parser that is
+~10× faster than PyPDFLoader for typical text PDFs. Falls back to the
+pure-Python ``PyPDFLoader`` if PyMuPDF is unavailable or fails on a
+specific file (e.g. corrupt / unusual encoding).
 """
 
 import os
@@ -14,6 +17,18 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
+
+# Probe PyMuPDF once at import time so the hot path stays branch-free.
+try:
+    import pymupdf as _fitz  # type: ignore
+    _PYMUPDF_AVAILABLE = True
+except Exception as _pymupdf_import_err:  # pragma: no cover - depends on env
+    _fitz = None  # type: ignore[assignment]
+    _PYMUPDF_AVAILABLE = False
+    logger.warning(
+        "PyMuPDF not available, falling back to PyPDFLoader: %s",
+        _pymupdf_import_err,
+    )
 
 
 def compute_file_hash(file_path: str) -> str:
@@ -55,6 +70,56 @@ def get_file_metadata(file_path: str) -> Dict[str, Any]:
     }
 
 
+def _load_pdf_with_pymupdf(path: Path) -> List[Document]:
+    """Extract one ``Document`` per page using PyMuPDF.
+
+    Page metadata mirrors what ``PyPDFLoader`` produces (``source`` + 0-indexed
+    ``page``) so downstream code (chunker, retriever, citation rendering) needs
+    no changes. Empty pages are kept as zero-length docs to preserve page
+    indexing — the chunker filters them naturally.
+    """
+    if _fitz is None:  # pragma: no cover - guarded by caller
+        raise RuntimeError("PyMuPDF is not available")
+    docs: List[Document] = []
+    src = str(path)
+    with _fitz.open(src) as pdf:
+        for page_idx, page in enumerate(pdf):
+            try:
+                text = page.get_text("text") or ""
+            except Exception as page_err:
+                logger.warning(
+                    "PyMuPDF: page %d of %s failed text extract: %s",
+                    page_idx, path.name, page_err,
+                )
+                text = ""
+            docs.append(
+                Document(
+                    page_content=text,
+                    metadata={"source": src, "page": page_idx},
+                )
+            )
+    return docs
+
+
+def _load_pdf_pages(path: Path) -> List[Document]:
+    """Load PDF pages, preferring PyMuPDF and falling back to PyPDFLoader.
+
+    The fallback only triggers when PyMuPDF raises (corrupt file, unsupported
+    feature, etc.) — not when it merely returns no text, since a legitimately
+    image-only PDF would silently regress to the slower path otherwise.
+    """
+    if _PYMUPDF_AVAILABLE:
+        try:
+            return _load_pdf_with_pymupdf(path)
+        except Exception as exc:
+            logger.warning(
+                "PyMuPDF failed for %s, falling back to PyPDFLoader: %s",
+                path.name, exc,
+            )
+    loader = PyPDFLoader(str(path))
+    return loader.load()
+
+
 def load_pdf_documents(
     file_path: str,
     add_file_metadata: bool = True
@@ -88,11 +153,9 @@ def load_pdf_documents(
         raise ValueError(f"File is not a PDF: {file_path}")
     
     logger.debug(f"Loading PDF: {file_path}")
-    
-    # Load with PyPDFLoader
-    loader = PyPDFLoader(str(file_path))
-    documents = loader.load()
-    
+
+    documents = _load_pdf_pages(path)
+
     logger.debug(f"Loaded {len(documents)} pages from PDF")
     
     # Add extended metadata for deduplication

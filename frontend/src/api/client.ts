@@ -68,6 +68,29 @@ export function removeAllTokens(): void {
 }
 
 // =============================================================================
+// Session expiry signal
+// =============================================================================
+
+/**
+ * Custom event dispatched when the refresh token also fails — i.e. the user's
+ * session is genuinely over and they need to re-login. Components listen for
+ * this to show a friendly toast / banner before navigation, instead of being
+ * yanked to /login mid-action.
+ */
+export const SESSION_EXPIRED_EVENT = 'auth:session-expired';
+
+/** Lightweight retry policy for transient network / 5xx errors on safe methods. */
+const TRANSIENT_RETRY_DELAY_MS = 800;
+const SAFE_METHODS = new Set(['get', 'head', 'options']);
+
+function isTransientNetworkError(error: AxiosError): boolean {
+  // No response = network drop, DNS issue, CORS preflight fail, etc.
+  if (!error.response) return true;
+  const status = error.response.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
+// =============================================================================
 // Token Refresh Logic
 // =============================================================================
 
@@ -136,16 +159,36 @@ apiClient.interceptors.request.use(
   }
 );
 
-// Response interceptor — auto-refresh on 401
+// Response interceptor — auto-refresh on 401, retry once on transient network errors
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as
+      | (InternalAxiosRequestConfig & { _retry?: boolean; _transientRetry?: boolean })
+      | undefined;
 
     // Only attempt refresh on 401 and if we haven't already retried this request
     const is401 = error.response?.status === 401;
     const alreadyRetried = originalRequest?._retry;
     const isRefreshCall = originalRequest?.url?.includes('/api/auth/refresh');
+
+    // -----------------------------------------------------------------
+    // Transient network / gateway error → one silent retry for safe methods.
+    // This avoids surfacing scary "Network error" toasts to the user when
+    // the backend is just briefly unreachable (worker restart, brief 502
+    // from the proxy, flaky Wi-Fi, ...).
+    // -----------------------------------------------------------------
+    if (
+      originalRequest &&
+      !is401 &&
+      !originalRequest._transientRetry &&
+      isTransientNetworkError(error) &&
+      SAFE_METHODS.has((originalRequest.method || 'get').toLowerCase())
+    ) {
+      originalRequest._transientRetry = true;
+      await new Promise((r) => setTimeout(r, TRANSIENT_RETRY_DELAY_MS));
+      return apiClient(originalRequest);
+    }
 
     if (!is401 || alreadyRetried || isRefreshCall || !originalRequest) {
       return Promise.reject(error);
@@ -174,13 +217,14 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest);
       }
 
-      // Refresh failed — reject everything and redirect to login
+      // Refresh failed — notify the app so it can show a friendly toast / banner
+      // BEFORE redirecting, instead of yanking the user to /login mid-action.
       processQueue(error);
-      window.location.href = '/login';
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
       return Promise.reject(error);
     } catch (refreshError) {
       processQueue(refreshError);
-      window.location.href = '/login';
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
       return Promise.reject(refreshError);
     } finally {
       isRefreshing = false;
