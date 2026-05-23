@@ -11,6 +11,7 @@ import logging
 import math
 import random
 import re
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from xml.dom import minidom
@@ -3075,6 +3076,8 @@ Return ONLY valid JSON, no additional text.""")
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
         rejection_hint: Optional[str] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         prompt = self.prompt_vi if language == "vi" else self.prompt_en
         context = self._format_context_documents(context_documents)
@@ -3099,9 +3102,16 @@ Return ONLY valid JSON, no additional text.""")
             generation_mode=generation_mode,
             cost_protected=cost_protected,
         )
-        provider = llm_provider_override or self._llm_provider
-        llm_json = provider.get_llm(json_mode=True, max_tokens=max_tokens)
-        chain = prompt | llm_json
+
+        # Phase 3: retry-on-other-key loop. Each iteration uses one provider
+        # bound to one Groq key. On 429 we mark the key, ask KeyPool for a
+        # fresh one, and re-issue chain.invoke. Bounded by max_attempts.
+        # Non-429 errors propagate unchanged (no behaviour change for parse
+        # failures, auth errors, network 5xx, etc.).
+        active_provider = llm_provider_override or self._llm_provider
+        active_key_info = current_key_info
+        pool_size = key_pool.size if key_pool is not None else 0
+        max_attempts = max(1, min(3, pool_size)) if key_pool is not None else 1
 
         logger.info(
             "Quiz generation pass: mode=%s call=%s/%s slots=%s context_docs=%s context_chars=%s existing_questions=%s existing_chars=%s max_tokens=%s",
@@ -3117,17 +3127,111 @@ Return ONLY valid JSON, no additional text.""")
         )
 
         policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
-        response = chain.invoke({
-            "context": context,
-            "topic": topic,
-            "difficulty": difficulty,
-            "difficulty_policy": policy["generation_instruction"],
-            "total_target": total_target,
-            "batch_target": batch_target,
-            "slot_section": slot_section,
-            "existing_questions": existing_questions_text,
-            "generation_mode": generation_mode,
-        })
+        attempt = 0
+        response = None
+        while True:
+            attempt += 1
+            llm_json = active_provider.get_llm(json_mode=True, max_tokens=max_tokens)
+            chain = prompt | llm_json
+            _purpose = generation_mode
+            _key_id = getattr(active_provider, "key_id", None) or "-"
+            _masked_key = getattr(active_provider, "masked_key", None) or "-"
+
+            logger.info(
+                "LLM_REQUEST_START purpose=%s key_id=%s masked_key=%s max_tokens=%s attempt=%d/%d",
+                _purpose, _key_id, _masked_key, max_tokens, attempt, max_attempts,
+            )
+            _t0 = time.monotonic()
+            try:
+                response = chain.invoke({
+                    "context": context,
+                    "topic": topic,
+                    "difficulty": difficulty,
+                    "difficulty_policy": policy["generation_instruction"],
+                    "total_target": total_target,
+                    "batch_target": batch_target,
+                    "slot_section": slot_section,
+                    "existing_questions": existing_questions_text,
+                    "generation_mode": generation_mode,
+                })
+            except Exception as _invoke_err:
+                _dur_ms = int((time.monotonic() - _t0) * 1000)
+                _err_str = str(_invoke_err).lower()
+                _is_429 = (
+                    "429" in _err_str
+                    or "rate limit" in _err_str
+                    or "rate_limit" in _err_str
+                    or "too many requests" in _err_str
+                )
+                if _is_429:
+                    logger.warning(
+                        "LLM_REQUEST_429 purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d error=%s",
+                        _purpose, _key_id, _masked_key, _dur_ms, attempt, max_attempts, _invoke_err,
+                    )
+                else:
+                    logger.error(
+                        "LLM_REQUEST_ERROR purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d error=%s",
+                        _purpose, _key_id, _masked_key, _dur_ms, attempt, max_attempts, _invoke_err,
+                    )
+
+                # Only attempt key-switching on 429 with a usable KeyPool.
+                if not _is_429 or key_pool is None or active_key_info is None:
+                    # Mark error on the active key so flush_to_db sees it;
+                    # do not switch.
+                    if key_pool is not None and active_key_info is not None:
+                        try:
+                            key_pool.mark_error(active_key_info["id"])
+                        except Exception:
+                            pass
+                    raise
+
+                # 429 path: mark current key as errored, then try to swap.
+                try:
+                    key_pool.mark_error(active_key_info["id"])
+                except Exception:
+                    pass
+                if attempt >= max_attempts:
+                    logger.error(
+                        "ALL_KEYS_EXHAUSTED purpose=%s attempts=%d/%d last_key_id=%s",
+                        _purpose, attempt, max_attempts, _key_id,
+                    )
+                    raise
+                next_info = key_pool.next_key()
+                if next_info is None:
+                    logger.error(
+                        "ALL_KEYS_EXHAUSTED purpose=%s attempts=%d/%d reason=no_more_keys",
+                        _purpose, attempt, max_attempts,
+                    )
+                    raise
+                logger.warning(
+                    "KEY_SWITCH reason=429 purpose=%s from_key_id=%s to_key_id=%s to_masked=%s attempt=%d/%d",
+                    _purpose,
+                    _key_id,
+                    str(next_info["id"]),
+                    next_info.get("masked_key", "?"),
+                    attempt,
+                    max_attempts,
+                )
+                active_key_info = next_info
+                active_provider = LLMFactory.create(
+                    groq_api_key=next_info["plain_key"],
+                    key_id=str(next_info["id"]),
+                    masked_key=next_info.get("masked_key"),
+                )
+                continue
+
+            # Success path
+            logger.info(
+                "LLM_REQUEST_SUCCESS purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d",
+                _purpose, _key_id, _masked_key, int((time.monotonic() - _t0) * 1000),
+                attempt, max_attempts,
+            )
+            if key_pool is not None and active_key_info is not None:
+                try:
+                    key_pool.mark_success(active_key_info["id"])
+                except Exception:
+                    pass
+            break
 
         content = response.content if hasattr(response, "content") else str(response)
         quiz_data = self._parse_quiz_response(content)
@@ -3228,6 +3332,8 @@ Return ONLY valid JSON, no additional text.""")
         call_index_start: int = 1,
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         batch_results: List[Dict[str, Any]] = []
         malformed_count = 0
@@ -3257,6 +3363,8 @@ Return ONLY valid JSON, no additional text.""")
             call_index=call_index_start,
             planned_calls=planned_calls,
             llm_provider_override=llm_provider_override,
+            key_pool=key_pool,
+            current_key_info=current_key_info,
         )
         call_count += 1
         estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -3303,6 +3411,8 @@ Return ONLY valid JSON, no additional text.""")
                 planned_calls=planned_calls,
                 llm_provider_override=llm_provider_override,
                 rejection_hint=retry_hint,
+                key_pool=key_pool,
+                current_key_info=current_key_info,
             )
             call_count += 1
             estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -3351,6 +3461,8 @@ Return ONLY valid JSON, no additional text.""")
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
         rejection_hint: Optional[str] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         if not missing_slots:
             return [], [], {
@@ -3390,6 +3502,8 @@ Return ONLY valid JSON, no additional text.""")
             planned_calls=planned_calls,
             llm_provider_override=llm_provider_override,
             rejection_hint=rejection_hint,
+            key_pool=key_pool,
+            current_key_info=current_key_info,
         )
         accepted_items, still_missing, normalized_failures, refill_rejections = (
             self._normalize_generated_batch(
@@ -3423,7 +3537,7 @@ Return ONLY valid JSON, no additional text.""")
         num_questions: int,
         cost_protected: bool = False,
         blueprint_attempted: bool = False,
-        key_pool: Optional["KeyPool"] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         slots = blueprint.get("slots", [])[:num_questions]
 
@@ -3459,6 +3573,8 @@ Return ONLY valid JSON, no additional text.""")
                 if _current_key_info is not None:
                     batch_llm_override = LLMFactory.create(
                         groq_api_key=_current_key_info["plain_key"],
+                        key_id=str(_current_key_info["id"]),
+                        masked_key=_current_key_info.get("masked_key"),
                     )
 
             try:
@@ -3477,12 +3593,13 @@ Return ONLY valid JSON, no additional text.""")
                     call_index_start=total_generation_calls + 1,
                     planned_calls=planned_generation_calls,
                     llm_provider_override=batch_llm_override,
+                    key_pool=key_pool,
+                    current_key_info=_current_key_info,
                 )
-                if key_pool is not None and _current_key_info is not None:
-                    key_pool.mark_success(_current_key_info["id"])
             except Exception:
-                if key_pool is not None and _current_key_info is not None:
-                    key_pool.mark_error(_current_key_info["id"])
+                # Phase 3: _invoke_generation_pass already marked the key on
+                # 429/other errors; outer mark_error removed to avoid double
+                # counting once a key swap happens inside the inner loop.
                 raise
             total_malformed += batch_stats["malformed_count"]
             total_retries += batch_stats["retry_count"]
@@ -3516,6 +3633,8 @@ Return ONLY valid JSON, no additional text.""")
                     if _refill_key is not None:
                         refill_llm_override = LLMFactory.create(
                             groq_api_key=_refill_key["plain_key"],
+                            key_id=str(_refill_key["id"]),
+                            masked_key=_refill_key.get("masked_key"),
                         )
                 try:
                     refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
@@ -3537,12 +3656,11 @@ Return ONLY valid JSON, no additional text.""")
                         rejection_hint=self._build_rejection_hint(
                             dict(aggregated_rejection_reasons), language
                         ),
+                        key_pool=key_pool,
+                        current_key_info=_refill_key,
                     )
-                    if key_pool is not None and _refill_key is not None:
-                        key_pool.mark_success(_refill_key["id"])
                 except Exception:
-                    if key_pool is not None and _refill_key is not None:
-                        key_pool.mark_error(_refill_key["id"])
+                    # Phase 3: inner loop already handled mark_error/key swap.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
@@ -3584,6 +3702,8 @@ Return ONLY valid JSON, no additional text.""")
                     if _refill2_key is not None:
                         refill2_llm_override = LLMFactory.create(
                             groq_api_key=_refill2_key["plain_key"],
+                            key_id=str(_refill2_key["id"]),
+                            masked_key=_refill2_key.get("masked_key"),
                         )
                 try:
                     refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
@@ -3605,12 +3725,11 @@ Return ONLY valid JSON, no additional text.""")
                         rejection_hint=self._build_rejection_hint(
                             dict(aggregated_rejection_reasons), language
                         ),
+                        key_pool=key_pool,
+                        current_key_info=_refill2_key,
                     )
-                    if key_pool is not None and _refill2_key is not None:
-                        key_pool.mark_success(_refill2_key["id"])
                 except Exception:
-                    if key_pool is not None and _refill2_key is not None:
-                        key_pool.mark_error(_refill2_key["id"])
+                    # Phase 3: inner loop already handled mark_error/key swap.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
