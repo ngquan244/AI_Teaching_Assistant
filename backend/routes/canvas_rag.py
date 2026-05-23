@@ -296,16 +296,20 @@ async def download_canvas_file(
     return result
 
 
-@router.post("/index")
+@router.post("/index", deprecated=True)
 async def index_canvas_file(
     request: CanvasIndexRequest,
     http_request: Request,
     user: CurrentUser,
 ):
     """
-    Index a downloaded Canvas file.
-    Stores in separate ChromaDB collections from uploaded files.
+    Index a downloaded Canvas file (DEPRECATED — synchronous).
+
+    Migrate to ``POST /api/canvas/async/index`` which returns a job_id
+    you can poll. The async route also dedupes concurrent re-indexes via
+    Job.idempotency_key.
     """
+    logger.warning("DEPRECATED sync endpoint /index called - migrate to /async/index")
     logger.info("Indexing Canvas file: %s, course_id: %s", request.filename, request.course_id)
 
     await _check_canvas_permission(
@@ -759,6 +763,11 @@ async def async_index_canvas_file(
 ):
     """
     Index a downloaded Canvas file asynchronously (non-blocking).
+
+    Idempotency: concurrent re-submits for the same
+    ``(user, filename, course_id)`` while a job is still QUEUED / STARTED /
+    PROGRESS reuse the existing Job row instead of enqueueing a duplicate
+    task. Force-reindex requests bypass the dedup window.
     """
     await _check_canvas_permission(
         http_request,
@@ -775,33 +784,51 @@ async def async_index_canvas_file(
 
     try:
         job_service = JobService(db)
-        job = await job_service.create_job(
+        payload = {
+            "filename": request.filename,
+            "course_id": request.course_id,
+            "file_path": str(file_path),
+        }
+
+        # Per-(user, file, course) idempotency. ``force_reindex`` requests must
+        # not be deduped against a prior "normal" indexing job, so we mix it
+        # into the key.
+        course_key = request.course_id if request.course_id is not None else 0
+        force_suffix = ":force" if request.force_reindex else ""
+        idem_key = f"canvas_index:{user.id}:{request.filename}:{course_key}{force_suffix}"
+
+        job, created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.CANVAS_INDEX_FILE,
-            payload={
-                "filename": request.filename,
-                "course_id": request.course_id,
-                "file_path": str(file_path),
-            },
+            idempotency_key=idem_key,
+            payload=payload,
         )
         await db.commit()
 
-        result = await apply_async_nonblocking(
-            tasks.rag_tasks.canvas_index_file,
-            args=[str(job.id), request.filename],
-            kwargs={
-                "user_id": str(user.id),
-                "course_id": request.course_id,
-                "file_path": str(file_path),
-                "force_reindex": request.force_reindex,
-            },
-        )
-        await job_service.set_celery_task_id(job.id, result.id)
+        if created:
+            result = await apply_async_nonblocking(
+                tasks.rag_tasks.canvas_index_file,
+                args=[str(job.id), request.filename],
+                kwargs={
+                    "user_id": str(user.id),
+                    "course_id": request.course_id,
+                    "file_path": str(file_path),
+                    "force_reindex": request.force_reindex,
+                },
+            )
+            await job_service.set_celery_task_id(job.id, result.id)
+            message = f"Indexing queued for {request.filename}"
+        else:
+            logger.info(
+                "Reusing in-flight canvas_index_file job %s for idempotency_key=%s…",
+                job.id, idem_key[:48],
+            )
+            message = "Tài liệu đang được index, đang theo dõi job hiện có."
 
         return AsyncJobResponse(
             success=True,
             job_id=str(job.id),
-            message=f"Indexing queued for {request.filename}",
+            message=message,
             status_url=f"/api/jobs/{job.id}",
             stream_url=f"/api/jobs/{job.id}/stream",
         )

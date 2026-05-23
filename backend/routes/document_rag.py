@@ -1198,7 +1198,7 @@ async def async_build_index(
         job_service = JobService(db)
         
         # Create job with idempotency
-        job, _created = await job_service.get_or_create_job(
+        job, created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.BUILD_INDEX,
             payload={"filename": filename, "file_path": str(file_path)},
@@ -1208,20 +1208,27 @@ async def async_build_index(
         # Commit so the task can see the Job row (critical for eager mode)
         await db.commit()
         
-        # Queue task
-        result = await apply_async_nonblocking(
-            tasks.rag_tasks.build_index,
-            args=[str(job.id), str(file_path)],
-            kwargs={"user_id": str(user.id)},
-        )
-        
-        # Update with Celery task ID
-        await job_service.set_celery_task_id(job.id, result.id)
+        if created:
+            # Queue task
+            result = await apply_async_nonblocking(
+                tasks.rag_tasks.build_index,
+                args=[str(job.id), str(file_path)],
+                kwargs={"user_id": str(user.id)},
+            )
+            # Update with Celery task ID
+            await job_service.set_celery_task_id(job.id, result.id)
+            message = f"Indexing job queued for {filename}"
+        else:
+            logger.info(
+                "Reusing in-flight build_index job %s for %s",
+                job.id, filename,
+            )
+            message = "Tài liệu đang được index, đang theo dõi job hiện có."
         
         return AsyncJobResponse(
             success=True,
             job_id=str(job.id),
-            message=f"Indexing job queued for {filename}",
+            message=message,
             status_url=f"/api/jobs/{job.id}",
             stream_url=f"/api/jobs/{job.id}/stream",
         )
@@ -1256,29 +1263,38 @@ async def async_upload_and_index(
         
         job_service = JobService(db)
         
-        # Create job
-        job = await job_service.create_job(
+        # Create job with idempotency (dedupes accidental double-upload while
+        # an ingest is still QUEUED / STARTED / PROGRESS).
+        job, created = await job_service.get_or_create_job(
             user_id=user.id,
             job_type=JobType.INGEST_DOCUMENT,
             payload={"filename": file.filename, "file_path": str(file_path)},
+            idempotency_key=f"ingest_doc:{user.id}:{file.filename}",
         )
         
         # Commit so the task can see the Job row (critical for eager mode)
         await db.commit()
         
-        # Queue task
-        result = await apply_async_nonblocking(
-            tasks.rag_tasks.ingest_document,
-            args=[str(job.id), str(file_path)],
-            kwargs={"user_id": str(user.id)},
-        )
-        
-        await job_service.set_celery_task_id(job.id, result.id)
+        if created:
+            # Queue task
+            result = await apply_async_nonblocking(
+                tasks.rag_tasks.ingest_document,
+                args=[str(job.id), str(file_path)],
+                kwargs={"user_id": str(user.id)},
+            )
+            await job_service.set_celery_task_id(job.id, result.id)
+            message = f"Upload complete, indexing queued for {file.filename}"
+        else:
+            logger.info(
+                "Reusing in-flight ingest_document job %s for %s",
+                job.id, file.filename,
+            )
+            message = "Tài liệu đang được index, đang theo dõi job hiện có."
         
         return AsyncJobResponse(
             success=True,
             job_id=str(job.id),
-            message=f"Upload complete, indexing queued for {file.filename}",
+            message=message,
             status_url=f"/api/jobs/{job.id}",
             stream_url=f"/api/jobs/{job.id}/stream",
         )

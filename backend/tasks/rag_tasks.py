@@ -217,7 +217,10 @@ def extract_topics_payload(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.ingest_document",
-    queue="rag",
+    # Indexing is memory-heavy (PDF + embeddings). Routed to the dedicated
+    # ``rag_index`` queue (concurrency=1) so simultaneous index jobs do NOT
+    # double-load the embedding model / chunks in RAM.
+    queue="rag_index",
     max_retries=3,
     soft_time_limit=300,
     time_limit=600,
@@ -303,7 +306,8 @@ def ingest_document(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.build_index",
-    queue="rag",
+    # See note on ingest_document: routed to ``rag_index`` to bound RAM.
+    queue="rag_index",
     max_retries=3,
 )
 def build_index(
@@ -558,7 +562,8 @@ def extract_topics_for_document(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.canvas_index_file",
-    queue="rag",
+    # See note on ingest_document: routed to ``rag_index`` to bound RAM.
+    queue="rag_index",
     max_retries=3,
 )
 def canvas_index_file(
@@ -635,9 +640,20 @@ def canvas_index_file(
             job_service.complete_job(job_uuid, result)
         else:
             job_service.fail_job(job_uuid, result.get("error", "Index failed"))
-        
-        return result
-        
+
+        # Drop chunk / embedding references and force a GC pass before the
+        # next task is pulled from the queue. PDF text + embedding tensors
+        # can hold hundreds of MB; without this the worker process keeps
+        # them alive until the generational collector decides to run.
+        try:
+            import gc
+            return result
+        finally:
+            try:
+                gc.collect()
+            except Exception:
+                pass
+
     except Exception as e:
         logger.exception(f"Error in canvas_index_file task: {e}")
         job_service.fail_job(job_uuid, str(e))

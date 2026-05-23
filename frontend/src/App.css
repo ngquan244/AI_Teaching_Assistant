@@ -4335,6 +4335,10 @@ body {
   color: #a78bfa;
   background: rgba(167, 139, 250, 0.12);
 }
+.file-status.index-queued { 
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.10);
+}
 .file-status.indexed { 
   color: #38bdf8;
   background: rgba(56, 189, 248, 0.12);
@@ -4351,6 +4355,7 @@ body {
 .status-icon.duplicate { color: #fbbf24; }
 .status-icon.failed { color: #f87171; }
 .status-icon.indexing { color: #a78bfa; }
+.status-icon.index-queued { color: #94a3b8; }
 .status-icon.indexed { color: #38bdf8; }
 .status-icon.extracting { color: #22d3ee; }
 
