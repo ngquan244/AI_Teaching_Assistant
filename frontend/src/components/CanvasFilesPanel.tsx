@@ -243,6 +243,11 @@ const CanvasFilesPanel: React.FC = () => {
 
   // V2 — course-shared domain knowledge
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
+  // Ref mirrors publicConfig state so that inline async functions (loadCourseDocuments,
+  // handleToggleDomain) always read the *current* value regardless of which render
+  // captured them via closure. Without this, the [selectedCourse] effect captures
+  // loadCourseDocuments when publicConfig is still null and the check never passes.
+  const publicConfigRef = useRef<PublicConfig | null>(null);
   const [domainTogglePending, setDomainTogglePending] = useState<Set<string>>(new Set());
   const [domainToggleError, setDomainToggleError] = useState<string | null>(null);
 
@@ -250,7 +255,10 @@ const CanvasFilesPanel: React.FC = () => {
     let alive = true;
     getPublicConfig()
       .then((cfg) => {
-        if (alive) setPublicConfig(cfg);
+        if (alive) {
+          publicConfigRef.current = cfg;
+          setPublicConfig(cfg);
+        }
       })
       .catch((err) => {
         console.warn('Failed to load public config:', err);
@@ -260,14 +268,74 @@ const CanvasFilesPanel: React.FC = () => {
     };
   }, []);
 
+  // ─────────────────────────────────────────────────────────────────────
+  // DOMAIN-DOC ENRICHMENT TRIGGER
+  //
+  // The /indexed endpoint does NOT carry is_course_domain. We must enrich
+  // by calling /courses/{id}/documents AFTER both:
+  //   (a) publicConfig.enable_course_domain_docs is true
+  //   (b) indexedDocs has been populated by fetchRemoteFiles/loadIndexedDocs
+  //
+  // Previous approaches keyed only off [publicConfig] which would fire while
+  // indexedDocs was still []. That left a race where the merge ran against
+  // an empty array and then fetchRemoteFiles later overwrote with un-enriched
+  // documents.
+  //
+  // This effect uses a fingerprint of the current docs' file_hashes so it:
+  //   - fires after fetchRemoteFiles populates indexedDocs (hashes change)
+  //   - is idempotent: the enrichment itself does not change hashes, so the
+  //     effect won't re-fire infinitely.
+  // ─────────────────────────────────────────────────────────────────────
+  const lastEnrichedRef = useRef<string>('');
+  useEffect(() => {
+    if (!publicConfig?.enable_course_domain_docs || !selectedCourse) return;
+    const hashes = [
+      ...indexedDocs.map((d) => d.file_hash),
+      ...allIndexedDocs.map((d) => d.file_hash),
+    ];
+    if (hashes.length === 0) return;
+    const fingerprint = `${selectedCourse.id}|${hashes.sort().join(',')}`;
+    if (lastEnrichedRef.current === fingerprint) return;
+    lastEnrichedRef.current = fingerprint;
+    console.log('[domain-audit] enrichment trigger', {
+      courseId: selectedCourse.id,
+      indexedDocsCount: indexedDocs.length,
+      allIndexedDocsCount: allIndexedDocs.length,
+      publicConfigReady: !!publicConfigRef.current?.enable_course_domain_docs,
+    });
+    void loadCourseDocuments(selectedCourse.id);
+    // loadCourseDocuments captured fresh on each render but its only state
+    // dependency is publicConfigRef (a ref). selectedCourse is read directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicConfig, selectedCourse, indexedDocs, allIndexedDocs]);
+
   /** V2: load per-course documents (with language + is_course_domain) and
    *  merge into `indexedDocs` / `allIndexedDocs`. Called whenever the
    *  course view refreshes if the feature is enabled. */
   const loadCourseDocuments = async (courseId?: number) => {
-    if (!courseId || !publicConfig?.enable_course_domain_docs) return;
+    if (!courseId || !publicConfigRef.current?.enable_course_domain_docs) {
+      console.log('[domain-audit] loadCourseDocuments skipped', {
+        courseId,
+        publicConfigReady: !!publicConfigRef.current?.enable_course_domain_docs,
+      });
+      return;
+    }
     try {
       const res = await listCourseDocuments(courseId);
+      console.log('[domain-audit] /courses/{id}/documents response', {
+        courseId,
+        success: res.success,
+        count: res.documents?.length ?? 0,
+        sample: res.documents?.slice(0, 3).map((d) => ({
+          file_hash: d.file_hash,
+          filename: d.filename,
+          is_course_domain: d.is_course_domain,
+          course_id: d.course_id,
+        })),
+      });
       if (!res.success) return;
+      // Use boolean coercion for is_course_domain so `false` from backend
+      // correctly overrides any stale undefined/true value on the local doc.
       const byHash = new Map(res.documents.map((d) => [d.file_hash, d]));
       const merge = (doc: CanvasIndexedDocument): CanvasIndexedDocument => {
         const enriched = byHash.get(doc.file_hash);
@@ -275,11 +343,22 @@ const CanvasFilesPanel: React.FC = () => {
         return {
           ...doc,
           language: enriched.language ?? doc.language,
-          is_course_domain: enriched.is_course_domain ?? doc.is_course_domain,
+          // IMPORTANT: do NOT use `??` here — backend always returns a boolean,
+          // and we want `false` to overwrite stale optimistic `true` after unmark.
+          is_course_domain: typeof enriched.is_course_domain === 'boolean'
+            ? enriched.is_course_domain
+            : doc.is_course_domain,
           marked_by_user_id: enriched.marked_by_user_id ?? doc.marked_by_user_id,
         };
       };
-      setIndexedDocs((prev) => prev.map(merge));
+      setIndexedDocs((prev) => {
+        const next = prev.map(merge);
+        console.log('[domain-audit] indexedDocs after merge', {
+          before: prev.map((d) => ({ h: d.file_hash, dom: d.is_course_domain })),
+          after: next.map((d) => ({ h: d.file_hash, dom: d.is_course_domain })),
+        });
+        return next;
+      });
       setAllIndexedDocs((prev) => prev.map(merge));
     } catch (err) {
       if (err instanceof CanvasPermissionError) {
@@ -296,7 +375,14 @@ const CanvasFilesPanel: React.FC = () => {
     doc: CanvasIndexedDocument,
     nextEnabled: boolean,
   ) => {
-    if (!selectedCourse || !publicConfig?.enable_course_domain_docs) return;
+    if (!selectedCourse || !publicConfigRef.current?.enable_course_domain_docs) return;
+    console.log('[domain-audit] handleToggleDomain start', {
+      courseId: selectedCourse.id,
+      file_hash: doc.file_hash,
+      filename: doc.filename,
+      nextEnabled,
+      currentValue: doc.is_course_domain,
+    });
     setDomainToggleError(null);
     setDomainTogglePending((prev) => {
       const next = new Set(prev);
@@ -304,17 +390,42 @@ const CanvasFilesPanel: React.FC = () => {
       return next;
     });
     try {
+      let apiResp: unknown;
       if (nextEnabled) {
-        await markDomainDocuments(selectedCourse.id, [doc.file_hash]);
+        apiResp = await markDomainDocuments(selectedCourse.id, [doc.file_hash]);
       } else {
-        await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
+        apiResp = await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
       }
-      // Optimistic local update
+      console.log('[domain-audit] toggle API response', { nextEnabled, apiResp });
+      // Confirmed update (after server acknowledged). Apply locally so UI
+      // stays in sync until next refresh enrichment.
       const apply = (d: CanvasIndexedDocument): CanvasIndexedDocument =>
         d.file_hash === doc.file_hash ? { ...d, is_course_domain: nextEnabled } : d;
       setIndexedDocs((prev) => prev.map(apply));
       setAllIndexedDocs((prev) => prev.map(apply));
+      // Reset enrichment fingerprint so the next mount re-fetches from server
+      // and we verify the mark survived the round-trip.
+      lastEnrichedRef.current = '';
+      // Verify backend persisted by re-fetching /courses/{id}/documents.
+      try {
+        const verify = await listCourseDocuments(selectedCourse.id);
+        const found = verify.documents.find((d) => d.file_hash === doc.file_hash);
+        console.log('[domain-audit] post-toggle verify from server', {
+          file_hash: doc.file_hash,
+          expected: nextEnabled,
+          actual: found?.is_course_domain,
+          matchesExpected: found?.is_course_domain === nextEnabled,
+        });
+        if (found && found.is_course_domain !== nextEnabled) {
+          console.warn(
+            '[domain-audit] PERSISTENCE MISMATCH: backend reported a different value than what we just sent',
+          );
+        }
+      } catch (verifyErr) {
+        console.warn('[domain-audit] verify call failed', verifyErr);
+      }
     } catch (err: unknown) {
+      console.error('[domain-audit] toggle API failed', err);
       const msg =
         (err as { response?: { data?: { detail?: { message?: string; error?: string } } } })
           ?.response?.data?.detail?.message ||

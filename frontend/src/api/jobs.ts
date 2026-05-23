@@ -9,15 +9,19 @@ import { apiClient } from './client';
 
 export type JobStatusValue =
   | 'QUEUED'
-  | 'RUNNING'
+  | 'STARTED'
+  | 'PROGRESS'
+  | 'RUNNING'    // legacy alias — backend emits STARTED/PROGRESS
   | 'SUCCEEDED'
   | 'FAILED'
-  | 'CANCELED';
+  | 'CANCELED'
+  | 'REVOKED';
 
 export const TERMINAL_STATUSES: JobStatusValue[] = [
   'SUCCEEDED',
   'FAILED',
   'CANCELED',
+  'REVOKED',
 ];
 
 export interface JobOut {
