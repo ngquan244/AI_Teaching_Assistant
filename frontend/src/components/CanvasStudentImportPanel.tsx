@@ -24,6 +24,10 @@ import {
   type RowStatus,
 } from '../api/canvasStudentImport';
 import { useAuth } from '../context/AuthContext';
+import {
+  getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
+} from '../utils/canvasStorage';
 
 // ============================================================================
 // Status → label / tone helpers
@@ -207,13 +211,19 @@ const CanvasStudentImportPanel: React.FC = () => {
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
-      if (res.success) setCourses(res.courses);
+      if (res.success) {
+        setCourses(res.courses);
+        const stored = getSelectedCourse();
+        if (!courseId && stored && res.courses.some((c) => c.id === stored.id)) {
+          setCourseId(stored.id);
+        }
+      }
     } catch {
       /* ignore */
     } finally {
       setCoursesLoading(false);
     }
-  }, [hasCanvasConnection]);
+  }, [courseId, hasCanvasConnection]);
 
   useEffect(() => {
     if (hasCanvasConnection) fetchCourses();
@@ -466,7 +476,12 @@ const CanvasStudentImportPanel: React.FC = () => {
               <select
                 className="csim-input"
                 value={courseId}
-                onChange={(e) => setCourseId(e.target.value ? Number(e.target.value) : '')}
+                onChange={(e) => {
+                  const nextCourseId = e.target.value ? Number(e.target.value) : '';
+                  setCourseId(nextCourseId);
+                  const course = courses.find((c) => c.id === nextCourseId);
+                  if (course) persistSelectedCourse(course.id, course.name);
+                }}
                 disabled={coursesLoading}
               >
                 <option value="">— Không chọn —</option>

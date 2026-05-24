@@ -20,6 +20,10 @@ import { useAuth } from '../context/AuthContext';
 import { canvasResultsApi } from '../api/canvasResults';
 import { canvasApi } from '../api/canvas';
 import { canvasQuizApi } from '../api/canvasQuiz';
+import {
+  getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
+} from '../utils/canvasStorage';
 import type { CanvasCourse, CanvasQuiz } from '../types/canvas';
 import type {
   QuizResultsAggregation,
@@ -102,10 +106,16 @@ const CanvasResultsPanel: React.FC = () => {
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
-      if (res.success) setCourses(res.courses);
+      if (res.success) {
+        setCourses(res.courses);
+        const stored = getSelectedCourse();
+        if (!selectedCourseId && stored && res.courses.some((c) => c.id === stored.id)) {
+          setSelectedCourseId(stored.id);
+        }
+      }
     } catch { /* */ }
     finally { setCoursesLoading(false); }
-  }, [hasCanvasConnection]);
+  }, [hasCanvasConnection, selectedCourseId]);
 
   useEffect(() => {
     if (hasCanvasConnection) fetchCourses();
@@ -292,6 +302,9 @@ const CanvasResultsPanel: React.FC = () => {
                     value={selectedCourseId ?? ''}
                     onChange={(e) => {
                       setSelectedCourseId(e.target.value ? Number(e.target.value) : null);
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      const course = courses.find((c) => c.id === id);
+                      if (id && course) persistSelectedCourse(id, course.name);
                       setSelectedQuizId(null);
                       setQuizResults(null);
                       setCourseGrades(null);

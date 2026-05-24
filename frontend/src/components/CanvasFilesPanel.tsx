@@ -60,6 +60,7 @@ import {
 import { getJob, listJobs, TERMINAL_STATUSES } from '../api/jobs';
 import {
   getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
   clearSelectedCourse,
 } from '../utils/canvasStorage';
 import type {
@@ -611,6 +612,7 @@ const CanvasFilesPanel: React.FC = () => {
   };
 
   const handleCourseSelected = (course: CanvasCourse) => {
+    persistSelectedCourse(course.id, course.name);
     setSelectedCourse({ id: course.id, name: course.name });
   };
 

@@ -12,7 +12,13 @@
 import type { CanvasSettings } from '../types/canvas';
 
 const CANVAS_SETTINGS_KEY = 'canvas_settings';
+const SELECTED_COURSE_KEY = 'canvas_selected_course';
 const DEFAULT_CANVAS_URL = 'https://lms.uet.vnu.edu.vn';
+
+interface StoredSelectedCourse {
+  id: number;
+  name: string;
+}
 
 /**
  * Get Canvas settings from localStorage
@@ -25,8 +31,10 @@ export function getCanvasSettings(): CanvasSettings | null {
     
     const settings = JSON.parse(stored) as CanvasSettings;
     
-    // Validate required fields
-    if (!settings.accessToken || !settings.baseUrl) {
+    // Canvas tokens are stored server-side in production. Keep accepting
+    // tokenless settings so persisted UI state such as selectedCourseId
+    // survives page refreshes.
+    if (!settings.baseUrl) {
       return null;
     }
     
@@ -79,7 +87,7 @@ export function clearCanvasSettings(): void {
  */
 export function isCanvasConfigured(): boolean {
   const settings = getCanvasSettings();
-  return settings !== null && settings.accessToken.length > 0;
+  return settings !== null && (settings.accessToken?.length ?? 0) > 0;
 }
 
 /**
@@ -102,6 +110,11 @@ export function getCanvasBaseUrl(): string {
  * Set selected course
  */
 export function setSelectedCourse(courseId: number, courseName: string): void {
+  localStorage.setItem(
+    SELECTED_COURSE_KEY,
+    JSON.stringify({ id: courseId, name: courseName } satisfies StoredSelectedCourse),
+  );
+
   updateCanvasSettings({
     selectedCourseId: courseId,
     selectedCourseName: courseName,
@@ -112,6 +125,18 @@ export function setSelectedCourse(courseId: number, courseName: string): void {
  * Get selected course
  */
 export function getSelectedCourse(): { id: number; name: string } | null {
+  try {
+    const storedCourse = localStorage.getItem(SELECTED_COURSE_KEY);
+    if (storedCourse) {
+      const parsed = JSON.parse(storedCourse) as StoredSelectedCourse;
+      if (parsed.id && parsed.name) {
+        return { id: parsed.id, name: parsed.name };
+      }
+    }
+  } catch (error) {
+    console.error('Failed to parse selected Canvas course:', error);
+  }
+
   const settings = getCanvasSettings();
   if (!settings?.selectedCourseId || !settings?.selectedCourseName) {
     return null;
@@ -126,6 +151,8 @@ export function getSelectedCourse(): { id: number; name: string } | null {
  * Clear selected course
  */
 export function clearSelectedCourse(): void {
+  localStorage.removeItem(SELECTED_COURSE_KEY);
+
   const settings = getCanvasSettings();
   if (settings) {
     const { selectedCourseId, selectedCourseName, ...rest } = settings;

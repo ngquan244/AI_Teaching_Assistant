@@ -30,6 +30,10 @@ import { useAuth } from '../context/AuthContext';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import { canvasApi } from '../api/canvas';
 import { savedQuizApi } from '../api/savedQuiz';
+import {
+  getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
+} from '../utils/canvasStorage';
 import type {
   CanvasCourse,
   CanvasQuizCreate,
@@ -129,11 +133,14 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
       const res = await canvasApi.fetchCourses();
       if (res.success) {
         setCourses(res.courses);
-        // Auto-select from localStorage
-        const savedId = localStorage.getItem('canvas_selected_course_id');
-        if (savedId) {
-          const id = parseInt(savedId, 10);
-          if (res.courses.some((c: CanvasCourse) => c.id === id)) {
+        const stored = getSelectedCourse();
+        if (stored && res.courses.some((c: CanvasCourse) => c.id === stored.id)) {
+          setSelectedCourseId(stored.id);
+        } else {
+          // Backward compatibility with the old QuizBuilder-only key.
+          const savedId = localStorage.getItem('canvas_selected_course_id');
+          const id = savedId ? parseInt(savedId, 10) : NaN;
+          if (Number.isFinite(id) && res.courses.some((c: CanvasCourse) => c.id === id)) {
             setSelectedCourseId(id);
           }
         }
@@ -150,7 +157,11 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
   const handleCourseChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = parseInt(e.target.value, 10) || null;
     setSelectedCourseId(id);
-    if (id) localStorage.setItem('canvas_selected_course_id', String(id));
+    if (id) {
+      const course = courses.find((c) => c.id === id);
+      persistSelectedCourse(id, course?.name || String(id));
+      localStorage.setItem('canvas_selected_course_id', String(id));
+    }
   };
 
   // ---- Remove a question ----

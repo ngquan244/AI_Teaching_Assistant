@@ -22,6 +22,10 @@ import PanelHelpButton from './PanelHelpButton';
 import { useAuth } from '../context/AuthContext';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import { canvasApi } from '../api/canvas';
+import {
+  getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
+} from '../utils/canvasStorage';
 import type {
   CanvasCourse,
   AssessmentQuestionBank,
@@ -144,13 +148,20 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
-      if (res.success) setCourses(res.courses);
+      if (res.success) {
+        setCourses(res.courses);
+        const stored = getSelectedCourse();
+        if (!selectedCourseId && stored && res.courses.some((c) => c.id === stored.id)) {
+          setSelectedCourseId(stored.id);
+          setSelectedCourseName(stored.name);
+        }
+      }
     } catch {
       /* ignore */
     } finally {
       setCoursesLoading(false);
     }
-  }, [hasCanvasConnection]);
+  }, [hasCanvasConnection, selectedCourseId]);
 
   useEffect(() => {
     if (hasCanvasConnection) fetchCourses();
@@ -475,6 +486,7 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
                       setSelectedCourseId(id || null);
                       const c = courses.find((c) => c.id === id);
                       setSelectedCourseName(c?.name ?? '');
+                      if (id && c) persistSelectedCourse(id, c.name);
                     }}
                   >
                     <option value="">— Chọn khóa học —</option>
