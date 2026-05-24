@@ -16,6 +16,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
+import { useAuth } from '../context/AuthContext';
 import { canvasResultsApi } from '../api/canvasResults';
 import { canvasApi } from '../api/canvas';
 import { canvasQuizApi } from '../api/canvasQuiz';
@@ -49,6 +50,8 @@ type ResultsTab = 'quiz' | 'course';
 // ============================================================================
 
 const CanvasResultsPanel: React.FC = () => {
+  const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
   const [activeTab, setActiveTab] = useState<ResultsTab>('quiz');
 
   // Course / Quiz
@@ -91,15 +94,23 @@ const CanvasResultsPanel: React.FC = () => {
 
   // ---- Data fetch ----
   const fetchCourses = useCallback(async () => {
+    if (!hasCanvasConnection) {
+      setCourses([]);
+      return;
+    }
+
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
       if (res.success) setCourses(res.courses);
     } catch { /* */ }
     finally { setCoursesLoading(false); }
-  }, []);
+  }, [hasCanvasConnection]);
 
-  useEffect(() => { fetchCourses(); }, [fetchCourses]);
+  useEffect(() => {
+    if (hasCanvasConnection) fetchCourses();
+    else setCourses([]);
+  }, [fetchCourses, hasCanvasConnection]);
 
   useEffect(() => {
     if (!selectedCourseId) { setQuizzes([]); return; }

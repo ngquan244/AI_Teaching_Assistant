@@ -19,6 +19,7 @@ import {
   Info,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
+import { useAuth } from '../context/AuthContext';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import { canvasApi } from '../api/canvas';
 import type {
@@ -83,6 +84,9 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
   initialCourseId,
   initialCourseName,
 }) => {
+  const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
+
   // ----- Wizard state -----
   const [step, setStep] = useState<WizardStep>(1);
 
@@ -132,6 +136,11 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
 
   // ----- Fetch courses on mount -----
   const fetchCourses = useCallback(async () => {
+    if (!hasCanvasConnection) {
+      setCourses([]);
+      return;
+    }
+
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
@@ -141,11 +150,12 @@ const CanvasQuizPanel: React.FC<CanvasQuizPanelProps> = ({
     } finally {
       setCoursesLoading(false);
     }
-  }, []);
+  }, [hasCanvasConnection]);
 
   useEffect(() => {
-    fetchCourses();
-  }, [fetchCourses]);
+    if (hasCanvasConnection) fetchCourses();
+    else setCourses([]);
+  }, [fetchCourses, hasCanvasConnection]);
 
   // ----- Fetch banks when course is selected -----
   const fetchBanks = useCallback(async (courseId: number) => {

@@ -26,6 +26,7 @@ import {
   Library,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
+import { useAuth } from '../context/AuthContext';
 import { canvasQuizApi } from '../api/canvasQuiz';
 import { canvasApi } from '../api/canvas';
 import { savedQuizApi } from '../api/savedQuiz';
@@ -55,6 +56,9 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
   questions: injectedQuestions,
   onQuestionsClear,
 }) => {
+  const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
+
   // ---- Course selection ----
   const [courses, setCourses] = useState<CanvasCourse[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
@@ -100,10 +104,25 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
 
   // ---- Load courses on mount ----
   useEffect(() => {
-    loadCourses();
-  }, []);
+    if (hasCanvasConnection) {
+      loadCourses();
+    } else {
+      setCourses([]);
+      setCoursesError(
+        isAuthenticated ? 'Canvas chưa được kết nối. Vui lòng thêm token trong Cài đặt.' : null,
+      );
+    }
+  }, [hasCanvasConnection, isAuthenticated]);
 
   const loadCourses = async () => {
+    if (!hasCanvasConnection) {
+      setCourses([]);
+      setCoursesError(
+        isAuthenticated ? 'Canvas chưa được kết nối. Vui lòng thêm token trong Cài đặt.' : 'Vui lòng đăng nhập trước.',
+      );
+      return;
+    }
+
     setIsLoadingCourses(true);
     setCoursesError(null);
     try {
