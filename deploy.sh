@@ -164,7 +164,7 @@ run_migrations() {
 
 start_application_stack() {
     info "Starting backend and workers..."
-    compose up -d backend worker-doc worker-canvas
+    compose up -d backend worker-rag worker-rag-index worker-llm worker-canvas
     wait_for_container_health grader_backend 180
 }
 
