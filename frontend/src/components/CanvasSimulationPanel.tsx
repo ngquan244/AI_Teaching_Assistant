@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';
 import CanvasStudentImportPanel from './CanvasStudentImportPanel';
+import { useAuth } from '../context/AuthContext';
 import { canvasSimApi } from '../api/canvasSim';
 import { canvasApi } from '../api/canvas';
 import { canvasQuizApi } from '../api/canvasQuiz';
@@ -59,6 +60,8 @@ type SimTab = 'execute' | 'students' | 'import' | 'history' | 'audit';
 
 const CanvasSimulationPanel: React.FC = () => {
   const confirmDialog = useConfirm();
+  const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
   const [activeTab, setActiveTab] = useState<SimTab>('execute');
 
   // Course + Quiz
@@ -103,15 +106,23 @@ const CanvasSimulationPanel: React.FC = () => {
 
   // ---- Fetch courses ----
   const fetchCourses = useCallback(async () => {
+    if (!hasCanvasConnection) {
+      setCourses([]);
+      return;
+    }
+
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
       if (res.success) setCourses(res.courses);
     } catch { /* */ }
     finally { setCoursesLoading(false); }
-  }, []);
+  }, [hasCanvasConnection]);
 
-  useEffect(() => { fetchCourses(); }, [fetchCourses]);
+  useEffect(() => {
+    if (hasCanvasConnection) fetchCourses();
+    else setCourses([]);
+  }, [fetchCourses, hasCanvasConnection]);
 
   // ---- Fetch quizzes when course changes ----
   useEffect(() => {

@@ -23,6 +23,7 @@ import {
   type ImportRow,
   type RowStatus,
 } from '../api/canvasStudentImport';
+import { useAuth } from '../context/AuthContext';
 
 // ============================================================================
 // Status → label / tone helpers
@@ -169,6 +170,9 @@ function Summary({ summary }: { summary: Record<string, number> | null | undefin
 // ============================================================================
 
 const CanvasStudentImportPanel: React.FC = () => {
+  const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
+
   // Sub-mode
   const [mode, setMode] = useState<ImportMode>('create');
 
@@ -195,6 +199,11 @@ const CanvasStudentImportPanel: React.FC = () => {
 
   // Load courses on mount (used when course_id required)
   const fetchCourses = useCallback(async () => {
+    if (!hasCanvasConnection) {
+      setCourses([]);
+      return;
+    }
+
     setCoursesLoading(true);
     try {
       const res = await canvasApi.fetchCourses();
@@ -204,11 +213,12 @@ const CanvasStudentImportPanel: React.FC = () => {
     } finally {
       setCoursesLoading(false);
     }
-  }, []);
+  }, [hasCanvasConnection]);
 
   useEffect(() => {
-    fetchCourses();
-  }, [fetchCourses]);
+    if (hasCanvasConnection) fetchCourses();
+    else setCourses([]);
+  }, [fetchCourses, hasCanvasConnection]);
 
   // ---- Reset when switching mode ----
   const handleModeChange = (next: ImportMode) => {

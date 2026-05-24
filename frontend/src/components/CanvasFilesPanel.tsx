@@ -187,6 +187,7 @@ const findMatchingIndexedDoc = (
 
 const CanvasFilesPanel: React.FC = () => {
   const { isAuthenticated, canvasTokens } = useAuth();
+  const hasCanvasConnection = isAuthenticated && canvasTokens.length > 0;
   const confirmDialog = useConfirm();
   const canvasStars = useMemo(() => generateCanvasStars(30), []);
   
@@ -431,6 +432,19 @@ const CanvasFilesPanel: React.FC = () => {
   // is_course_domain into the indexed view; that runs after fetchRemoteFiles.
   useEffect(() => {
     if (!selectedCourse) return;
+    if (!hasCanvasConnection) {
+      setRemoteFiles([]);
+      setIsCanvasAvailable(false);
+      setCanvasErrorType('auth');
+      setError(
+        isAuthenticated
+          ? 'Canvas chưa được kết nối. Vui lòng thêm token trong Cài đặt.'
+          : 'Vui lòng đăng nhập để sử dụng Canvas.',
+      );
+      refreshIndexedData(undefined, 1);
+      return;
+    }
+
     const reqId = ++courseReqRef.current;
     const courseId = selectedCourse.id;
     (async () => {
@@ -438,7 +452,7 @@ const CanvasFilesPanel: React.FC = () => {
       if (courseReqRef.current !== reqId) return; // user switched course
       await loadCourseDocuments(courseId);
     })();
-  }, [selectedCourse]);
+  }, [selectedCourse, hasCanvasConnection, isAuthenticated]);
 
   // Reset pagination when data changes
   useEffect(() => {
@@ -468,6 +482,18 @@ const CanvasFilesPanel: React.FC = () => {
   };
 
   const fetchRemoteFiles = async (courseId: number) => {
+    if (!hasCanvasConnection) {
+      setRemoteFiles([]);
+      setIsCanvasAvailable(false);
+      setCanvasErrorType('auth');
+      setError(
+        isAuthenticated
+          ? 'Canvas chưa được kết nối. Vui lòng thêm token trong Cài đặt.'
+          : 'Vui lòng đăng nhập để sử dụng Canvas.',
+      );
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setCanvasErrorType(null);

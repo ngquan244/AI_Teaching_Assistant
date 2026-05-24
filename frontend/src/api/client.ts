@@ -29,6 +29,7 @@ export function getStoredToken(): string | null {
  */
 export function setStoredToken(token: string): void {
   localStorage.setItem(TOKEN_KEY, token);
+  sessionExpiredDispatched = false;
 }
 
 /**
@@ -79,6 +80,14 @@ export function removeAllTokens(): void {
  */
 export const SESSION_EXPIRED_EVENT = 'auth:session-expired';
 
+let sessionExpiredDispatched = false;
+
+function dispatchSessionExpiredOnce(): void {
+  if (sessionExpiredDispatched) return;
+  sessionExpiredDispatched = true;
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+}
+
 /** Lightweight retry policy for transient network / 5xx errors on safe methods. */
 const TRANSIENT_RETRY_DELAY_MS = 800;
 const SAFE_METHODS = new Set(['get', 'head', 'options']);
@@ -94,27 +103,8 @@ function isTransientNetworkError(error: AxiosError): boolean {
 // Token Refresh Logic
 // =============================================================================
 
-/** Prevents multiple concurrent refresh requests */
-let isRefreshing = false;
-/** Queue of requests waiting for the token refresh to complete */
-let failedQueue: Array<{
-  resolve: (token: string) => void;
-  reject: (error: unknown) => void;
-}> = [];
-
-/**
- * Process all queued requests after refresh completes or fails
- */
-function processQueue(error: unknown, token: string | null = null): void {
-  failedQueue.forEach(({ resolve, reject }) => {
-    if (error) {
-      reject(error);
-    } else {
-      resolve(token!);
-    }
-  });
-  failedQueue = [];
-}
+/** Shared refresh promise so parallel 401s cannot create a refresh storm. */
+let refreshPromise: Promise<string | null> | null = null;
 
 /**
  * Attempt to refresh the access token using the refresh token.
@@ -134,11 +124,70 @@ async function refreshAccessToken(): Promise<string | null> {
     setStoredToken(access_token);
     setStoredRefreshToken(newRefreshToken);
     return access_token;
-  } catch {
+  } catch (error) {
+    const status = (error as AxiosError).response?.status;
+    if (status !== 401 && status !== 403) {
+      throw error;
+    }
     // Refresh failed — tokens are invalid, force re-login
     removeAllTokens();
     return null;
   }
+}
+
+function getRefreshPromise(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+function requestPath(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    return new URL(url, API_BASE_URL || window.location.origin).pathname;
+  } catch {
+    return url;
+  }
+}
+
+function isCanvasIntegrationPath(url: string | undefined): boolean {
+  const path = requestPath(url);
+  return (
+    path === '/api/canvas' ||
+    path.startsWith('/api/canvas/') ||
+    path.startsWith('/api/canvas-')
+  );
+}
+
+function getResponseDetail(error: AxiosError): string {
+  const data = error.response?.data as { detail?: unknown; error?: unknown } | undefined;
+  const raw = data?.detail ?? data?.error ?? '';
+  return typeof raw === 'string' ? raw : JSON.stringify(raw);
+}
+
+function isAppAuth401(error: AxiosError): boolean {
+  const authHeader = error.response?.headers?.['www-authenticate'];
+  if (typeof authHeader === 'string' && authHeader.toLowerCase().includes('bearer')) {
+    return true;
+  }
+
+  const detail = getResponseDetail(error).toLowerCase();
+  return (
+    detail.includes('invalid or expired token') ||
+    detail.includes('token has been revoked') ||
+    detail.includes('user not found')
+  );
+}
+
+function shouldSkipRefreshForCanvas401(error: AxiosError): boolean {
+  return (
+    error.response?.status === 401 &&
+    isCanvasIntegrationPath(error.config?.url) &&
+    !isAppAuth401(error)
+  );
 }
 
 // =============================================================================
@@ -194,40 +243,27 @@ apiClient.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // If a refresh is already in progress, queue this request
-    if (isRefreshing) {
-      return new Promise<string>((resolve, reject) => {
-        failedQueue.push({ resolve, reject });
-      }).then((token) => {
-        originalRequest.headers.Authorization = `Bearer ${token}`;
-        return apiClient(originalRequest);
-      });
+    if (shouldSkipRefreshForCanvas401(error)) {
+      return Promise.reject(error);
     }
 
     originalRequest._retry = true;
-    isRefreshing = true;
 
     try {
-      const newToken = await refreshAccessToken();
+      const newToken = await getRefreshPromise();
 
       if (newToken) {
         // Refresh succeeded — replay the original request and queued requests
-        processQueue(null, newToken);
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
         return apiClient(originalRequest);
       }
 
       // Refresh failed — notify the app so it can show a friendly toast / banner
       // BEFORE redirecting, instead of yanking the user to /login mid-action.
-      processQueue(error);
-      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+      dispatchSessionExpiredOnce();
       return Promise.reject(error);
     } catch (refreshError) {
-      processQueue(refreshError);
-      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
       return Promise.reject(refreshError);
-    } finally {
-      isRefreshing = false;
     }
   }
 );
