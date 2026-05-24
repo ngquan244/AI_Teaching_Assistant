@@ -154,6 +154,16 @@ services:
         reservations:
           cpus: '0.5'
 
+  worker-rag-index:
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+        reservations:
+          cpus: '0.25'
+
   worker-llm:
     env_file:
       - .env

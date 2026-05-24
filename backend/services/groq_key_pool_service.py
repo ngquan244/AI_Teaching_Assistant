@@ -150,6 +150,7 @@ def get_pool_keys_sync(db: Session) -> List[Dict]:
             "id": row.id,
             "name": row.name,
             "plain_key": plain,
+            "masked_key": mask_key_value(plain),
             "error_count": row.error_count,
             "last_error_at": row.last_error_at,
         })
@@ -213,6 +214,8 @@ class KeyPool:
         self._index = 0
         # Track errors within this run (not persisted until flush)
         self._run_errors: Dict[_uuid.UUID, int] = {}
+        # Last key id returned by next_key(); used purely for KEY_SWITCH logging
+        self._last_returned_id: Optional[_uuid.UUID] = None
 
     @property
     def size(self) -> int:
@@ -230,7 +233,22 @@ class KeyPool:
             run_err = self._run_errors.get(candidate["id"], 0)
             if run_err >= _MAX_ERRORS_BEFORE_SKIP:
                 continue
+            # Emit KEY_SWITCH whenever the returned key changes (or first selection).
+            if self._last_returned_id != candidate["id"]:
+                logger.info(
+                    "KEY_SWITCH from_key_id=%s to_key_id=%s to_masked=%s pool_size=%d",
+                    str(self._last_returned_id) if self._last_returned_id else "-",
+                    str(candidate["id"]),
+                    candidate.get("masked_key", "?"),
+                    len(self._keys),
+                )
+            self._last_returned_id = candidate["id"]
             return candidate
+        logger.warning(
+            "KEY_SWITCH next_key=None pool_size=%d run_errors=%s",
+            len(self._keys),
+            {str(k): v for k, v in self._run_errors.items()},
+        )
         return None
 
     def mark_error(self, key_id: _uuid.UUID) -> None:

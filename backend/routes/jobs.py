@@ -45,6 +45,7 @@ class JobOut(BaseModel):
     progress_pct: int
     current_step: Optional[str] = None
     celery_task_id: Optional[str] = None
+    payload: Optional[dict] = None
     result: Optional[dict] = None
     error_message: Optional[str] = None
     created_at: str
@@ -88,6 +89,7 @@ def _job_to_out(job) -> JobOut:
         progress_pct=job.progress_pct,
         current_step=job.current_step,
         celery_task_id=job.celery_task_id,
+        payload=job.payload_json,
         result=job.result_json,
         error_message=job.error_message,
         created_at=job.created_at.isoformat() if job.created_at else None,
@@ -168,12 +170,23 @@ async def list_jobs(
             pass
     
     if status:
-        try:
-            st = JobStatus(status)
-            query = query.where(Job.status == st)
-            count_query = count_query.where(Job.status == st)
-        except ValueError:
-            pass
+        # Accept either a single status (e.g. ``QUEUED``) or a comma-separated
+        # list (e.g. ``QUEUED,STARTED,PROGRESS``) so the frontend can fetch
+        # "all live jobs" in one round-trip.
+        raw_statuses = [s.strip() for s in status.split(",") if s.strip()]
+        parsed: list = []
+        for s in raw_statuses:
+            try:
+                parsed.append(JobStatus(s))
+            except ValueError:
+                continue
+        if parsed:
+            if len(parsed) == 1:
+                query = query.where(Job.status == parsed[0])
+                count_query = count_query.where(Job.status == parsed[0])
+            else:
+                query = query.where(Job.status.in_(parsed))
+                count_query = count_query.where(Job.status.in_(parsed))
     
     # Get total count
     total_result = await db.execute(count_query)

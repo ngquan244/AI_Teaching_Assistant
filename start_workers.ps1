@@ -22,8 +22,8 @@ if (-not (Test-Path $celeryExe)) {
 Write-Host "Starting workers..." -ForegroundColor Green
 Write-Host ""
 
-# Start RAG worker (2 threads) — handles indexing, embedding, topic extraction
-Write-Host "[1/3] Starting RAG worker (queue: rag,celery,default, concurrency: 2)..." -ForegroundColor Yellow
+# Start RAG worker (2 threads) — interactive RAG: retrieval / query / topic extraction
+Write-Host "[1/4] Starting RAG worker (queue: rag,celery,default, concurrency: 2)..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
@@ -32,8 +32,19 @@ Start-Process powershell -ArgumentList @(
 
 Start-Sleep -Seconds 2
 
+# Start RAG-Index worker (1 thread) — memory-heavy indexing only.
+# Concurrency=1 keeps RAM bounded by serializing PDF load + embedding.
+Write-Host "[2/4] Starting RAG-Index worker (queue: rag_index, concurrency: 1)..." -ForegroundColor Yellow
+Start-Process powershell -ArgumentList @(
+    "-NoExit",
+    "-Command",
+    "& '$venvPath\Scripts\Activate.ps1'; & '$celeryExe' -A backend.celery_app worker -Q rag_index --pool=threads -c 1 --loglevel=INFO -n rag_index@%COMPUTERNAME%"
+) -WindowStyle Normal
+
+Start-Sleep -Seconds 2
+
 # Start LLM worker (2 threads) — handles quiz generation, LLM queries
-Write-Host "[2/3] Starting LLM worker (queue: llm, concurrency: 2)..." -ForegroundColor Yellow
+Write-Host "[3/4] Starting LLM worker (queue: llm, concurrency: 2)..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
@@ -43,7 +54,7 @@ Start-Process powershell -ArgumentList @(
 Start-Sleep -Seconds 2
 
 # Start Canvas worker (4 concurrent threads — unchanged)
-Write-Host "[3/3] Starting Canvas worker (queue: canvas, concurrency: 4)..." -ForegroundColor Yellow
+Write-Host "[4/4] Starting Canvas worker (queue: canvas, concurrency: 4)..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList @(
     "-NoExit",
     "-Command",
@@ -55,12 +66,13 @@ Write-Host "==================================================================" 
 Write-Host "  All workers started successfully!                              " -ForegroundColor Green
 Write-Host "==================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Total capacity: 8 concurrent tasks (2+2+4)" -ForegroundColor Cyan
+Write-Host "Total capacity: 9 concurrent tasks (2+1+2+4)" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Worker details:" -ForegroundColor White
-Write-Host "  - RAG worker    : 2 threads (indexing, embedding, topic extraction)" -ForegroundColor Gray
-Write-Host "  - LLM worker    : 2 threads (quiz generation, LLM queries)" -ForegroundColor Gray
-Write-Host "  - Canvas worker : 4 threads (Canvas API operations)" -ForegroundColor Gray
+Write-Host "  - RAG worker       : 2 threads (retrieval, query, topic extraction)" -ForegroundColor Gray
+Write-Host "  - RAG-Index worker : 1 thread  (document indexing - RAM-bounded)" -ForegroundColor Gray
+Write-Host "  - LLM worker       : 2 threads (quiz generation, LLM queries)" -ForegroundColor Gray
+Write-Host "  - Canvas worker    : 4 threads (Canvas API operations)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Monitoring:" -ForegroundColor White
 Write-Host "  - Flower: http://localhost:5555 (run: celery -A backend.celery_app flower)" -ForegroundColor Gray

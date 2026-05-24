@@ -120,6 +120,7 @@ def generate_quiz(
     groq_api_key: Optional[str] = None,
     include_course_domain: bool = False,
     domain_quota_ratio: Optional[float] = None,
+    course_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Generate quiz questions from indexed documents.
@@ -142,7 +143,17 @@ def generate_quiz(
     
     try:
         job_service.start_job(job_uuid, "Retrieving context")
-        quiz_logger.info(f"Task received: job={job_id}, topics={topics}, selected_documents={selected_documents}, user_id={user_id}, source={source}")
+        quiz_logger.info(
+            f"Task received: job={job_id} topics={topics} selected_docs={n_selected} source={source}"
+        )
+
+        # Canvas quiz MUST be course-scoped end-to-end. Fail fast here so the
+        # user gets a clear job-level error instead of an empty result.
+        if source == "canvas" and course_id is None:
+            err = "course_id is required for Canvas quiz generation"
+            quiz_logger.error(f"QUIZ_CANVAS_NO_COURSE job={job_id} {err}")
+            job_service.fail_job(job_uuid, err)
+            return {"success": False, "error": err}
 
         from backend.tasks import rag_tasks
 
@@ -156,6 +167,7 @@ def generate_quiz(
                 "source": source,
                 "include_course_domain": include_course_domain,
                 "domain_quota_ratio": domain_quota_ratio,
+                "course_id": course_id,
             },
             timeout=120,
         )

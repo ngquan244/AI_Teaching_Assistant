@@ -11,6 +11,7 @@ import logging
 import math
 import random
 import re
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from xml.dom import minidom
@@ -2179,6 +2180,8 @@ Return ONLY valid JSON, no additional text.""")
         domain_quota_ratio: Optional[float] = None,
         translation_cache: Optional[Dict[str, str]] = None,
         llm_for_translation: Optional[Any] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
     ) -> List[Document]:
         max_total_docs = max(1, max_total_docs)
 
@@ -2196,6 +2199,10 @@ Return ONLY valid JSON, no additional text.""")
                 extra_kwargs["translation_cache"] = translation_cache
             if llm_for_translation is not None:
                 extra_kwargs["llm_for_translation"] = llm_for_translation
+            if course_id is not None:
+                extra_kwargs["course_id"] = course_id
+            if hash_to_course_id is not None:
+                extra_kwargs["hash_to_course_id"] = hash_to_course_id
             try:
                 return self.retriever.retrieve_with_budget(
                     query=query,
@@ -2221,7 +2228,19 @@ Return ONLY valid JSON, no additional text.""")
             retrieve_kwargs["user_id"] = user_id
             if hash_to_collection_name:
                 retrieve_kwargs["hash_to_collection_name"] = hash_to_collection_name
-        return self.retriever.retrieve(query, **retrieve_kwargs)
+            if course_id is not None:
+                retrieve_kwargs["course_id"] = course_id
+            if hash_to_course_id is not None:
+                retrieve_kwargs["hash_to_course_id"] = hash_to_course_id
+            if roles_by_hash is not None:
+                retrieve_kwargs["roles_by_hash"] = roles_by_hash
+        try:
+            return self.retriever.retrieve(query, **retrieve_kwargs)
+        except TypeError:
+            # Older retriever signature — strip newly added kwargs.
+            for k in ("course_id", "hash_to_course_id", "roles_by_hash"):
+                retrieve_kwargs.pop(k, None)
+            return self.retriever.retrieve(query, **retrieve_kwargs)
 
     def _format_context_documents(self, documents: List[Document]) -> str:
         if self.retriever and hasattr(self.retriever, "format_context"):
@@ -2302,6 +2321,10 @@ Return ONLY valid JSON, no additional text.""")
         raw_budget: int,
         target_file_hashes: Optional[List[str]],
         user_id: Optional[str],
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
+        roles_by_hash: Optional[Dict[str, str]] = None,
     ) -> Dict[str, int]:
         if not topics:
             return {}
@@ -2326,6 +2349,10 @@ Return ONLY valid JSON, no additional text.""")
                 max_total_docs=max(1, min_per_topic),
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
+                hash_to_collection_name=hash_to_collection_name,
+                course_id=course_id,
+                hash_to_course_id=hash_to_course_id,
+                roles_by_hash=roles_by_hash,
             )
             coverage_counts[topic] = len(self._dedupe_documents(sample_docs))
 
@@ -3075,6 +3102,8 @@ Return ONLY valid JSON, no additional text.""")
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
         rejection_hint: Optional[str] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         prompt = self.prompt_vi if language == "vi" else self.prompt_en
         context = self._format_context_documents(context_documents)
@@ -3099,9 +3128,15 @@ Return ONLY valid JSON, no additional text.""")
             generation_mode=generation_mode,
             cost_protected=cost_protected,
         )
-        provider = llm_provider_override or self._llm_provider
-        llm_json = provider.get_llm(json_mode=True, max_tokens=max_tokens)
-        chain = prompt | llm_json
+
+        # Retry-on-other-key loop. Each iteration uses one provider bound to
+        # one Groq key; on 429 we mark the key, rotate to a fresh one, and
+        # re-issue chain.invoke. Bounded by max_attempts. Non-429 errors
+        # propagate unchanged.
+        active_provider = llm_provider_override or self._llm_provider
+        active_key_info = current_key_info
+        pool_size = key_pool.size if key_pool is not None else 0
+        max_attempts = max(1, min(3, pool_size)) if key_pool is not None else 1
 
         logger.info(
             "Quiz generation pass: mode=%s call=%s/%s slots=%s context_docs=%s context_chars=%s existing_questions=%s existing_chars=%s max_tokens=%s",
@@ -3117,17 +3152,111 @@ Return ONLY valid JSON, no additional text.""")
         )
 
         policy = DIFFICULTY_POLICIES.get(difficulty, DIFFICULTY_POLICIES["medium"])
-        response = chain.invoke({
-            "context": context,
-            "topic": topic,
-            "difficulty": difficulty,
-            "difficulty_policy": policy["generation_instruction"],
-            "total_target": total_target,
-            "batch_target": batch_target,
-            "slot_section": slot_section,
-            "existing_questions": existing_questions_text,
-            "generation_mode": generation_mode,
-        })
+        attempt = 0
+        response = None
+        while True:
+            attempt += 1
+            llm_json = active_provider.get_llm(json_mode=True, max_tokens=max_tokens)
+            chain = prompt | llm_json
+            _purpose = generation_mode
+            _key_id = getattr(active_provider, "key_id", None) or "-"
+            _masked_key = getattr(active_provider, "masked_key", None) or "-"
+
+            logger.info(
+                "LLM_REQUEST_START purpose=%s key_id=%s masked_key=%s max_tokens=%s attempt=%d/%d",
+                _purpose, _key_id, _masked_key, max_tokens, attempt, max_attempts,
+            )
+            _t0 = time.monotonic()
+            try:
+                response = chain.invoke({
+                    "context": context,
+                    "topic": topic,
+                    "difficulty": difficulty,
+                    "difficulty_policy": policy["generation_instruction"],
+                    "total_target": total_target,
+                    "batch_target": batch_target,
+                    "slot_section": slot_section,
+                    "existing_questions": existing_questions_text,
+                    "generation_mode": generation_mode,
+                })
+            except Exception as _invoke_err:
+                _dur_ms = int((time.monotonic() - _t0) * 1000)
+                _err_str = str(_invoke_err).lower()
+                _is_429 = (
+                    "429" in _err_str
+                    or "rate limit" in _err_str
+                    or "rate_limit" in _err_str
+                    or "too many requests" in _err_str
+                )
+                if _is_429:
+                    logger.warning(
+                        "LLM_REQUEST_429 purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d error=%s",
+                        _purpose, _key_id, _masked_key, _dur_ms, attempt, max_attempts, _invoke_err,
+                    )
+                else:
+                    logger.error(
+                        "LLM_REQUEST_ERROR purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d error=%s",
+                        _purpose, _key_id, _masked_key, _dur_ms, attempt, max_attempts, _invoke_err,
+                    )
+
+                # Only attempt key-switching on 429 with a usable KeyPool.
+                if not _is_429 or key_pool is None or active_key_info is None:
+                    # Mark error on the active key so flush_to_db sees it;
+                    # do not switch.
+                    if key_pool is not None and active_key_info is not None:
+                        try:
+                            key_pool.mark_error(active_key_info["id"])
+                        except Exception:
+                            pass
+                    raise
+
+                # 429 path: mark current key as errored, then try to swap.
+                try:
+                    key_pool.mark_error(active_key_info["id"])
+                except Exception:
+                    pass
+                if attempt >= max_attempts:
+                    logger.error(
+                        "ALL_KEYS_EXHAUSTED purpose=%s attempts=%d/%d last_key_id=%s",
+                        _purpose, attempt, max_attempts, _key_id,
+                    )
+                    raise
+                next_info = key_pool.next_key()
+                if next_info is None:
+                    logger.error(
+                        "ALL_KEYS_EXHAUSTED purpose=%s attempts=%d/%d reason=no_more_keys",
+                        _purpose, attempt, max_attempts,
+                    )
+                    raise
+                logger.warning(
+                    "KEY_SWITCH reason=429 purpose=%s from_key_id=%s to_key_id=%s to_masked=%s attempt=%d/%d",
+                    _purpose,
+                    _key_id,
+                    str(next_info["id"]),
+                    next_info.get("masked_key", "?"),
+                    attempt,
+                    max_attempts,
+                )
+                active_key_info = next_info
+                active_provider = LLMFactory.create(
+                    groq_api_key=next_info["plain_key"],
+                    key_id=str(next_info["id"]),
+                    masked_key=next_info.get("masked_key"),
+                )
+                continue
+
+            # Success path
+            logger.info(
+                "LLM_REQUEST_SUCCESS purpose=%s key_id=%s masked_key=%s duration_ms=%d attempt=%d/%d",
+                _purpose, _key_id, _masked_key, int((time.monotonic() - _t0) * 1000),
+                attempt, max_attempts,
+            )
+            if key_pool is not None and active_key_info is not None:
+                try:
+                    key_pool.mark_success(active_key_info["id"])
+                except Exception:
+                    pass
+            break
 
         content = response.content if hasattr(response, "content") else str(response)
         quiz_data = self._parse_quiz_response(content)
@@ -3228,6 +3357,8 @@ Return ONLY valid JSON, no additional text.""")
         call_index_start: int = 1,
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         batch_results: List[Dict[str, Any]] = []
         malformed_count = 0
@@ -3257,6 +3388,8 @@ Return ONLY valid JSON, no additional text.""")
             call_index=call_index_start,
             planned_calls=planned_calls,
             llm_provider_override=llm_provider_override,
+            key_pool=key_pool,
+            current_key_info=current_key_info,
         )
         call_count += 1
         estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -3303,6 +3436,8 @@ Return ONLY valid JSON, no additional text.""")
                 planned_calls=planned_calls,
                 llm_provider_override=llm_provider_override,
                 rejection_hint=retry_hint,
+                key_pool=key_pool,
+                current_key_info=current_key_info,
             )
             call_count += 1
             estimated_completion_tokens += self._max_tokens_for_generation_pass(
@@ -3351,6 +3486,8 @@ Return ONLY valid JSON, no additional text.""")
         planned_calls: Optional[int] = None,
         llm_provider_override: Optional["BaseLLM"] = None,
         rejection_hint: Optional[str] = None,
+        key_pool: Optional[Any] = None,
+        current_key_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
         if not missing_slots:
             return [], [], {
@@ -3390,6 +3527,8 @@ Return ONLY valid JSON, no additional text.""")
             planned_calls=planned_calls,
             llm_provider_override=llm_provider_override,
             rejection_hint=rejection_hint,
+            key_pool=key_pool,
+            current_key_info=current_key_info,
         )
         accepted_items, still_missing, normalized_failures, refill_rejections = (
             self._normalize_generated_batch(
@@ -3423,7 +3562,7 @@ Return ONLY valid JSON, no additional text.""")
         num_questions: int,
         cost_protected: bool = False,
         blueprint_attempted: bool = False,
-        key_pool: Optional["KeyPool"] = None,
+        key_pool: Optional[Any] = None,
     ) -> Dict[str, Any]:
         slots = blueprint.get("slots", [])[:num_questions]
 
@@ -3459,6 +3598,8 @@ Return ONLY valid JSON, no additional text.""")
                 if _current_key_info is not None:
                     batch_llm_override = LLMFactory.create(
                         groq_api_key=_current_key_info["plain_key"],
+                        key_id=str(_current_key_info["id"]),
+                        masked_key=_current_key_info.get("masked_key"),
                     )
 
             try:
@@ -3477,12 +3618,11 @@ Return ONLY valid JSON, no additional text.""")
                     call_index_start=total_generation_calls + 1,
                     planned_calls=planned_generation_calls,
                     llm_provider_override=batch_llm_override,
+                    key_pool=key_pool,
+                    current_key_info=_current_key_info,
                 )
-                if key_pool is not None and _current_key_info is not None:
-                    key_pool.mark_success(_current_key_info["id"])
             except Exception:
-                if key_pool is not None and _current_key_info is not None:
-                    key_pool.mark_error(_current_key_info["id"])
+                # Inner pass already handled mark_error/key swap on 429.
                 raise
             total_malformed += batch_stats["malformed_count"]
             total_retries += batch_stats["retry_count"]
@@ -3516,6 +3656,8 @@ Return ONLY valid JSON, no additional text.""")
                     if _refill_key is not None:
                         refill_llm_override = LLMFactory.create(
                             groq_api_key=_refill_key["plain_key"],
+                            key_id=str(_refill_key["id"]),
+                            masked_key=_refill_key.get("masked_key"),
                         )
                 try:
                     refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
@@ -3537,12 +3679,11 @@ Return ONLY valid JSON, no additional text.""")
                         rejection_hint=self._build_rejection_hint(
                             dict(aggregated_rejection_reasons), language
                         ),
+                        key_pool=key_pool,
+                        current_key_info=_refill_key,
                     )
-                    if key_pool is not None and _refill_key is not None:
-                        key_pool.mark_success(_refill_key["id"])
                 except Exception:
-                    if key_pool is not None and _refill_key is not None:
-                        key_pool.mark_error(_refill_key["id"])
+                    # Inner pass already handled mark_error/key swap on 429.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
@@ -3584,6 +3725,8 @@ Return ONLY valid JSON, no additional text.""")
                     if _refill2_key is not None:
                         refill2_llm_override = LLMFactory.create(
                             groq_api_key=_refill2_key["plain_key"],
+                            key_id=str(_refill2_key["id"]),
+                            masked_key=_refill2_key.get("masked_key"),
                         )
                 try:
                     refill_questions, remaining_slots, refill_stats = self._run_targeted_refill(
@@ -3605,12 +3748,11 @@ Return ONLY valid JSON, no additional text.""")
                         rejection_hint=self._build_rejection_hint(
                             dict(aggregated_rejection_reasons), language
                         ),
+                        key_pool=key_pool,
+                        current_key_info=_refill2_key,
                     )
-                    if key_pool is not None and _refill2_key is not None:
-                        key_pool.mark_success(_refill2_key["id"])
                 except Exception:
-                    if key_pool is not None and _refill2_key is not None:
-                        key_pool.mark_error(_refill2_key["id"])
+                    # Inner pass already handled mark_error/key swap on 429.
                     raise
                 all_questions.extend(refill_questions)
                 total_malformed += refill_stats["malformed_count"]
@@ -3952,6 +4094,8 @@ Return ONLY valid JSON, no additional text.""")
         language_by_hash: Optional[Dict[str, str]] = None,
         domain_quota_ratio: Optional[float] = None,
         groq_api_key: Optional[str] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """Retrieve and normalize quiz documents without invoking the LLM."""
         topic_list = [item for item in (topics or []) if str(item or "").strip()]
@@ -4003,6 +4147,8 @@ Return ONLY valid JSON, no additional text.""")
             "domain_quota_ratio": domain_quota_ratio,
             "translation_cache": translation_cache,
             "llm_for_translation": llm_for_translation,
+            "course_id": course_id,
+            "hash_to_course_id": hash_to_course_id,
         }
 
         if len(topic_list) == 1:
@@ -4051,6 +4197,10 @@ Return ONLY valid JSON, no additional text.""")
             raw_budget=raw_budget,
             target_file_hashes=target_file_hashes,
             user_id=user_id,
+            hash_to_collection_name=hash_to_collection_name,
+            course_id=course_id,
+            hash_to_course_id=hash_to_course_id,
+            roles_by_hash=roles_by_hash,
         )
 
         all_documents: List[Document] = []
@@ -4570,7 +4720,7 @@ Return ONLY valid JSON, no additional text.""")
             # Extract response content
             content = response.content if hasattr(response, 'content') else str(response)
             logger.info(f"Raw LLM response length: {len(content)} chars")
-            logger.info(f"Raw LLM response: {content[:500]}...")
+            logger.debug(f"Raw LLM response: {content[:500]}...")
             
             # Check for truncation
             finish_reason = self._get_finish_reason(response)
@@ -4579,14 +4729,14 @@ Return ONLY valid JSON, no additional text.""")
             if was_truncated:
                 logger.warning("LLM output was truncated (finish_reason=length)")
             
-            # Phase 1: Parse response
+            # Parse response
             quiz_data = self._parse_quiz_response(content)
             
-            # Phase 2: If parse failed and was truncated, try salvage
+            # If parse failed and was truncated, try salvage
             if not quiz_data and was_truncated:
                 quiz_data = self._salvage_partial_json(content)
             
-            # Phase 3: If parse still failed, retry with reduced explanation + higher max_tokens
+            # If parse still failed, retry with reduced explanation + higher max_tokens
             if not quiz_data:
                 logger.warning("Parse failed, retrying with reduced explanation prompt...")
                 retry_max_tokens = dynamic_max_tokens + 2048
@@ -4630,14 +4780,14 @@ Return ONLY valid JSON, no additional text.""")
                     "sources": sources
                 }
             
-            # Phase 4: Format quiz questions
+            # Format quiz questions
             formatted_quiz = self._format_quiz(quiz_data.get("quiz", []))
             num_generated = len(formatted_quiz)
             is_partial_salvage = quiz_data.get("message") == "partial_salvage"
             
             logger.info(f"Generated {num_generated}/{num_questions} questions (salvaged={is_partial_salvage})")
             
-            # Phase 5: Handle insufficient questions
+            # Handle insufficient questions
             if num_generated < num_questions and num_generated > 0:
                 missing = num_questions - num_generated
                 
@@ -4672,7 +4822,7 @@ Return ONLY valid JSON, no additional text.""")
                         formatted_quiz = batched_result
                         logger.info(f"After batching: {len(formatted_quiz)}/{num_questions} questions")
             
-            # Phase 6: Enforce exact count — truncate surplus questions
+            # Enforce exact count — truncate surplus questions
             if len(formatted_quiz) > num_questions:
                 formatted_quiz = formatted_quiz[:num_questions]
 

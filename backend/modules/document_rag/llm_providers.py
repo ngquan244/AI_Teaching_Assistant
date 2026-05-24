@@ -7,6 +7,7 @@ Currently supports Groq Cloud (OpenAI-compatible).
 
 import logging
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Union
 from enum import Enum
@@ -114,6 +115,8 @@ class GroqLLM(BaseLLM):
         api_key: Optional[str] = None,
         base_url: str = "https://api.groq.com/openai/v1",
         max_tokens: int = 8192,
+        key_id: Optional[str] = None,
+        masked_key: Optional[str] = None,
         **kwargs
     ):
         super().__init__(model=model, temperature=temperature, **kwargs)
@@ -124,6 +127,12 @@ class GroqLLM(BaseLLM):
         self.api_key = api_key
         self.base_url = base_url
         self.max_tokens = max_tokens
+        # KeyPool identifiers used for per-request logging. Both optional so
+        # single-key (env) usage still works.
+        self.key_id = key_id
+        self.masked_key = masked_key or (
+            f"{api_key[:6]}...{api_key[-4:]}" if api_key and len(api_key) > 10 else "***"
+        )
         
         # Import here to avoid dependency issues if openai not installed
         try:
@@ -149,6 +158,8 @@ class GroqLLM(BaseLLM):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "max_tokens": max_tokens or self.max_tokens,
+            # Let KeyPool handle rate-limit rotation instead of SDK-level retries.
+            "max_retries": 0,
         }
         
         if json_mode:
@@ -166,19 +177,40 @@ class GroqLLM(BaseLLM):
         - 429: Rate limit exceeded
         - Other connection errors
         """
+        t0 = time.monotonic()
+        logger.info(
+            "LLM_REQUEST_START provider=groq model=%s key_id=%s masked_key=%s",
+            self.model, self.key_id or "-", self.masked_key,
+        )
         try:
-            return self.llm.invoke(prompt)
+            result = self.llm.invoke(prompt)
+            logger.info(
+                "LLM_REQUEST_SUCCESS key_id=%s masked_key=%s duration_ms=%d",
+                self.key_id or "-", self.masked_key,
+                int((time.monotonic() - t0) * 1000),
+            )
+            return result
         except Exception as e:
             error_str = str(e).lower()
+            duration_ms = int((time.monotonic() - t0) * 1000)
             
             if "401" in error_str or "unauthorized" in error_str or "invalid api key" in error_str:
-                logger.error(f"Groq authentication error: {e}")
+                logger.error(
+                    "LLM_REQUEST_AUTH_ERROR key_id=%s masked_key=%s duration_ms=%d error=%s",
+                    self.key_id or "-", self.masked_key, duration_ms, e,
+                )
                 raise RuntimeError("Groq API key is invalid or expired")
             elif "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
-                logger.warning(f"Groq rate limit exceeded: {e}")
+                logger.warning(
+                    "LLM_REQUEST_429 key_id=%s masked_key=%s duration_ms=%d error=%s",
+                    self.key_id or "-", self.masked_key, duration_ms, e,
+                )
                 raise RuntimeError("Groq rate limit exceeded")
             else:
-                logger.error(f"Groq API error: {e}")
+                logger.error(
+                    "LLM_REQUEST_ERROR key_id=%s masked_key=%s duration_ms=%d error=%s",
+                    self.key_id or "-", self.masked_key, duration_ms, e,
+                )
                 raise RuntimeError(f"Groq API error: {str(e)}")
     
     def check_connection(self) -> Dict[str, Any]:
@@ -235,6 +267,8 @@ class LLMFactory:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         groq_api_key: Optional[str] = None,
+        key_id: Optional[str] = None,
+        masked_key: Optional[str] = None,
         **kwargs
     ) -> BaseLLM:
         """
@@ -264,12 +298,25 @@ class LLMFactory:
         logger.info(f"Creating LLM: provider={provider}, model={model}")
         
         if provider == LLMProvider.GROQ.value:
-            return cls._create_groq(model=model, groq_api_key=groq_api_key, **kwargs)
+            return cls._create_groq(
+                model=model,
+                groq_api_key=groq_api_key,
+                key_id=key_id,
+                masked_key=masked_key,
+                **kwargs,
+            )
         else:
             raise ValueError(f"Unknown LLM provider: {provider}. Only 'groq' is supported.")
     
     @classmethod
-    def _create_groq(cls, model: Optional[str] = None, groq_api_key: Optional[str] = None, **kwargs) -> GroqLLM:
+    def _create_groq(
+        cls,
+        model: Optional[str] = None,
+        groq_api_key: Optional[str] = None,
+        key_id: Optional[str] = None,
+        masked_key: Optional[str] = None,
+        **kwargs,
+    ) -> GroqLLM:
         """Create Groq LLM instance"""
         from .config import rag_config
 
@@ -286,6 +333,8 @@ class LLMFactory:
             api_key=effective_key,
             base_url=kwargs.get("base_url", rag_config.GROQ_BASE_URL),
             max_tokens=kwargs.get("max_tokens", 8192),
+            key_id=key_id,
+            masked_key=masked_key,
         )
     
     @classmethod

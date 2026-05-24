@@ -232,8 +232,6 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
         };
       });
 
-      console.log('[QuizBuilder] Creating quiz with', directQuestions.length, 'questions for course', selectedCourseId);
-
       const res = await canvasQuizApi.createFullQuiz({
         course_id: selectedCourseId,
         quiz: quizSettings,
@@ -242,7 +240,6 @@ const QuizBuilderPanel: React.FC<QuizBuilderPanelProps> = ({
         default_points: defaultPoints,
       });
 
-      console.log('[QuizBuilder] Result:', res);
       setResult(res);
     } catch (err) {
       console.error('[QuizBuilder] Unexpected error:', err);

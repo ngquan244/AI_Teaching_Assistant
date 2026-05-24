@@ -148,10 +148,17 @@ def retrieve_quiz_context(
     source: str = "document",
     include_course_domain: bool = False,
     domain_quota_ratio: Optional[float] = None,
+    course_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Retrieve quiz documents on the rag worker and serialize them for transport."""
     with SessionLocal() as rag_db:
         if source == "canvas":
+            if course_id is None:
+                return {
+                    "success": False,
+                    "documents": [],
+                    "error": "course_id is required for Canvas quiz generation",
+                }
             service = _get_canvas_rag_service()
             result = service.retrieve_documents_for_quiz(
                 topics=topics,
@@ -159,6 +166,7 @@ def retrieve_quiz_context(
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=rag_db,
+                course_id=course_id,
                 include_course_domain=include_course_domain,
                 domain_quota_ratio=domain_quota_ratio,
             )
@@ -217,7 +225,10 @@ def extract_topics_payload(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.ingest_document",
-    queue="rag",
+    # Indexing is memory-heavy (PDF + embeddings). Routed to the dedicated
+    # ``rag_index`` queue (concurrency=1) so simultaneous index jobs do NOT
+    # double-load the embedding model / chunks in RAM.
+    queue="rag_index",
     max_retries=3,
     soft_time_limit=300,
     time_limit=600,
@@ -303,7 +314,8 @@ def ingest_document(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.build_index",
-    queue="rag",
+    # See note on ingest_document: routed to ``rag_index`` to bound RAM.
+    queue="rag_index",
     max_retries=3,
 )
 def build_index(
@@ -366,7 +378,6 @@ def build_index(
             _flush_groq_key_pool(key_pool, "build_index")
         
         if result.get("success"):
-            # Log the collection name for debugging
             collection_name = result.get("collection_name", "unknown")
             logger.info(f"Successfully indexed {filename} into collection: {collection_name}")
             job_service.complete_job(job_uuid, result)
@@ -558,7 +569,8 @@ def extract_topics_for_document(
     bind=True,
     base=BaseTaskWithRetry,
     name="backend.tasks.rag_tasks.canvas_index_file",
-    queue="rag",
+    # See note on ingest_document: routed to ``rag_index`` to bound RAM.
+    queue="rag_index",
     max_retries=3,
 )
 def canvas_index_file(
@@ -635,9 +647,20 @@ def canvas_index_file(
             job_service.complete_job(job_uuid, result)
         else:
             job_service.fail_job(job_uuid, result.get("error", "Index failed"))
-        
-        return result
-        
+
+        # Drop chunk / embedding references and force a GC pass before the
+        # next task is pulled from the queue. PDF text + embedding tensors
+        # can hold hundreds of MB; without this the worker process keeps
+        # them alive until the generational collector decides to run.
+        try:
+            import gc
+            return result
+        finally:
+            try:
+                gc.collect()
+            except Exception:
+                pass
+
     except Exception as e:
         logger.exception(f"Error in canvas_index_file task: {e}")
         job_service.fail_job(job_uuid, str(e))
@@ -659,9 +682,15 @@ def canvas_extract_topics(
     filename: str,
     num_topics: int = 8,
     user_id: Optional[str] = None,
+    course_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Extract topics from a Canvas file.
+
+    ``course_id`` is forwarded to the service so the file lookup is scoped
+    to the originating Canvas course. The same ``file_hash`` may exist in
+    multiple courses; without scoping, topic extraction could resolve to
+    the wrong (filename, course_id) pair.
     """
     job_service, db_session = get_sync_job_service()
     job_uuid = uuid.UUID(job_id)
@@ -689,6 +718,7 @@ def canvas_extract_topics(
                     groq_api_key=groq_key,
                     db_session=extract_db,
                     key_pool=key_pool,
+                    course_id=course_id,
                 )
             except Exception as extract_err:
                 # Topic extraction failed (e.g. Groq token exhausted on every

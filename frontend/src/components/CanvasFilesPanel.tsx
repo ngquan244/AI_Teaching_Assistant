@@ -57,7 +57,7 @@ import {
   type CanvasIndexedDocument,
   type PublicConfig,
 } from '../api/canvasRag';
-import { getJob, TERMINAL_STATUSES } from '../api/jobs';
+import { getJob, listJobs, TERMINAL_STATUSES } from '../api/jobs';
 import {
   getSelectedCourse,
   clearSelectedCourse,
@@ -79,7 +79,7 @@ function formatFileSize(bytes: number): string {
 }
 
 // Extended status type
-type ExtendedFileStatus = FileDownloadStatus | 'indexing' | 'indexed' | 'extracting';
+type ExtendedFileStatus = FileDownloadStatus | 'index_queued' | 'indexing' | 'indexed' | 'extracting';
 
 // Extended download state interface
 interface ExtendedDownloadState {
@@ -106,6 +106,8 @@ const StatusIcon: React.FC<{ status: ExtendedFileStatus }> = ({ status }) => {
       return <Copy size={16} className="status-icon duplicate" />;
     case 'failed':
       return <XCircle size={16} className="status-icon failed" />;
+    case 'index_queued':
+      return <Clock size={16} className="status-icon index-queued" />;
     case 'indexing':
       return <Database size={16} className="status-icon indexing spin" />;
     case 'indexed':
@@ -125,6 +127,7 @@ const statusLabels: Record<ExtendedFileStatus, string> = {
   saved: 'Đã lưu',
   duplicate: 'Đã có sẵn',
   failed: 'Thất bại',
+  index_queued: 'Chờ xử lý...',
   indexing: 'Đang xử lý...',
   indexed: 'Đã xử lý',
   extracting: 'Đang trích xuất...',
@@ -217,6 +220,10 @@ const CanvasFilesPanel: React.FC = () => {
   // so a stale cross-process registry/DB row from the recent delete cannot
   // short-circuit the worker into `already_indexed=true`.
   const recentlyRemovedRef = useRef<Set<string>>(new Set());
+
+  // Job IDs we're already polling (either freshly enqueued or rehydrated on
+  // mount). Used to prevent double-polling the same job after a refresh.
+  const polledJobsRef = useRef<Set<string>>(new Set());
   
   // Pagination state
   const [remoteCurrentPage, setRemoteCurrentPage] = useState(1);
@@ -236,6 +243,11 @@ const CanvasFilesPanel: React.FC = () => {
 
   // V2 — course-shared domain knowledge
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
+  // Ref mirrors publicConfig state so that inline async functions (loadCourseDocuments,
+  // handleToggleDomain) always read the *current* value regardless of which render
+  // captured them via closure. Without this, the [selectedCourse] effect captures
+  // loadCourseDocuments when publicConfig is still null and the check never passes.
+  const publicConfigRef = useRef<PublicConfig | null>(null);
   const [domainTogglePending, setDomainTogglePending] = useState<Set<string>>(new Set());
   const [domainToggleError, setDomainToggleError] = useState<string | null>(null);
 
@@ -243,7 +255,10 @@ const CanvasFilesPanel: React.FC = () => {
     let alive = true;
     getPublicConfig()
       .then((cfg) => {
-        if (alive) setPublicConfig(cfg);
+        if (alive) {
+          publicConfigRef.current = cfg;
+          setPublicConfig(cfg);
+        }
       })
       .catch((err) => {
         console.warn('Failed to load public config:', err);
@@ -253,14 +268,38 @@ const CanvasFilesPanel: React.FC = () => {
     };
   }, []);
 
+  // Re-enrich domain flags after both publicConfig and indexed docs are ready.
+  // Fingerprint keyed off file_hashes so the effect fires once per docs change
+  // and stays idempotent (enrichment does not mutate hashes).
+  const lastEnrichedRef = useRef<string>('');
+  useEffect(() => {
+    if (!publicConfig?.enable_course_domain_docs || !selectedCourse) return;
+    const hashes = [
+      ...indexedDocs.map((d) => d.file_hash),
+      ...allIndexedDocs.map((d) => d.file_hash),
+    ];
+    if (hashes.length === 0) return;
+    const fingerprint = `${selectedCourse.id}|${hashes.sort().join(',')}`;
+    if (lastEnrichedRef.current === fingerprint) return;
+    lastEnrichedRef.current = fingerprint;
+    void loadCourseDocuments(selectedCourse.id);
+    // loadCourseDocuments captured fresh on each render but its only state
+    // dependency is publicConfigRef (a ref). selectedCourse is read directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicConfig, selectedCourse, indexedDocs, allIndexedDocs]);
+
   /** V2: load per-course documents (with language + is_course_domain) and
    *  merge into `indexedDocs` / `allIndexedDocs`. Called whenever the
    *  course view refreshes if the feature is enabled. */
   const loadCourseDocuments = async (courseId?: number) => {
-    if (!courseId || !publicConfig?.enable_course_domain_docs) return;
+    if (!courseId || !publicConfigRef.current?.enable_course_domain_docs) {
+      return;
+    }
     try {
       const res = await listCourseDocuments(courseId);
       if (!res.success) return;
+      // Use boolean coercion for is_course_domain so `false` from backend
+      // correctly overrides any stale undefined/true value on the local doc.
       const byHash = new Map(res.documents.map((d) => [d.file_hash, d]));
       const merge = (doc: CanvasIndexedDocument): CanvasIndexedDocument => {
         const enriched = byHash.get(doc.file_hash);
@@ -268,7 +307,11 @@ const CanvasFilesPanel: React.FC = () => {
         return {
           ...doc,
           language: enriched.language ?? doc.language,
-          is_course_domain: enriched.is_course_domain ?? doc.is_course_domain,
+          // IMPORTANT: do NOT use `??` here — backend always returns a boolean,
+          // and we want `false` to overwrite stale optimistic `true` after unmark.
+          is_course_domain: typeof enriched.is_course_domain === 'boolean'
+            ? enriched.is_course_domain
+            : doc.is_course_domain,
           marked_by_user_id: enriched.marked_by_user_id ?? doc.marked_by_user_id,
         };
       };
@@ -289,7 +332,7 @@ const CanvasFilesPanel: React.FC = () => {
     doc: CanvasIndexedDocument,
     nextEnabled: boolean,
   ) => {
-    if (!selectedCourse || !publicConfig?.enable_course_domain_docs) return;
+    if (!selectedCourse || !publicConfigRef.current?.enable_course_domain_docs) return;
     setDomainToggleError(null);
     setDomainTogglePending((prev) => {
       const next = new Set(prev);
@@ -302,12 +345,29 @@ const CanvasFilesPanel: React.FC = () => {
       } else {
         await unmarkDomainDocument(selectedCourse.id, doc.file_hash);
       }
-      // Optimistic local update
+      // Confirmed update (after server acknowledged). Apply locally so UI
+      // stays in sync until next refresh enrichment.
       const apply = (d: CanvasIndexedDocument): CanvasIndexedDocument =>
         d.file_hash === doc.file_hash ? { ...d, is_course_domain: nextEnabled } : d;
       setIndexedDocs((prev) => prev.map(apply));
       setAllIndexedDocs((prev) => prev.map(apply));
+      // Reset enrichment fingerprint so the next mount re-fetches from server
+      // and we verify the mark survived the round-trip.
+      lastEnrichedRef.current = '';
+      // Verify backend persisted by re-fetching /courses/{id}/documents.
+      try {
+        const verify = await listCourseDocuments(selectedCourse.id);
+        const found = verify.documents.find((d) => d.file_hash === doc.file_hash);
+        if (found && found.is_course_domain !== nextEnabled) {
+          console.warn(
+            '[canvas-domain] backend reported a different value than what was sent',
+          );
+        }
+      } catch (verifyErr) {
+        console.warn('[canvas-domain] verify call failed', verifyErr);
+      }
     } catch (err: unknown) {
+      console.error('[canvas-domain] toggle API failed', err);
       const msg =
         (err as { response?: { data?: { detail?: { message?: string; error?: string } } } })
           ?.response?.data?.detail?.message ||
@@ -463,6 +523,58 @@ const CanvasFilesPanel: React.FC = () => {
       if (newStates.size > 0) {
         setDownloadStates(newStates);
       }
+
+      // ── Rehydrate "indexing" state from server-side Jobs ──────────────
+      // After a page refresh the React-local downloadStates Map is empty,
+      // but a CANVAS_INDEX_FILE job may still be in flight on the worker.
+      // Look it up and resume polling so the spinner is restored.
+      try {
+        const live = await listJobs({
+          jobType: 'CANVAS_INDEX_FILE',
+          statuses: ['QUEUED', 'STARTED', 'PROGRESS'],
+          pageSize: 100,
+        });
+        if (live.items.length > 0) {
+          const filenameToFile = new Map<string, CanvasFile>();
+          remoteResponse.files.forEach((f: CanvasFile) => {
+            filenameToFile.set(f.display_name, f);
+          });
+          // Build a fuzzy-match lookup too: jobs are keyed by saved filename
+          // which may differ from display_name for files with commas etc.
+          const matchFile = (jobFilename: string): CanvasFile | undefined => {
+            const direct = filenameToFile.get(jobFilename);
+            if (direct) return direct;
+            return remoteResponse.files.find((f: CanvasFile) =>
+              filenamesMatch(jobFilename, f.display_name),
+            );
+          };
+
+          const rehydrated = new Map(newStates);
+          const toPoll: Array<{ file: CanvasFile; filename: string; jobId: string }> = [];
+          for (const job of live.items) {
+            const jobFilename = (job.payload as { filename?: string } | null)?.filename;
+            if (!jobFilename) continue;
+            const file = matchFile(jobFilename);
+            if (!file) continue; // job is for a file not on the current page
+            rehydrated.set(file.id, {
+              fileId: file.id,
+              filename: file.display_name,
+              status: job.status === 'QUEUED' ? 'index_queued' : 'indexing',
+            });
+            toPoll.push({ file, filename: jobFilename, jobId: job.id });
+          }
+          if (toPoll.length > 0) {
+            setDownloadStates(rehydrated);
+            for (const { file, filename, jobId } of toPoll) {
+              // Fire-and-forget; pollIndexJob guards against duplicate polls.
+              void pollIndexJob(file.id, filename, file.display_name, jobId);
+            }
+          }
+        }
+      } catch (jobErr) {
+        // Non-fatal: rehydration failure just means no spinner is shown.
+        console.warn('Failed to rehydrate indexing jobs:', jobErr);
+      }
     } catch (err) {
       setError('Lỗi kết nối mạng. Vui lòng kiểm tra kết nối.');
       setIsCanvasAvailable(false);
@@ -537,6 +649,72 @@ const CanvasFilesPanel: React.FC = () => {
     }
   };
 
+  /**
+   * Poll a canvas_index_file job until it terminates, updating the
+   * download-state UI for the matching file. Used both immediately after
+   * enqueueing a new index job AND after a page refresh to rehydrate the
+   * "indexing" spinner for jobs that are still in flight on the server.
+   */
+  const pollIndexJob = useCallback(
+    async (
+      fileId: number,
+      filenameToIndex: string,
+      displayName: string,
+      jobId: string,
+    ) => {
+      if (polledJobsRef.current.has(jobId)) return;
+      polledJobsRef.current.add(jobId);
+      try {
+        let jobResult = await getJob(jobId);
+        while (!TERMINAL_STATUSES.includes(jobResult.status)) {
+          // Transition from "waiting in queue" to "actively processing"
+          if (jobResult.status === 'STARTED' || jobResult.status === 'PROGRESS') {
+            updateFileStatus(fileId, { status: 'indexing' });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          jobResult = await getJob(jobId);
+        }
+
+        if (jobResult.status === 'SUCCEEDED' && jobResult.result) {
+          const result = jobResult.result as {
+            success?: boolean;
+            already_indexed?: boolean;
+            error?: string;
+          };
+          if (result.success) {
+            recentlyRemovedRef.current.delete(filenameToIndex);
+            recentlyRemovedRef.current.delete(displayName);
+            updateFileStatus(fileId, { status: 'indexed' });
+            if (!result.already_indexed) {
+              await refreshIndexedData(selectedCourse?.id, 1);
+              window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
+            }
+          } else {
+            updateFileStatus(fileId, {
+              status: 'failed',
+              error: result.error || 'Index failed',
+            });
+          }
+        } else {
+          updateFileStatus(fileId, {
+            status: 'failed',
+            error: jobResult.error_message || 'Index failed',
+          });
+        }
+      } catch (err) {
+        updateFileStatus(fileId, { status: 'failed', error: 'Index failed' });
+      } finally {
+        polledJobsRef.current.delete(jobId);
+      }
+    },
+    // selectedCourse and updateFileStatus are stable enough; refreshIndexedData
+    // closes over selectedCourse but we read selectedCourse?.id directly here
+    // and refreshIndexedData itself is recreated on every render. Keeping the
+    // dep list small to avoid restarting polls.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [updateFileStatus, selectedCourse?.id],
+  );
+
   const downloadAndIndexFile = async (file: CanvasFile) => {
     if (!selectedCourse) return;
 
@@ -575,8 +753,8 @@ const CanvasFilesPanel: React.FC = () => {
       }
     }
 
-    // Proceed to index via async job
-    updateFileStatus(file.id, { status: 'indexing' });
+    // Proceed to index via async job — show queued until worker picks it up
+    updateFileStatus(file.id, { status: 'index_queued' });
     
     try {
       // Force re-index whenever we have evidence the prior index was removed:
@@ -592,13 +770,6 @@ const CanvasFilesPanel: React.FC = () => {
         downloadResult.status === 'duplicate' &&
         !allIndexedDocs.some((doc) => filenamesMatch(filenameToIndex, doc.filename));
       const forceReindex = sessionMark || inferredFromState;
-      console.log('[canvas-rag] asyncIndexCanvasFile', {
-        filename: filenameToIndex,
-        courseId: selectedCourse?.id,
-        forceReindex,
-        sessionMark,
-        inferredFromState,
-      });
       const asyncResp = await asyncIndexCanvasFile(
         filenameToIndex,
         selectedCourse?.id,
@@ -606,44 +777,10 @@ const CanvasFilesPanel: React.FC = () => {
       );
       const jobId = asyncResp.job_id;
 
-      // Poll until job completes
-      let jobResult = await getJob(jobId);
-      while (!TERMINAL_STATUSES.includes(jobResult.status)) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        jobResult = await getJob(jobId);
-      }
-
-      if (jobResult.status === 'SUCCEEDED' && jobResult.result) {
-        const result = jobResult.result as {
-          success?: boolean;
-          already_indexed?: boolean;
-          error?: string;
-        };
-        if (result.success) {
-          // Re-index attempt completed; clear any "recently removed" mark.
-          recentlyRemovedRef.current.delete(filenameToIndex);
-          recentlyRemovedRef.current.delete(file.display_name);
-          if (result.already_indexed) {
-            updateFileStatus(file.id, { status: 'indexed' });
-          } else {
-            updateFileStatus(file.id, { status: 'indexed' });
-            // Refresh indexed docs to show updated status
-            await refreshIndexedData(selectedCourse?.id, 1);
-            // Dispatch event to notify DocumentRAGPanel to refresh topics
-            window.dispatchEvent(new CustomEvent('canvas-topics-updated'));
-          }
-        } else {
-          updateFileStatus(file.id, { 
-            status: 'failed', 
-            error: result.error || 'Index failed' 
-          });
-        }
-      } else {
-        updateFileStatus(file.id, { 
-          status: 'failed', 
-          error: jobResult.error_message || 'Index failed' 
-        });
-      }
+      // Delegate polling + final-state UI updates to the shared helper so the
+      // exact same logic runs for newly-enqueued jobs AND for jobs rehydrated
+      // after a page refresh.
+      await pollIndexJob(file.id, filenameToIndex, file.display_name, jobId);
     } catch (err) {
       updateFileStatus(file.id, { 
         status: 'failed', 
@@ -705,7 +842,7 @@ const CanvasFilesPanel: React.FC = () => {
     setFileActionStates(prev => new Map(prev).set(filename, 'extracting'));
     
     try {
-      const asyncResp = await asyncExtractCanvasTopics(filename, 10);
+      const asyncResp = await asyncExtractCanvasTopics(filename, 10, selectedCourse?.id);
       const jobId = asyncResp.job_id;
 
       // Poll until job completes
@@ -758,11 +895,14 @@ const CanvasFilesPanel: React.FC = () => {
     if (!ok) {
       return;
     }
-    
+
+    if (!selectedCourse?.id) {
+      console.warn('[remove-index] missing selectedCourse; aborting destructive call');
+      return;
+    }
+
     try {
-      console.log('[canvas-rag] removeCanvasFileIndex', { filename, courseId: selectedCourse?.id });
-      const result = await removeCanvasFileIndex(filename);
-      console.log('[canvas-rag] removeCanvasFileIndex response', result);
+      const result = await removeCanvasFileIndex(filename, selectedCourse.id);
       if (result.success) {
         recentlyRemovedRef.current.add(filename);
         await refreshIndexedData(selectedCourse?.id, 1);
@@ -787,15 +927,18 @@ const CanvasFilesPanel: React.FC = () => {
     if (!ok) {
       return;
     }
-    
+
+    if (!selectedCourse?.id) {
+      console.warn('[remove-index] missing selectedCourse; aborting destructive call');
+      return;
+    }
+
     try {
       // Try with both original and sanitized name
-      console.log('[canvas-rag] removeCanvasFileIndex (remote)', { filename: file.display_name, sanitizedName, fileId: file.id });
-      let result = await removeCanvasFileIndex(sanitizedName);
+      let result = await removeCanvasFileIndex(sanitizedName, selectedCourse.id);
       if (!result.success) {
-        result = await removeCanvasFileIndex(file.display_name);
+        result = await removeCanvasFileIndex(file.display_name, selectedCourse.id);
       }
-      console.log('[canvas-rag] removeCanvasFileIndex (remote) response', result);
 
       if (result.success) {
         recentlyRemovedRef.current.add(file.display_name);
@@ -816,8 +959,12 @@ const CanvasFilesPanel: React.FC = () => {
 
   // Edit topics modal handlers
   const openEditTopicsModal = async (filename: string) => {
+    if (!selectedCourse?.id) {
+      console.warn('[edit-topics] missing selectedCourse; cannot load Canvas topics');
+      return;
+    }
     try {
-      const response = await getCanvasDocumentTopics(filename);
+      const response = await getCanvasDocumentTopics(filename, selectedCourse.id);
       setEditingFilename(filename);
       setEditingTopics(response.topics || []);
       setNewTopicInput('');
@@ -904,7 +1051,7 @@ const CanvasFilesPanel: React.FC = () => {
       duplicates: states.filter((s) => s.status === 'duplicate').length,
       failed: states.filter((s) => s.status === 'failed').length,
       pending: states.filter((s) =>
-        ['queued', 'downloading', 'hashing', 'indexing', 'extracting'].includes(s.status)
+        ['queued', 'downloading', 'hashing', 'index_queued', 'indexing', 'extracting'].includes(s.status)
       ).length,
     };
   };
@@ -1187,7 +1334,7 @@ const CanvasFilesPanel: React.FC = () => {
                                           <button
                                             className="btn-action"
                                             onClick={() => downloadAndIndexFile(file)}
-                                            disabled={isDownloading || ['downloading', 'indexing'].includes(state?.status || '')}
+                                            disabled={isDownloading || ['downloading', 'index_queued', 'indexing'].includes(state?.status || '')}
                                             title="Tải & Index"
                                           >
                                             <Database size={14} />
@@ -1359,7 +1506,7 @@ const CanvasFilesPanel: React.FC = () => {
                             const actionState = fileActionStates.get(doc.filename);
                             const togglePending = domainTogglePending.has(doc.file_hash);
                             return (
-                              <tr key={doc.file_hash}>
+                              <tr key={`${doc.course_id ?? 'nocourse'}:${doc.file_hash}`}>
                                 <td>
                                   <div className="file-name">
                                     <FileText size={16} />

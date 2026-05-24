@@ -35,20 +35,29 @@ logger = logging.getLogger(__name__)
 
 default_exchange = Exchange("default", type="direct")
 rag_exchange = Exchange("rag", type="direct")
+rag_index_exchange = Exchange("rag_index", type="direct")
 llm_exchange = Exchange("llm", type="direct")
 canvas_exchange = Exchange("canvas", type="direct")
 
 CELERY_QUEUES = (
     Queue("default", default_exchange, routing_key="default"),
     Queue("rag", rag_exchange, routing_key="rag"),
+    # Dedicated single-concurrency queue for memory-heavy document indexing
+    # (PDF load + embedding). Keeps RAM bounded and prevents starving the
+    # interactive `rag` queue (retrieve_*, query_documents, extract_topics_*).
+    Queue("rag_index", rag_index_exchange, routing_key="rag_index"),
     Queue("llm", llm_exchange, routing_key="llm"),
     Queue("canvas", canvas_exchange, routing_key="canvas"),
 )
 
 # Task routing based on task name patterns
 CELERY_ROUTES = {
-    # RAG tasks
+    # RAG tasks (default for the module)
     "backend.tasks.rag_tasks.*": {"queue": "rag", "routing_key": "rag"},
+    # Memory-heavy indexing tasks — explicit overrides to the rag_index queue
+    "backend.tasks.rag_tasks.ingest_document": {"queue": "rag_index", "routing_key": "rag_index"},
+    "backend.tasks.rag_tasks.build_index": {"queue": "rag_index", "routing_key": "rag_index"},
+    "backend.tasks.rag_tasks.canvas_index_file": {"queue": "rag_index", "routing_key": "rag_index"},
     # LLM tasks
     "backend.tasks.llm_tasks.*": {"queue": "llm", "routing_key": "llm"},
     # Canvas tasks

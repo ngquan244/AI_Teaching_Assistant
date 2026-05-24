@@ -204,8 +204,25 @@ class CollectionRegistry:
                 logger.warning(f"Could not reload collection registry (keeping previous state): {e}")
     
     @staticmethod
-    def _make_key(file_hash: str, user_id: Optional[str] = None) -> str:
-        """Create composite registry key: '{user_id}:{file_hash}' or '{file_hash}' for legacy."""
+    def _make_key(
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> str:
+        """Create composite registry key.
+
+        Key format (most specific first):
+          - ``{user_id}:{course_id}:{file_hash}``  — Canvas, per-course
+          - ``{user_id}:{file_hash}``              — upload OR legacy Canvas
+          - ``{file_hash}``                        — very old shared entry
+
+        The 3-segment form is required for Canvas files so the same content
+        indexed in two different Canvas courses by the same user does NOT
+        collide in the on-disk registry. See alembic migration
+        016_canvas_unique_per_course.
+        """
+        if user_id and course_id is not None:
+            return f"{user_id}:{course_id}:{file_hash}"
         if user_id:
             return f"{user_id}:{file_hash}"
         return file_hash
@@ -214,25 +231,51 @@ class CollectionRegistry:
         self,
         file_hash: str,
         user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
     ) -> Optional[CollectionMetadata]:
         """
         Resolve registry metadata with backward-compatible fallback.
 
-        Older indexes were stored under the plain `file_hash` key with
-        `user_id=None`. After per-user keys were introduced, those legacy
-        entries may still exist without a user-scoped mirror. When a lookup is
-        performed with a user_id, falling back to the legacy entry prevents us
-        from generating the wrong collection name (`doc_*`) for an existing
-        Canvas collection (`canvas_*`).
-        """
-        key = self._make_key(file_hash, user_id)
-        meta = self._registry.get(key)
-        if meta is not None or user_id is None:
-            return meta
+        Lookup order:
+          1. ``{user_id}:{course_id}:{file_hash}`` — preferred Canvas key.
+          2. ``{user_id}:{file_hash}``             — pre-V2 Canvas key OR
+             upload key. For Canvas (course_id given), only return if the
+             legacy meta's ``course_id`` matches; otherwise it belongs to
+             a different course and must NOT be returned.
+          3. ``{file_hash}``                       — pre-user-isolation key.
 
-        legacy_meta = self._registry.get(file_hash)
-        if legacy_meta and legacy_meta.user_id is None:
-            return legacy_meta
+        Returning a legacy entry that belongs to a different course would
+        cause the cross-course collision this whole patch is fixing, so the
+        course_id check on step 2/3 is mandatory whenever course_id is set.
+        """
+        # 1. Per-course Canvas key (V2).
+        if user_id and course_id is not None:
+            meta = self._registry.get(self._make_key(file_hash, user_id, course_id))
+            if meta is not None:
+                return meta
+
+        # 2. User-scoped key (pre-V2 canvas, or upload).
+        if user_id:
+            meta = self._registry.get(self._make_key(file_hash, user_id))
+            if meta is not None:
+                if course_id is not None and meta.course_id != course_id:
+                    # Legacy canvas row from a DIFFERENT course — do not
+                    # leak it as a hit for the current course.
+                    pass
+                else:
+                    return meta
+        else:
+            meta = self._registry.get(file_hash)
+            if meta is not None:
+                return meta
+
+        # 3. Pre-user-isolation shared key.
+        if user_id is not None:
+            legacy_meta = self._registry.get(file_hash)
+            if legacy_meta and legacy_meta.user_id is None:
+                if course_id is not None and legacy_meta.course_id != course_id:
+                    return None
+                return legacy_meta
         return None
 
     def _save(self):
@@ -254,10 +297,15 @@ class CollectionRegistry:
         except Exception as e:
             logger.error(f"Could not save collection registry: {e}")
     
-    def get(self, file_hash: str, user_id: Optional[str] = None) -> Optional[CollectionMetadata]:
-        """Get collection metadata by file hash (scoped to user when provided)."""
+    def get(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> Optional[CollectionMetadata]:
+        """Get collection metadata by file hash (scoped to user+course when provided)."""
         with self._lock:
-            return self._get_meta_with_legacy_fallback(file_hash, user_id)
+            return self._get_meta_with_legacy_fallback(file_hash, user_id, course_id)
     
     def register(
         self,
@@ -268,9 +316,14 @@ class CollectionRegistry:
         chunk_count: int = 0,
         user_id: Optional[str] = None,
     ) -> CollectionMetadata:
-        """Register a new or updated collection."""
+        """Register a new or updated collection.
+
+        For Canvas files (``course_id`` provided) the registry key includes
+        the course_id so the same content can co-exist under two different
+        courses for the same user.
+        """
         with self._lock:
-            key = self._make_key(file_hash, user_id)
+            key = self._make_key(file_hash, user_id, course_id)
             now = datetime.now().isoformat()
 
             with locked_json_state(self.registry_path, dict) as data:
@@ -299,24 +352,61 @@ class CollectionRegistry:
 
             return self._registry[key]
     
-    def unregister(self, file_hash: str, user_id: Optional[str] = None) -> bool:
-        """Remove a collection entry from registry for a specific user."""
+    def unregister(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> bool:
+        """Remove a collection entry from registry for a specific user (+course).
+
+        Tries the most-specific key first, then falls back to per-user and
+        pre-user-isolation legacy keys. For Canvas (course_id given), the
+        legacy per-user key is only removed when its stored ``course_id``
+        matches — otherwise that entry belongs to a DIFFERENT course and
+        must not be touched.
+        """
         with self._lock:
-            key = self._make_key(file_hash, user_id)
             removed = False
             with locked_json_state(self.registry_path, dict) as data:
-                if key in data:
-                    del data[key]
-                    removed = True
-                elif user_id is not None:
-                    # Legacy pre-user-isolation entries were stored under the
-                    # plain file_hash key. If the current lookup resolved via
-                    # that fallback, remove the legacy key as well so delete
-                    # operations truly clear the registry entry.
+                # 1. Per-course Canvas key.
+                if user_id and course_id is not None:
+                    canvas_key = self._make_key(file_hash, user_id, course_id)
+                    if canvas_key in data:
+                        del data[canvas_key]
+                        removed = True
+
+                # 2. Per-user legacy key. Safe to remove only when it's the
+                #    same course (or course_id wasn't provided — upload path).
+                if user_id:
+                    user_key = self._make_key(file_hash, user_id)
+                    legacy_user = data.get(user_key)
+                    if legacy_user is not None:
+                        same_course = (
+                            course_id is None
+                            or legacy_user.get("course_id") == course_id
+                        )
+                        if same_course:
+                            del data[user_key]
+                            removed = True
+
+                # 3. Pre-user-isolation shared key.
+                if user_id is not None:
                     legacy = data.get(file_hash)
                     if legacy and legacy.get("user_id") is None:
-                        del data[file_hash]
-                        removed = True
+                        same_course = (
+                            course_id is None
+                            or legacy.get("course_id") == course_id
+                        )
+                        if same_course:
+                            del data[file_hash]
+                            removed = True
+                elif file_hash in data:
+                    # user_id is None — only legitimate when caller is the
+                    # legacy code path itself.
+                    del data[file_hash]
+                    removed = True
+
                 self._refresh_from_data(data)
             return removed
     
@@ -333,16 +423,26 @@ class CollectionRegistry:
                 if meta.collection_name == collection_name
             )
     
-    def is_indexed(self, file_hash: str, user_id: Optional[str] = None) -> bool:
-        """Check if a file is already indexed (scoped to user when provided)."""
+    def is_indexed(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> bool:
+        """Check if a file is already indexed (scoped to user+course when provided)."""
         with self._lock:
-            meta = self._get_meta_with_legacy_fallback(file_hash, user_id)
+            meta = self._get_meta_with_legacy_fallback(file_hash, user_id, course_id)
             return meta is not None and meta.is_indexed
     
-    def get_collection_name(self, file_hash: str, user_id: Optional[str] = None) -> Optional[str]:
-        """Get collection name for a file hash."""
+    def get_collection_name(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> Optional[str]:
+        """Get collection name for a file hash (scoped to user+course when provided)."""
         with self._lock:
-            meta = self._get_meta_with_legacy_fallback(file_hash, user_id)
+            meta = self._get_meta_with_legacy_fallback(file_hash, user_id, course_id)
             return meta.collection_name if meta else None
     
     def get_all(self, user_id: Optional[str] = None) -> List[CollectionMetadata]:
@@ -363,20 +463,36 @@ class CollectionRegistry:
                 if meta.user_id == user_id
             ]
     
-    def get_by_filenames(self, filenames: List[str], user_id: Optional[str] = None) -> List[CollectionMetadata]:
-        """Get collections for specific filenames, scoped to user when provided."""
+    def get_by_filenames(
+        self,
+        filenames: List[str],
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> List[CollectionMetadata]:
+        """Get collections for specific filenames, scoped to user (+course) when provided.
+
+        When ``course_id`` is provided, only entries whose ``meta.course_id``
+        matches (or legacy entries with no course_id) are returned. This
+        prevents the same filename indexed in two different Canvas courses
+        from cross-contaminating each other's lookups.
+        """
         with self._lock:
             if user_id is None:
-                return [
+                results = [
                     meta for meta in self._registry.values()
                     if meta.filename in filenames
                 ]
+                if course_id is not None:
+                    results = [m for m in results if m.course_id == course_id]
+                return results
 
             # Prefer user-scoped entries, but include legacy shared entries for
             # files that have not been backfilled into per-user registry keys.
             matches_by_hash: Dict[str, CollectionMetadata] = {}
             for meta in self._registry.values():
                 if meta.filename not in filenames:
+                    continue
+                if course_id is not None and meta.course_id != course_id:
                     continue
                 if meta.user_id == user_id:
                     matches_by_hash[meta.file_hash] = meta
@@ -639,11 +755,12 @@ class PerFileCollectionManager:
         Args:
             file_hash: MD5 hash of the file
             course_id: Optional Canvas course ID
+            user_id: Optional owner user_id for per-user scoping
             
         Returns:
             Deterministic collection name
         """
-        meta = self.registry.get(file_hash, user_id=user_id)
+        meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
         if meta:
             return meta.collection_name
         return CollectionNameGenerator.for_document(file_hash, course_id)
@@ -668,7 +785,7 @@ class PerFileCollectionManager:
         """
         # First check if we already have metadata for this file in registry
         # This ensures we use the correct collection name for existing files
-        meta = self.registry.get(file_hash, user_id=user_id)
+        meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
         if meta:
             collection_name = meta.collection_name
         else:
@@ -811,14 +928,14 @@ class PerFileCollectionManager:
         else:
             # First try to get collection name and course_id from registry
             # This ensures we use the correct collection name even if course_id isn't passed
-            meta = self.registry.get(file_hash, user_id=user_id)
+            meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
             if not meta:
                 # Registry may be stale in multi-process Docker (e.g., worker-llm
                 # hasn't seen backend's ingest). Reload once from disk before
                 # falling back to generated name, which would produce the WRONG
                 # name (doc_* instead of canvas_*) and create an empty collection.
                 self.registry.reload()
-                meta = self.registry.get(file_hash, user_id=user_id)
+                meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
             if meta:
                 collection_name = meta.collection_name
                 actual_course_id = meta.course_id
@@ -926,7 +1043,7 @@ class PerFileCollectionManager:
             Langchain retriever object
         """
         # Get metadata from registry to use correct collection name
-        meta = self.registry.get(file_hash, user_id=user_id)
+        meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
         if meta:
             actual_course_id = meta.course_id
             filename = meta.filename
@@ -950,9 +1067,14 @@ class PerFileCollectionManager:
             search_kwargs=search_kwargs
         )
     
-    def is_indexed(self, file_hash: str, user_id: Optional[str] = None) -> bool:
-        """Check if a file is already indexed (optionally for a specific user)."""
-        return self.registry.is_indexed(file_hash, user_id=user_id)
+    def is_indexed(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> bool:
+        """Check if a file is already indexed (optionally for a specific user+course)."""
+        return self.registry.is_indexed(file_hash, user_id=user_id, course_id=course_id)
     
     def get_indexed_files(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get list of indexed files, optionally filtered by user."""
@@ -970,9 +1092,14 @@ class PerFileCollectionManager:
             for meta in self.registry.get_all(user_id=user_id)
         ]
     
-    def get_collection_stats(self, file_hash: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_collection_stats(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Get statistics for a specific file's collection."""
-        meta = self.registry.get(file_hash, user_id=user_id)
+        meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
         if not meta:
             return {"error": "Collection not found"}
         
@@ -997,20 +1124,28 @@ class PerFileCollectionManager:
         
         return stats
     
-    def delete_collection(self, file_hash: str, user_id: Optional[str] = None) -> bool:
+    def delete_collection(
+        self,
+        file_hash: str,
+        user_id: Optional[str] = None,
+        course_id: Optional[int] = None,
+    ) -> bool:
         """
         Delete a file's collection.
-        If user_id is given, only removes that user's registry entry.
+        If ``user_id`` is given, only removes that user's registry entry.
+        For Canvas files, ``course_id`` MUST be passed so we don't tear down
+        a different course's collection that happens to share the same hash.
         Actual ChromaDB collection is only deleted when no users reference it.
         
         Args:
             file_hash: MD5 hash of the file
             user_id: Optional user who owns this entry
+            course_id: Optional Canvas course ID (REQUIRED for Canvas deletes)
             
         Returns:
             True if deleted successfully (or marked for cleanup)
         """
-        meta = self.registry.get(file_hash, user_id=user_id)
+        meta = self.registry.get(file_hash, user_id=user_id, course_id=course_id)
         if not meta:
             logger.warning(f"Cannot delete collection: file_hash {file_hash} not found in registry")
             return False
@@ -1020,8 +1155,11 @@ class PerFileCollectionManager:
         
         with lock:
             # 1. First, unregister from registry (most important - prevents listing)
-            self.registry.unregister(file_hash, user_id=user_id)
-            logger.info(f"Unregistered collection from registry: {collection_name} (user={user_id})")
+            self.registry.unregister(file_hash, user_id=user_id, course_id=course_id)
+            logger.info(
+                f"Unregistered collection from registry: {collection_name} "
+                f"(user={user_id}, course={course_id})"
+            )
             
             # 2. Only delete actual ChromaDB data if no other users reference this hash
             remaining_refs = self.registry.count_collection_references(collection_name)
@@ -1139,7 +1277,9 @@ class PerFileCollectionManager:
                 # Only remove user's registry entries; delete ChromaDB data only if no other refs
                 user_entries = self.registry.get_by_user(user_id)
                 for meta in user_entries:
-                    self.delete_collection(meta.file_hash, user_id=user_id)
+                    self.delete_collection(
+                        meta.file_hash, user_id=user_id, course_id=meta.course_id,
+                    )
                 return True
             
             # Clear all cached collections

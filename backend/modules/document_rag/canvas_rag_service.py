@@ -386,6 +386,30 @@ class CanvasRAGService:
                 state.update(registry)
         except Exception as e:
             logger.error(f"Failed to save indexed files registry: {e}")
+
+    def _indexed_registry_has(
+        self,
+        *,
+        user_id: Optional[str],
+        file_hash: str,
+        course_id: Optional[int],
+    ) -> bool:
+        """Check whether indexed_files.json has an entry for (file_hash, course_id).
+
+        Looks up both the new course-scoped key ``{course_id}:{file_hash}`` and
+        the legacy bare-hash key (only when its stored ``course_id`` matches).
+        """
+        registry = self._load_indexed_registry(user_id)
+        if course_id is not None:
+            scoped_key = f"{course_id}:{file_hash}"
+            if scoped_key in registry:
+                return True
+        legacy = registry.get(file_hash)
+        if legacy is not None:
+            if course_id is None:
+                return True
+            return legacy.get("course_id") == course_id
+        return False
     
     # ===== Download and Index =====
     
@@ -524,11 +548,16 @@ class CanvasRAGService:
             # a recent delete cannot short-circuit us into ``already_indexed``.
             if force_reindex:
                 logger.info(
-                    "Canvas force_reindex requested: purging prior state for %s (hash=%s, user=%s)",
-                    filename, file_hash, user_id,
+                    "Canvas force_reindex requested: purging prior state for %s (hash=%s, user=%s, course=%s)",
+                    filename, file_hash, user_id, course_id,
                 )
                 try:
-                    self.remove_index(filename, user_id=user_id, db_session=db_session)
+                    self.remove_index(
+                        filename,
+                        user_id=user_id,
+                        course_id=course_id,
+                        db_session=db_session,
+                    )
                 except Exception as _purge_exc:
                     logger.warning(
                         "force_reindex pre-purge failed for %s: %s", filename, _purge_exc,
@@ -542,29 +571,31 @@ class CanvasRAGService:
             topics_extracted: List[Dict[str, str]] = []
             indexed_source = None  # 'db' | 'registry' — for debug logging only
 
-            if db_session and user_id:
+            if db_session and user_id and course_id is not None:
                 try:
                     user_uuid = _uuid.UUID(user_id)
-                    already_indexed = SyncRAGCollectionRepository.is_indexed(
+                    already_indexed = SyncRAGCollectionRepository.is_indexed_canvas(
                         db_session,
-                        file_hash,
-                        user_uuid,
-                        source=RAGSourceType.CANVAS,
+                        user_id=user_uuid,
+                        course_id=int(course_id),
+                        file_hash=file_hash,
                     )
                     if already_indexed:
                         indexed_source = "db"
-                        collection_name = SyncRAGCollectionRepository.get_collection_name(
+                        collection_name = SyncRAGCollectionRepository.get_collection_name_canvas(
                             db_session,
-                            file_hash,
-                            user_uuid,
-                            source=RAGSourceType.CANVAS,
+                            user_id=user_uuid,
+                            course_id=int(course_id),
+                            file_hash=file_hash,
                         )
                 except Exception as e:
                     logger.warning(f"Canvas DB indexed check failed: {e}")
                     db_session.rollback()
 
             if not already_indexed:
-                registry_meta = self._collection_manager.registry.get(file_hash, user_id=user_id)
+                registry_meta = self._collection_manager.registry.get(
+                    file_hash, user_id=user_id, course_id=course_id,
+                )
 
                 # Self-heal stale legacy entries that no longer have a user-scoped
                 # indexed-registry row or DB record. These can be left behind by
@@ -573,23 +604,31 @@ class CanvasRAGService:
                     registry_meta is not None
                     and user_id is not None
                     and registry_meta.user_id is None
-                    and file_hash not in self._load_indexed_registry(user_id)
+                    and not self._indexed_registry_has(
+                        user_id=user_id, file_hash=file_hash, course_id=course_id,
+                    )
                 ):
                     logger.warning(
                         "Detected stale legacy Canvas registry entry for %s; removing it before re-index",
                         filename,
                     )
                     try:
-                        self._collection_manager.delete_collection(file_hash, user_id=user_id)
+                        self._collection_manager.delete_collection(
+                            file_hash, user_id=user_id, course_id=course_id,
+                        )
                     except Exception as e:
                         logger.warning(f"Could not delete stale legacy Canvas registry entry: {e}")
                         try:
-                            self._collection_manager.registry.unregister(file_hash, user_id=user_id)
+                            self._collection_manager.registry.unregister(
+                                file_hash, user_id=user_id, course_id=course_id,
+                            )
                         except Exception:
                             pass
                     self._topic_storage.remove_document(file_hash, user_id=user_id)
                     self._topic_storage.remove_document(file_hash, user_id=None)
-                    registry_meta = self._collection_manager.registry.get(file_hash, user_id=user_id)
+                    registry_meta = self._collection_manager.registry.get(
+                        file_hash, user_id=user_id, course_id=course_id,
+                    )
 
                 if registry_meta is not None and registry_meta.is_indexed:
                     already_indexed = True
@@ -603,13 +642,13 @@ class CanvasRAGService:
                 )
 
                 has_topics = False
-                if db_session and user_id:
+                if db_session and user_id and course_id is not None:
                     try:
-                        has_topics = SyncRAGCollectionRepository.has_topics(
+                        has_topics = SyncRAGCollectionRepository.has_topics_canvas(
                             db_session,
-                            file_hash,
-                            _uuid.UUID(user_id),
-                            source=RAGSourceType.CANVAS,
+                            user_id=_uuid.UUID(user_id),
+                            course_id=int(course_id),
+                            file_hash=file_hash,
                         )
                     except Exception as e:
                         logger.warning(f"Canvas DB topics check failed: {e}")
@@ -630,13 +669,13 @@ class CanvasRAGService:
                             key_pool=key_pool,
                         )
                         has_topics = len(topics_extracted) > 0
-                        if has_topics and db_session and user_id:
+                        if has_topics and db_session and user_id and course_id is not None:
                             try:
-                                row = SyncRAGCollectionRepository.get(
+                                row = SyncRAGCollectionRepository.get_canvas_by_course_and_hash(
                                     db_session,
-                                    file_hash,
-                                    _uuid.UUID(user_id),
-                                    source=RAGSourceType.CANVAS,
+                                    user_id=_uuid.UUID(user_id),
+                                    course_id=int(course_id),
+                                    file_hash=file_hash,
                                 )
                                 if row:
                                     SyncRAGCollectionRepository.save_topics(
@@ -728,10 +767,17 @@ class CanvasRAGService:
                 except Exception as e:
                     logger.warning(f"Failed to extract topics: {e}")
             
-            # Update indexed files registry (per-user)
+            # Update indexed files registry (per-user, per-course key)
+            # Key format: ``{course_id}:{file_hash}`` for Canvas (course_id required
+            # after migration 016). Legacy entries keyed by bare ``file_hash`` are
+            # still readable but new writes always use the prefixed form.
             indexed_registry_file = self._get_user_indexed_registry_file(user_id) if user_id else self.indexed_files_registry
+            registry_key = (
+                f"{course_id}:{file_hash}" if course_id is not None else file_hash
+            )
             with locked_json_state(indexed_registry_file, dict) as indexed_registry:
-                indexed_registry[file_hash] = {
+                indexed_registry[registry_key] = {
+                    "file_hash": file_hash,
                     "filename": filename,
                     "file_path": file_path,
                     "collection_name": collection_name,
@@ -744,29 +790,36 @@ class CanvasRAGService:
             # ---- Persist to PostgreSQL when session available ----
             col_row = None
             if db_session and user_id:
-                try:
-                    col_row = SyncRAGCollectionRepository.register(
-                        db_session,
-                        user_id=_uuid.UUID(user_id),
-                        file_hash=file_hash,
-                        filename=filename,
-                        collection_name=collection_name or f"canvas_{file_hash[:16]}",
-                        source=RAGSourceType.CANVAS,
-                        course_id=int(course_id) if course_id else None,
-                        chunk_count=added_count,
-                        is_indexed=True,
-                        language=detected_language,
+                if course_id is None:
+                    logger.warning(
+                        "Canvas ingest skipped DB persist: course_id=None for file=%s hash=%s user=%s. "
+                        "This indicates a caller bug — every Canvas indexing path must pass course_id "
+                        "after migration 016_canvas_unique_per_course.",
+                        filename, file_hash, user_id,
                     )
-                    if topics_extracted and col_row:
-                        SyncRAGCollectionRepository.save_topics(
+                else:
+                    try:
+                        col_row = SyncRAGCollectionRepository.register_canvas(
                             db_session,
-                            collection_id=col_row.id,
-                            topics=topics_extracted,
+                            user_id=_uuid.UUID(user_id),
+                            course_id=int(course_id),
+                            file_hash=file_hash,
+                            filename=filename,
+                            collection_name=collection_name or f"canvas_{file_hash[:16]}",
+                            chunk_count=added_count,
+                            is_indexed=True,
+                            language=detected_language,
                         )
-                    db_session.commit()
-                except Exception as e:
-                    logger.warning(f"Could not persist to PostgreSQL: {e}")
-                    db_session.rollback()
+                        if topics_extracted and col_row:
+                            SyncRAGCollectionRepository.save_topics(
+                                db_session,
+                                collection_id=col_row.id,
+                                topics=topics_extracted,
+                            )
+                        db_session.commit()
+                    except Exception as e:
+                        logger.warning(f"Could not persist to PostgreSQL: {e}")
+                        db_session.rollback()
             
             return {
                 "success": True,
@@ -961,24 +1014,43 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
         key_pool: Optional[Any] = None,
+        course_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Extract topics for a specific file by filename."""
+        """Extract topics for a specific file by filename.
+
+        When ``course_id`` is supplied, all lookups are scoped to that course
+        so the same hash existing in multiple courses cannot be resolved
+        ambiguously. Topic extraction itself is read-only / additive, so
+        course_id is *recommended* but not strictly required here.
+        """
         self._ensure_initialized()
 
         file_hash = None
-        course_id = None
+        # Trust the caller-supplied course_id over the one discovered during
+        # lookup; lookups still record course_id when none was provided.
+        resolved_course_id = course_id
 
         if db_session and user_id:
             try:
-                row = SyncRAGCollectionRepository.get_by_filename(
-                    db_session,
-                    filename,
-                    _uuid.UUID(user_id),
-                    source=RAGSourceType.CANVAS,
-                )
+                user_uuid = _uuid.UUID(user_id)
+                row = None
+                if course_id is not None:
+                    row = SyncRAGCollectionRepository.get_by_filename_canvas(
+                        db_session,
+                        filename,
+                        user_uuid,
+                        int(course_id),
+                    )
+                if row is None and course_id is None:
+                    row = SyncRAGCollectionRepository.get_by_filename(
+                        db_session,
+                        filename,
+                        user_uuid,
+                        source=RAGSourceType.CANVAS,
+                    )
                 if row:
                     file_hash = row.file_hash
-                    course_id = row.course_id
+                    resolved_course_id = row.course_id
             except Exception as e:
                 logger.warning(f"DB lookup failed for extract_topics_for_file: {e}")
                 db_session.rollback()
@@ -986,16 +1058,22 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         if not file_hash:
             indexed_registry = self._load_indexed_registry(user_id)
             for hash_val, data in indexed_registry.items():
-                if data.get("filename") == filename:
-                    file_hash = hash_val
-                    course_id = data.get("course_id")
-                    break
+                if data.get("filename") != filename:
+                    continue
+                if course_id is not None and data.get("course_id") != int(course_id):
+                    continue
+                file_hash = data.get("file_hash") or hash_val
+                resolved_course_id = data.get("course_id")
+                break
 
         if not file_hash:
-            matching = self._collection_manager.registry.get_by_filenames([filename], user_id=user_id)
+            matching = self._collection_manager.registry.get_by_filenames(
+                [filename], user_id=user_id,
+                course_id=int(course_id) if course_id is not None else None,
+            )
             if matching:
                 file_hash = matching[0].file_hash
-                course_id = matching[0].course_id
+                resolved_course_id = matching[0].course_id
 
         # Final fallback: case/whitespace/comma-insensitive match across the
         # registry. Frontend may pass the raw display_name when the /indexed
@@ -1015,8 +1093,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 if cand == target or cand_base == target_base or (
                     target_base and (target_base in cand_base or cand_base in target_base)
                 ):
-                    file_hash = hash_val
-                    course_id = data.get("course_id")
+                    if course_id is not None and data.get("course_id") != int(course_id):
+                        continue
+                    file_hash = data.get("file_hash") or hash_val
+                    resolved_course_id = data.get("course_id")
                     break
 
             if not file_hash:
@@ -1028,8 +1108,10 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         if cand == target or cand_base == target_base or (
                             target_base and (target_base in cand_base or cand_base in target_base)
                         ):
+                            if course_id is not None and meta.course_id != int(course_id):
+                                continue
                             file_hash = meta.file_hash
-                            course_id = meta.course_id
+                            resolved_course_id = meta.course_id
                             break
                 except Exception:
                     pass
@@ -1045,39 +1127,42 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 file_hash,
                 filename,
                 num_topics,
-                course_id=course_id,
+                course_id=resolved_course_id,
                 user_id=user_id,
                 groq_api_key=groq_api_key,
                 key_pool=key_pool,
             )
             if topics and db_session and user_id:
                 try:
-                    row = SyncRAGCollectionRepository.get(
-                        db_session,
-                        file_hash,
-                        _uuid.UUID(user_id),
-                        source=RAGSourceType.CANVAS,
-                    )
-                    if row is None:
+                    row = None
+                    if resolved_course_id is not None:
+                        row = SyncRAGCollectionRepository.get_canvas_by_course_and_hash(
+                            db_session,
+                            user_id=_uuid.UUID(user_id),
+                            course_id=int(resolved_course_id),
+                            file_hash=file_hash,
+                        )
+                    if row is None and resolved_course_id is not None:
                         # File was indexed via legacy JSON registry but never
                         # got a DB row. Auto-register so future queries (and
                         # the UI's topic_count) see it.
                         try:
                             collection_name = (
-                                self._collection_manager.get_collection_name(file_hash)
+                                self._collection_manager.get_collection_name(
+                                    file_hash, course_id=resolved_course_id, user_id=user_id,
+                                )
                                 if self._collection_manager else f"canvas_{file_hash[:12]}"
                             )
                         except Exception:
                             collection_name = f"canvas_{file_hash[:12]}"
                         try:
-                            row = SyncRAGCollectionRepository.register(
+                            row = SyncRAGCollectionRepository.register_canvas(
                                 db_session,
                                 user_id=_uuid.UUID(user_id),
+                                course_id=int(resolved_course_id),
                                 file_hash=file_hash,
                                 filename=filename,
                                 collection_name=collection_name,
-                                source=RAGSourceType.CANVAS,
-                                course_id=course_id,
                                 chunk_count=0,
                                 is_indexed=True,
                             )
@@ -1087,6 +1172,12 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                                 file_hash, reg_err,
                             )
                             row = None
+                    if row is None and resolved_course_id is None:
+                        logger.warning(
+                            "extract_topics_for_file: course_id unknown for file=%s hash=%s user=%s; "
+                            "skipping DB topic persistence (V2 requires course_id).",
+                            filename, file_hash, user_id,
+                        )
                     if row:
                         SyncRAGCollectionRepository.save_topics(
                             db_session,
@@ -1229,7 +1320,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         "topic_count": topic_count,
                         "course_id": r.get("course_id"),
                     })
-                    db_seen_hashes.add(r["file_hash"])
+                    db_seen_hashes.add((r["file_hash"], r.get("course_id")))
             except Exception as e:
                 logger.warning(f"DB query failed for list_indexed_documents, falling back to legacy: {e}")
                 db_session.rollback()
@@ -1239,21 +1330,24 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         
         # Source 1: Get from indexed_files_registry (per-user)
         indexed_registry = self._load_indexed_registry(user_id)
-        for file_hash, data in indexed_registry.items():
-            if file_hash in seen_hashes:
+        for hash_key, data in indexed_registry.items():
+            real_file_hash = data.get("file_hash") or hash_key
+            entry_course_id = data.get("course_id")
+            dedup_key = (real_file_hash, entry_course_id)
+            if dedup_key in seen_hashes:
                 continue
             filename = data.get("filename", "unknown")
-            topics = self._topic_storage.get_topics(file_hash, user_id=user_id) or []
+            topics = self._topic_storage.get_topics(real_file_hash, user_id=user_id) or []
             documents.append({
                 "filename": filename,
                 "original_filename": filename,
-                "file_hash": file_hash,
+                "file_hash": real_file_hash,
                 "indexed_at": data.get("indexed_at"),
                 "chunks_added": data.get("chunks_added", 0),
                 "topic_count": len(topics),
-                "course_id": data.get("course_id")
+                "course_id": entry_course_id
             })
-            seen_hashes.add(file_hash)
+            seen_hashes.add(dedup_key)
         
         # Source 2: Get from collection_manager (per-file collections)
         # This catches files indexed via collection_manager but not in indexed_registry
@@ -1261,7 +1355,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             indexed_files = registry.get_all(user_id=user_id)
             for meta in indexed_files:
                 file_hash = meta.file_hash
-                if file_hash and file_hash not in seen_hashes:
+                dedup_key = (file_hash, meta.course_id)
+                if file_hash and dedup_key not in seen_hashes:
                     filename = meta.filename or "unknown"
                     topics = self._topic_storage.get_topics(file_hash, user_id=user_id) or []
                     documents.append({
@@ -1273,6 +1368,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                         "topic_count": len(topics),
                         "course_id": meta.course_id
                     })
+                    seen_hashes.add(dedup_key)
         except Exception as e:
             logger.warning(f"Could not get files from collection_manager: {e}")
         
@@ -1427,6 +1523,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         db_session: Optional[Session] = None,
         groq_api_key: Optional[str] = None,
         *,
+        course_id: Optional[int] = None,
         include_course_domain: bool = False,
         domain_quota_ratio: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -1437,6 +1534,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             selected_documents=selected_documents,
             user_id=user_id,
             db_session=db_session,
+            course_id=course_id,
             include_course_domain=include_course_domain,
             domain_quota_ratio=domain_quota_ratio,
             groq_api_key=groq_api_key,
@@ -1552,6 +1650,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
         *,
+        course_id: Optional[int] = None,
         include_course_domain: bool = False,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Resolve selected Canvas docs into lecture and (optional) domain targets.
@@ -1581,33 +1680,51 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         domain_targets: List[Dict[str, Any]] = []
         lecture_hashes_seen: set = set()
 
-        # ── 1. Resolve lecture rows (existing behavior) ───────────────
+        # ── 1. Resolve lecture rows (course-scoped for Canvas) ─────────
+        # course_id is REQUIRED for Canvas quiz retrieval. The same
+        # filename / file_hash can exist under multiple Canvas courses for
+        # the same user; a course-agnostic lookup will pull cross-course
+        # rows that poison hash_to_collection_name and cause Chroma to fall
+        # back to a generated name with course_id=None → 0 hits. See
+        # migration 016_canvas_unique_per_course for the underlying schema.
+        if course_id is None:
+            raise ValueError(
+                "course_id is required for Canvas quiz generation"
+            )
+
         rows: List[Any] = []
         if selected_documents:
             if db_session and user_id:
                 try:
-                    rows = SyncRAGCollectionRepository.get_by_filenames(
-                        db_session, selected_documents, _uuid.UUID(user_id),
-                        source=RAGSourceType.CANVAS,
+                    rows = SyncRAGCollectionRepository.get_by_filenames_canvas(
+                        db_session,
+                        user_id=_uuid.UUID(user_id),
+                        course_id=course_id,
+                        filenames=selected_documents,
                     )
                     quiz_logger.info(
-                        f"Canvas DB get_by_filenames: {len(rows)} rows: "
-                        f"{[(r.filename, r.file_hash[:8]) for r in rows]}"
+                        "Canvas DB get_by_filenames_canvas rows=%d course_id=%s files=%s",
+                        len(rows), course_id,
+                        [(r.filename, r.file_hash[:8]) for r in rows],
                     )
                 except Exception as e:
-                    logger.warning(f"Canvas DB get_by_filenames failed: {e}")
-                    quiz_logger.warning(f"Canvas DB get_by_filenames failed: {e}")
+                    logger.warning(f"Canvas DB get_by_filenames_canvas failed: {e}")
+                    quiz_logger.warning(
+                        f"Canvas DB get_by_filenames_canvas failed: {e}"
+                    )
                     db_session.rollback()
                     rows = []
             if not rows:
                 matching = self._collection_manager.registry.get_by_filenames(
-                    selected_documents, user_id=user_id,
+                    selected_documents,
+                    user_id=user_id,
+                    course_id=course_id,
                 )
                 # Adapt registry meta -> attribute-equivalent objects
                 rows = matching
                 quiz_logger.info(
-                    f"Canvas registry fallback: matched {len(matching)} of "
-                    f"{len(selected_documents)} docs"
+                    f"Canvas registry fallback course_id={course_id}: matched "
+                    f"{len(matching)} of {len(selected_documents)} docs"
                 )
         elif db_session and user_id:
             try:
@@ -1615,6 +1732,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     db_session, _uuid.UUID(user_id),
                     source=RAGSourceType.CANVAS,
                 )
+                # All-files fallback: filter to current course.
+                rows = [r for r in rows if getattr(r, "course_id", None) == course_id]
             except Exception as e:
                 logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
                 quiz_logger.warning(f"Canvas DB get_all failed for quiz generation: {e}")
@@ -1623,22 +1742,14 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         else:
             quiz_logger.warning(
                 f"canvas selected_documents is None/empty ({selected_documents!r}) "
-                "— will query all user-scoped collections!"
+                "— will query all course-scoped collections!"
             )
 
-        # ── 2. Determine the dominant course_id (V1: single-course only) ──
-        course_ids = {
-            getattr(r, "course_id", None) for r in rows
-            if getattr(r, "course_id", None) is not None
-        }
-        single_course_id: Optional[int] = None
-        if len(course_ids) == 1:
-            single_course_id = next(iter(course_ids))
-        elif len(course_ids) > 1:
-            quiz_logger.warning(
-                "quiz_targets_multi_course course_ids=%s — domain injection skipped",
-                sorted(course_ids),
-            )
+        # ── 2. Course is fixed by caller; no derivation from rows. ────
+        # (Previously: derived single_course_id from set of rows' course_ids,
+        # which collapsed to None when the same filename existed in multiple
+        # courses — root cause of the cross-course quiz retrieval bug.)
+        single_course_id: Optional[int] = course_id
 
         # ── 3. Pre-compute domain marks for that course (if any) ──────
         domain_hashes_for_course: set = set()
@@ -1667,7 +1778,25 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             if not file_hash:
                 continue
             collection_name = getattr(r, "collection_name", None)
+            # Canvas safety net: never let a target carry a None
+            # collection_name — that would force query_collection() to fall
+            # back to a generated name with course_id=None.
+            if not collection_name:
+                collection_name = CollectionNameGenerator.for_canvas_file(
+                    file_hash, single_course_id,
+                )
+                quiz_logger.warning(
+                    "QUIZ_RESOLVE_DOC_REPAIRED filename=%s hash=%s course_id=%s "
+                    "collection_name=%s (row missing collection_name)",
+                    getattr(r, "filename", "?"), file_hash[:8],
+                    single_course_id, collection_name,
+                )
             language = getattr(r, "language", None)
+            quiz_logger.info(
+                "QUIZ_RESOLVE_DOC filename=%s hash=%s course_id=%s collection_name=%s",
+                getattr(r, "filename", "?"), file_hash[:8],
+                single_course_id, collection_name,
+            )
             target = {
                 "file_hash": file_hash,
                 "collection_name": collection_name,
@@ -1738,6 +1867,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
         *,
+        course_id: Optional[int] = None,
         include_course_domain: bool = False,
         domain_quota_ratio: Optional[float] = None,
         groq_api_key: Optional[str] = None,
@@ -1753,12 +1883,27 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 "error": "Cần có ít nhất một chủ đề để tạo quiz"
             }
 
+        # Canvas retrieval MUST be course-scoped. Fail fast so the caller
+        # (route → Celery task) bubbles the error back to the user instead
+        # of silently retrieving from the wrong course.
+        if course_id is None:
+            quiz_logger.error(
+                "QUIZ_CANVAS_NO_COURSE selected_documents=%s user_id=%s",
+                selected_documents, user_id,
+            )
+            return {
+                "success": False,
+                "questions": [],
+                "error": "course_id is required for Canvas quiz generation",
+            }
+
         logger.info(f"Generating Canvas quiz: topics={topics}, num_questions={num_questions}")
         quiz_logger.info(
-            f"canvas generate_quiz called: selected_documents={selected_documents}, "
-            f"user_id={user_id}, db_session={'present' if db_session else 'None'}, "
-            f"include_course_domain={include_course_domain}, "
-            f"domain_quota_ratio={domain_quota_ratio}"
+            "QUIZ_CANVAS_COURSE course_id=%s selected_documents=%s user_id=%s "
+            "db_session=%s include_course_domain=%s domain_quota_ratio=%s",
+            course_id, selected_documents, user_id,
+            "present" if db_session else "None",
+            include_course_domain, domain_quota_ratio,
         )
 
         # Feature flag gates domain injection completely.
@@ -1770,6 +1915,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=db_session,
+                course_id=course_id,
                 include_course_domain=effective_include_domain,
             )
         except Exception as exc:
@@ -1784,6 +1930,7 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=db_session,
+                course_id=course_id,
                 include_course_domain=False,
             )
 
@@ -1794,6 +1941,11 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             t["file_hash"]: t["collection_name"]
             for t in all_targets
             if t.get("collection_name")
+        }
+        hash_to_course_id = {
+            t["file_hash"]: int(t["course_id"])
+            for t in all_targets
+            if t.get("course_id") is not None
         }
         roles_by_hash = {t["file_hash"]: t["role"] for t in all_targets}
         language_by_hash = {
@@ -1833,6 +1985,8 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             language_by_hash=language_by_hash if language_by_hash else None,
             domain_quota_ratio=effective_ratio,
             groq_api_key=groq_api_key,
+            course_id=int(course_id) if course_id is not None else None,
+            hash_to_course_id=hash_to_course_id or None,
         )
         if not prepared.get("success"):
             return prepared
@@ -1894,18 +2048,34 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         filename: str,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        course_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Remove index for a Canvas file (keep the file itself).
         
         Cleans up: ChromaDB collection, legacy vector store,
         indexed registry (JSON), topic storage, PostgreSQL record,
         and any matching CanvasCourseDomainDoc marks.
+
+        ``course_id`` is REQUIRED. See migration 016_canvas_unique_per_course
+        — the same file_hash can legitimately exist under multiple Canvas
+        courses for the same user, so destructive ops MUST be course-scoped
+        to avoid wiping out a sibling course's index.
         """
         self._ensure_collection_manager()
 
+        if course_id is None:
+            logger.error(
+                "Canvas remove_index rejected: course_id is required (filename=%s user=%s)",
+                filename, user_id,
+            )
+            return {
+                "success": False,
+                "error": "course_id is required for Canvas remove_index",
+            }
+
         logger.info(
-            "Canvas remove_index start: filename=%s user=%s",
-            filename, user_id,
+            "Canvas remove_index start: filename=%s user=%s course=%s",
+            filename, user_id, course_id,
         )
         # Pull in any registry/DB writes made by another process (typically the
         # rag worker that just finished indexing this file). Without this, the
@@ -1920,43 +2090,45 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             )
         try:
             hash_to_remove = None
-            course_id_for_domain: Optional[int] = None
+            # course_id is required and validated above — store as int for downstream use.
+            course_id_for_domain: Optional[int] = int(course_id)
             
-            # Source 1: Find file hash in indexed_files_registry (per-user)
+            # Source 1: Find file hash in indexed_files_registry (per-user), course-scoped
             indexed_registry = self._load_indexed_registry(user_id)
             for hash_val, data in indexed_registry.items():
-                if data.get("filename") == filename:
-                    hash_to_remove = hash_val
-                    course_id_for_domain = data.get("course_id")
+                if (
+                    data.get("filename") == filename
+                    and data.get("course_id") == course_id_for_domain
+                ):
+                    hash_to_remove = data.get("file_hash") or hash_val
                     break
             
-            # Source 2: Find file hash in collection_manager registry
+            # Source 2: Find file hash in collection_manager registry (course-scoped)
             if not hash_to_remove:
                 try:
                     registry_matches = self._collection_manager.registry.get_by_filenames(
                         [filename],
                         user_id=user_id,
+                        course_id=course_id_for_domain,
                     )
                     for meta in registry_matches:
-                        if meta.filename == filename:
+                        if meta.filename == filename and meta.course_id == course_id_for_domain:
                             hash_to_remove = meta.file_hash
-                            course_id_for_domain = course_id_for_domain or meta.course_id
                             break
                 except Exception as e:
                     logger.warning(f"Could not search collection_manager: {e}")
             
-            # Source 3: Find file hash from DB
+            # Source 3: Find file hash from DB (course-scoped)
             if not hash_to_remove and db_session and user_id:
                 try:
-                    row = SyncRAGCollectionRepository.get_by_filename(
+                    row = SyncRAGCollectionRepository.get_by_filename_canvas(
                         db_session,
-                        filename,
-                        _uuid.UUID(user_id),
-                        source=RAGSourceType.CANVAS,
+                        user_id=_uuid.UUID(user_id),
+                        course_id=course_id_for_domain,
+                        filename=filename,
                     )
                     if row:
                         hash_to_remove = row.file_hash
-                        course_id_for_domain = course_id_for_domain or row.course_id
                 except Exception as e:
                     logger.warning(f"Could not search DB for file hash: {e}")
 
@@ -1987,18 +2159,22 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
                     return False
 
                 for hash_val, data in indexed_registry.items():
-                    if _matches(data.get("filename") or ""):
-                        hash_to_remove = hash_val
-                        course_id_for_domain = course_id_for_domain or data.get("course_id")
+                    if (
+                        _matches(data.get("filename") or "")
+                        and data.get("course_id") == course_id_for_domain
+                    ):
+                        hash_to_remove = data.get("file_hash") or hash_val
                         break
 
                 if not hash_to_remove:
                     try:
                         all_meta = self._collection_manager.registry.get_all(user_id=user_id)
                         for meta in all_meta:
-                            if _matches(meta.filename or ""):
+                            if (
+                                _matches(meta.filename or "")
+                                and meta.course_id == course_id_for_domain
+                            ):
                                 hash_to_remove = meta.file_hash
-                                course_id_for_domain = course_id_for_domain or meta.course_id
                                 break
                     except Exception as e:
                         logger.warning(f"Fuzzy registry scan failed: {e}")
@@ -2026,7 +2202,11 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             
             # Remove from per-file collection manager
             try:
-                deleted = self._collection_manager.delete_collection(hash_to_remove, user_id=user_id)
+                deleted = self._collection_manager.delete_collection(
+                    hash_to_remove,
+                    user_id=user_id,
+                    course_id=course_id_for_domain,
+                )
                 if deleted:
                     logger.info(f"Deleted collection for file hash: {hash_to_remove}")
                 else:
@@ -2044,22 +2224,28 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
             except Exception as e:
                 logger.warning(f"Could not delete from vector store: {e}")
             
-            # Remove from indexed registry (per-user)
+            # Remove from indexed registry (per-user) — pop course-scoped key
+            # AND the legacy bare-hash key (if any) so a stale legacy entry
+            # doesn't survive the delete.
             indexed_registry_file = self._get_user_indexed_registry_file(user_id) if user_id else self.indexed_files_registry
+            course_scoped_key = f"{course_id_for_domain}:{hash_to_remove}"
             with locked_json_state(indexed_registry_file, dict) as registry_state:
-                registry_state.pop(hash_to_remove, None)
+                registry_state.pop(course_scoped_key, None)
+                legacy_entry = registry_state.get(hash_to_remove)
+                if legacy_entry is not None and legacy_entry.get("course_id") == course_id_for_domain:
+                    registry_state.pop(hash_to_remove, None)
             
             # Remove topics
             self._topic_storage.remove_document(hash_to_remove, user_id=user_id)
             
-            # Remove from PostgreSQL
+            # Remove from PostgreSQL (course-scoped only; never legacy multi-row)
             if db_session and user_id:
                 try:
-                    SyncRAGCollectionRepository.unregister(
+                    SyncRAGCollectionRepository.unregister_canvas(
                         db_session,
-                        file_hash=hash_to_remove,
                         user_id=_uuid.UUID(user_id),
-                        source=RAGSourceType.CANVAS,
+                        course_id=int(course_id_for_domain),
+                        file_hash=hash_to_remove,
                     )
                     db_session.commit()
                 except Exception as e:
@@ -2113,15 +2299,32 @@ Danh sách {num_topics} chủ đề chính (mỗi dòng một chủ đề):"""
         filename: str,
         user_id: Optional[str] = None,
         db_session: Optional[Session] = None,
+        course_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Delete a Canvas file and its index data (scoped to user).
+        """Delete a Canvas file and its index data (scoped to user + course).
         
         Cascades: first removes index (ChromaDB + DB + topics),
         then deletes physical file and MD5 registry entry.
+
+        ``course_id`` is REQUIRED — see :meth:`remove_index` rationale.
         """
+        if course_id is None:
+            logger.error(
+                "Canvas delete_file rejected: course_id is required (filename=%s user=%s)",
+                filename, user_id,
+            )
+            return {
+                "success": False,
+                "error": "course_id is required for Canvas delete_file",
+            }
         try:
             # First, cascade remove index if file is indexed
-            self.remove_index(filename, user_id=user_id, db_session=db_session)
+            self.remove_index(
+                filename,
+                user_id=user_id,
+                db_session=db_session,
+                course_id=course_id,
+            )
             
             # Scope to per-user directory
             target_dir = self._get_user_dir(user_id) if user_id else self.CANVAS_RAG_DIR

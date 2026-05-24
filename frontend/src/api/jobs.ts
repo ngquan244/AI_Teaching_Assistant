@@ -9,15 +9,19 @@ import { apiClient } from './client';
 
 export type JobStatusValue =
   | 'QUEUED'
-  | 'RUNNING'
+  | 'STARTED'
+  | 'PROGRESS'
+  | 'RUNNING'    // legacy alias — backend emits STARTED/PROGRESS
   | 'SUCCEEDED'
   | 'FAILED'
-  | 'CANCELED';
+  | 'CANCELED'
+  | 'REVOKED';
 
 export const TERMINAL_STATUSES: JobStatusValue[] = [
   'SUCCEEDED',
   'FAILED',
   'CANCELED',
+  'REVOKED',
 ];
 
 export interface JobOut {
@@ -27,6 +31,7 @@ export interface JobOut {
   progress_pct: number;
   current_step?: string | null;
   celery_task_id?: string | null;
+  payload?: Record<string, unknown> | null;
   result?: Record<string, unknown> | null;
   error_message?: string | null;
   created_at: string;
@@ -61,6 +66,37 @@ export interface CancelResponse {
 
 export async function getJob(jobId: string): Promise<JobOut> {
   const response = await apiClient.get<JobOut>(`/api/jobs/${jobId}`);
+  return response.data;
+}
+
+export interface JobListOut {
+  items: JobOut[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface ListJobsParams {
+  jobType?: string;
+  /** One or more backend statuses (raw enum values, e.g. ``QUEUED``,
+   *  ``STARTED``, ``PROGRESS``). Sent comma-separated. */
+  statuses?: string[];
+  userId?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export async function listJobs(params: ListJobsParams = {}): Promise<JobListOut> {
+  const query: Record<string, string | number> = {};
+  if (params.jobType) query.job_type = params.jobType;
+  if (params.statuses && params.statuses.length > 0) {
+    query.status = params.statuses.join(',');
+  }
+  if (params.userId) query.user_id = params.userId;
+  if (params.page) query.page = params.page;
+  if (params.pageSize) query.page_size = params.pageSize;
+  const response = await apiClient.get<JobListOut>('/api/jobs', { params: query });
   return response.data;
 }
 
