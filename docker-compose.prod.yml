@@ -107,6 +107,8 @@ services:
     
     env_file:
       - .env
+    environment:
+      CELERY_TASK_ALWAYS_EAGER: "false"
     
     # Backend is NOT exposed externally — nginx proxies to it
     ports: []
@@ -147,6 +149,8 @@ services:
   worker-rag:
     env_file:
       - .env
+    environment:
+      CELERY_TASK_ALWAYS_EAGER: "false"
     deploy:
       resources:
         limits:
@@ -157,6 +161,8 @@ services:
   worker-rag-index:
     env_file:
       - .env
+    environment:
+      CELERY_TASK_ALWAYS_EAGER: "false"
     deploy:
       resources:
         limits:
@@ -167,6 +173,8 @@ services:
   worker-llm:
     env_file:
       - .env
+    environment:
+      CELERY_TASK_ALWAYS_EAGER: "false"
     deploy:
       resources:
         limits:
@@ -177,6 +185,8 @@ services:
   worker-canvas:
     env_file:
       - .env
+    environment:
+      CELERY_TASK_ALWAYS_EAGER: "false"
     deploy:
       resources:
         limits:
@@ -197,6 +207,8 @@ services:
     image: node:20-alpine
     container_name: grader_frontend_build
     working_dir: /app
+    environment:
+      VITE_API_URL: ""
     volumes:
       - ./frontend:/app
     command: sh -c "npm ci && npm run build"
