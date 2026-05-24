@@ -13,7 +13,11 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { fetchCourses, importQTIToCanvas } from '../api/canvas';
-import { getCanvasSettings } from '../utils/canvasStorage';
+import {
+  getCanvasSettings,
+  getSelectedCourse,
+  setSelectedCourse as persistSelectedCourse,
+} from '../utils/canvasStorage';
 import type { CanvasCourse, ImportProgressStatus } from '../types/canvas';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 
@@ -57,10 +61,9 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
     setImportMessage('');
     setCoursesError(null);
 
+    const storedCourse = getSelectedCourse();
     const settings = getCanvasSettings();
-    if (settings?.selectedCourseId) {
-      setSelectedCourseId(settings.selectedCourseId);
-    }
+    setSelectedCourseId(storedCourse?.id ?? settings?.selectedCourseId ?? null);
   }, [isOpen, defaultBankName]);
 
   const handleFetchCourses = async () => {
@@ -244,7 +247,12 @@ const CanvasImportModal: React.FC<CanvasImportModalProps> = ({
                   <select
                     className={`cim-select ${validationErrors.course ? 'err' : ''}`}
                     value={selectedCourseId || ''}
-                    onChange={(e) => setSelectedCourseId(Number(e.target.value) || null)}
+                    onChange={(e) => {
+                      const courseId = Number(e.target.value) || null;
+                      setSelectedCourseId(courseId);
+                      const course = courses.find((c) => c.id === courseId);
+                      if (course) persistSelectedCourse(course.id, course.name);
+                    }}
                     disabled={courses.length === 0}
                   >
                     <option value="">
