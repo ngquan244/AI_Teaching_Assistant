@@ -34,8 +34,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     
-    ports:
-      - "127.0.0.1:5432:5432"
     # Health check for container orchestration
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-grader_user} -d ${POSTGRES_DB:-grader_db}"]
@@ -224,7 +222,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
       - POSTGRES_DB=${POSTGRES_DB:-grader_db}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10}
+      - LLM_RATE_LIMIT=${LLM_RATE_LIMIT:-10/m}
     volumes:
       - ./data:/app/data
       - ./exports:/app/exports
@@ -265,7 +263,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-grader_user}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-grader_secret_password}
       - POSTGRES_DB=${POSTGRES_DB:-grader_db}
-      - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50}
+      - CANVAS_RATE_LIMIT=${CANVAS_RATE_LIMIT:-50/m}
     volumes:
       - ./data:/app/data
       - ./exports:/app/exports

@@ -20,7 +20,6 @@ import {
 } from 'lucide-react';
 import { savedQuizApi } from '../api/savedQuiz';
 import type { SavedQuizDetail, SavedQuizUpdateRequest } from '../types/savedQuiz';
-import type { QuizBuilderQuestion } from '../types/canvas';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 
 // ============================================================================

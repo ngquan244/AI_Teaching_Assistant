@@ -4,17 +4,9 @@ import {
   Search,
   Star,
   StarOff,
-  Plus,
   Loader2,
   BookOpen,
-  Trash2,
-  Copy,
   FolderOpen,
-  Filter,
-  ArrowUpDown,
-  Sparkles,
-  Upload,
-  PenLine,
   Tag,
 } from 'lucide-react';
 import PanelHelpButton from './PanelHelpButton';

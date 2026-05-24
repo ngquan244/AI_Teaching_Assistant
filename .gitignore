@@ -86,6 +86,7 @@ Desktop.ini
 .env.local
 .env.production
 !.env.production.example
+!frontend/.env.production
 .env.*.local
 *.pem
 *.key
