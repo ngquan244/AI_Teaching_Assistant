@@ -3,12 +3,14 @@
  * Manages user authentication state and provides auth methods
  */
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import type { AxiosError } from 'axios';
 import { authApi, type User, type LoginRequest, type SignupRequest, type CanvasToken } from '../api/auth';
 import {
   getStoredToken,
   setStoredToken,
   setStoredRefreshToken,
   removeAllTokens,
+  SESSION_EXPIRED_EVENT,
 } from '../api/client';
 
 // =============================================================================
@@ -35,6 +37,28 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function getErrorDetail(error: unknown): string {
+  const axiosError = error as AxiosError<{ detail?: unknown; error?: unknown }>;
+  const raw = axiosError.response?.data?.detail ?? axiosError.response?.data?.error ?? '';
+  return typeof raw === 'string' ? raw : JSON.stringify(raw);
+}
+
+function isTerminalAuthError(error: unknown): boolean {
+  const axiosError = error as AxiosError;
+  const status = axiosError.response?.status;
+  if (status !== 401 && status !== 403) return false;
+
+  const detail = getErrorDetail(error).toLowerCase();
+  return (
+    detail.includes('invalid or expired token') ||
+    detail.includes('invalid or expired refresh token') ||
+    detail.includes('refresh token has been revoked') ||
+    detail.includes('token has been revoked') ||
+    detail.includes('logged out from all devices') ||
+    detail.includes('user not found')
+  );
+}
+
 // =============================================================================
 // Provider
 // =============================================================================
@@ -60,6 +84,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isLoading: false,
       });
     } catch (error) {
+      if (!isTerminalAuthError(error)) {
+        // Transient profile failures (network, 429, 5xx) should not destroy a
+        // still-valid local session. Keep the current auth state and stop loading.
+        setState(prev => ({ ...prev, isLoading: false }));
+        return;
+      }
       // Token invalid or expired — clear all tokens
       removeAllTokens();
       setState({
@@ -82,6 +112,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setState(prev => ({ ...prev, isLoading: false }));
     }
   }, [fetchProfile]);
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      removeAllTokens();
+      setState({
+        user: null,
+        canvasTokens: [],
+        isAuthenticated: false,
+        isLoading: false,
+      });
+    };
+
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, []);
 
   /**
    * Login with email and password

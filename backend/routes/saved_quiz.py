@@ -69,7 +69,7 @@ async def list_saved_quizzes(
     search: Optional[str] = Query(None, max_length=200),
     difficulty: Optional[str] = Query(None),
     starred: Optional[bool] = Query(None),
-    sort: str = Query("newest", regex="^(newest|oldest|title|questions)$"),
+    sort: str = Query("newest", pattern="^(newest|oldest|title|questions)$"),
 ):
     svc = _service(db)
     quizzes, total = await svc.list_quizzes(

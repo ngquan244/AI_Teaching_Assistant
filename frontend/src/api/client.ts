@@ -162,10 +162,40 @@ function isCanvasIntegrationPath(url: string | undefined): boolean {
   );
 }
 
+function isAuthFlowEndpoint(url: string | undefined): boolean {
+  const path = requestPath(url);
+  return (
+    path === '/api/auth/login' ||
+    path === '/api/auth/signup' ||
+    path === '/api/auth/signup-status' ||
+    path === '/api/auth/logout' ||
+    path === '/api/auth/refresh'
+  );
+}
+
+function isPublicAuthEndpoint(url: string | undefined): boolean {
+  const path = requestPath(url);
+  return (
+    path === '/api/auth/login' ||
+    path === '/api/auth/signup' ||
+    path === '/api/auth/signup-status' ||
+    path === '/api/auth/refresh'
+  );
+}
+
 function getResponseDetail(error: AxiosError): string {
   const data = error.response?.data as { detail?: unknown; error?: unknown } | undefined;
   const raw = data?.detail ?? data?.error ?? '';
   return typeof raw === 'string' ? raw : JSON.stringify(raw);
+}
+
+function isTerminalAuth401(error: AxiosError): boolean {
+  const detail = getResponseDetail(error).toLowerCase();
+  return (
+    detail.includes('token has been revoked') ||
+    detail.includes('logged out from all devices') ||
+    detail.includes('user not found')
+  );
 }
 
 function isAppAuth401(error: AxiosError): boolean {
@@ -198,7 +228,7 @@ function shouldSkipRefreshForCanvas401(error: AxiosError): boolean {
 apiClient.interceptors.request.use(
   (config) => {
     const token = getStoredToken();
-    if (token) {
+    if (token && !isPublicAuthEndpoint(config.url)) {
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
@@ -220,6 +250,7 @@ apiClient.interceptors.response.use(
     const is401 = error.response?.status === 401;
     const alreadyRetried = originalRequest?._retry;
     const isRefreshCall = originalRequest?.url?.includes('/api/auth/refresh');
+    const isAuthFlowCall = isAuthFlowEndpoint(originalRequest?.url);
 
     // -----------------------------------------------------------------
     // Transient network / gateway error → one silent retry for safe methods.
@@ -244,6 +275,16 @@ apiClient.interceptors.response.use(
     }
 
     if (shouldSkipRefreshForCanvas401(error)) {
+      return Promise.reject(error);
+    }
+
+    if (isAuthFlowCall) {
+      return Promise.reject(error);
+    }
+
+    if (isTerminalAuth401(error)) {
+      removeAllTokens();
+      dispatchSessionExpiredOnce();
       return Promise.reject(error);
     }
 
