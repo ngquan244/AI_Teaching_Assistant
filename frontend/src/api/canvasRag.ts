@@ -193,6 +193,13 @@ export interface CanvasQuizRequest {
   language?: 'vi' | 'en';
   k?: number;
   selected_documents?: string[];
+  /**
+   * Canvas course id the selected documents belong to. REQUIRED — the same
+   * filename / file_hash can exist under multiple Canvas courses for the
+   * same user, so retrieval must be course-scoped or it will pull the wrong
+   * Chroma collection (or fall back to 0 hits).
+   */
+  course_id: number;
   /** V2: include course-shared domain knowledge in retrieval. */
   include_course_domain?: boolean;
   /** V2: ratio (0.0–0.6) of context budget allocated to domain docs. */
@@ -261,13 +268,14 @@ export async function indexCanvasFile(
  */
 export async function extractCanvasTopics(
   filename: string,
-  numTopics: number = 8
+  numTopics: number = 8,
+  courseId?: number,
 ): Promise<CanvasTopicsResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<CanvasTopicsResponse>(
       `${API_BASE}/extract-topics`,
-      { filename, num_topics: numTopics },
+      { filename, num_topics: numTopics, course_id: courseId },
       cfg,
     );
     return response.data;
@@ -277,13 +285,17 @@ export async function extractCanvasTopics(
 }
 
 /**
- * Get topics for a Canvas document
+ * Get topics for a Canvas document scoped to a course.
+ *
+ * `courseId` is REQUIRED — the backend rejects the call without it because
+ * the same filename can exist in multiple Canvas courses.
  */
 export async function getCanvasDocumentTopics(
-  filename: string
+  filename: string,
+  courseId: number,
 ): Promise<CanvasTopicsResponse> {
   try {
-    const cfg = await canvasConfig();
+    const cfg = await canvasConfig({ params: { course_id: courseId } });
     const response = await apiClient.get<CanvasTopicsResponse>(
       `${API_BASE}/topics/${encodeURIComponent(filename)}`,
       cfg,
@@ -418,12 +430,18 @@ export async function resetCanvasIndex(): Promise<{
 
 /**
  * Remove index for a Canvas file (keep the file)
+ *
+ * ``courseId`` is REQUIRED — the backend now rejects any Canvas
+ * destructive call missing course_id (avoids cross-course index wipe
+ * when the same file_hash exists in multiple courses).
  */
 export async function removeCanvasFileIndex(
-  filename: string
+  filename: string,
+  courseId: number,
 ): Promise<{ success: boolean; message?: string }> {
   const response = await apiClient.delete(
-    `${API_BASE}/index/${encodeURIComponent(filename)}`
+    `${API_BASE}/index/${encodeURIComponent(filename)}`,
+    { params: { course_id: courseId } },
   );
   return response.data;
 }
@@ -478,12 +496,13 @@ export async function asyncIndexCanvasFile(
 export async function asyncExtractCanvasTopics(
   filename: string,
   numTopics: number = 8,
+  courseId?: number,
 ): Promise<AsyncJobResponse> {
   try {
     const cfg = await canvasConfig();
     const response = await apiClient.post<AsyncJobResponse>(
       `${API_BASE}/async/extract-topics`,
-      { filename, num_topics: numTopics },
+      { filename, num_topics: numTopics, course_id: courseId },
       cfg,
     );
     return response.data;

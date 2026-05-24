@@ -2180,6 +2180,8 @@ Return ONLY valid JSON, no additional text.""")
         domain_quota_ratio: Optional[float] = None,
         translation_cache: Optional[Dict[str, str]] = None,
         llm_for_translation: Optional[Any] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
     ) -> List[Document]:
         max_total_docs = max(1, max_total_docs)
 
@@ -2197,6 +2199,10 @@ Return ONLY valid JSON, no additional text.""")
                 extra_kwargs["translation_cache"] = translation_cache
             if llm_for_translation is not None:
                 extra_kwargs["llm_for_translation"] = llm_for_translation
+            if course_id is not None:
+                extra_kwargs["course_id"] = course_id
+            if hash_to_course_id is not None:
+                extra_kwargs["hash_to_course_id"] = hash_to_course_id
             try:
                 return self.retriever.retrieve_with_budget(
                     query=query,
@@ -2222,7 +2228,19 @@ Return ONLY valid JSON, no additional text.""")
             retrieve_kwargs["user_id"] = user_id
             if hash_to_collection_name:
                 retrieve_kwargs["hash_to_collection_name"] = hash_to_collection_name
-        return self.retriever.retrieve(query, **retrieve_kwargs)
+            if course_id is not None:
+                retrieve_kwargs["course_id"] = course_id
+            if hash_to_course_id is not None:
+                retrieve_kwargs["hash_to_course_id"] = hash_to_course_id
+            if roles_by_hash is not None:
+                retrieve_kwargs["roles_by_hash"] = roles_by_hash
+        try:
+            return self.retriever.retrieve(query, **retrieve_kwargs)
+        except TypeError:
+            # Older retriever signature — strip newly added kwargs.
+            for k in ("course_id", "hash_to_course_id", "roles_by_hash"):
+                retrieve_kwargs.pop(k, None)
+            return self.retriever.retrieve(query, **retrieve_kwargs)
 
     def _format_context_documents(self, documents: List[Document]) -> str:
         if self.retriever and hasattr(self.retriever, "format_context"):
@@ -2303,6 +2321,10 @@ Return ONLY valid JSON, no additional text.""")
         raw_budget: int,
         target_file_hashes: Optional[List[str]],
         user_id: Optional[str],
+        hash_to_collection_name: Optional[Dict[str, str]] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
+        roles_by_hash: Optional[Dict[str, str]] = None,
     ) -> Dict[str, int]:
         if not topics:
             return {}
@@ -2327,6 +2349,10 @@ Return ONLY valid JSON, no additional text.""")
                 max_total_docs=max(1, min_per_topic),
                 target_file_hashes=target_file_hashes,
                 user_id=user_id,
+                hash_to_collection_name=hash_to_collection_name,
+                course_id=course_id,
+                hash_to_course_id=hash_to_course_id,
+                roles_by_hash=roles_by_hash,
             )
             coverage_counts[topic] = len(self._dedupe_documents(sample_docs))
 
@@ -4068,6 +4094,8 @@ Return ONLY valid JSON, no additional text.""")
         language_by_hash: Optional[Dict[str, str]] = None,
         domain_quota_ratio: Optional[float] = None,
         groq_api_key: Optional[str] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """Retrieve and normalize quiz documents without invoking the LLM."""
         topic_list = [item for item in (topics or []) if str(item or "").strip()]
@@ -4119,6 +4147,8 @@ Return ONLY valid JSON, no additional text.""")
             "domain_quota_ratio": domain_quota_ratio,
             "translation_cache": translation_cache,
             "llm_for_translation": llm_for_translation,
+            "course_id": course_id,
+            "hash_to_course_id": hash_to_course_id,
         }
 
         if len(topic_list) == 1:
@@ -4167,6 +4197,10 @@ Return ONLY valid JSON, no additional text.""")
             raw_budget=raw_budget,
             target_file_hashes=target_file_hashes,
             user_id=user_id,
+            hash_to_collection_name=hash_to_collection_name,
+            course_id=course_id,
+            hash_to_course_id=hash_to_course_id,
+            roles_by_hash=roles_by_hash,
         )
 
         all_documents: List[Document] = []

@@ -252,6 +252,35 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   const fileInputRef = useRef<HTMLInputElement>(null);
   const getTopicStateKey = (source: TopicSource, filename: string) => `${source}:${filename}`;
 
+  // ── Selection-key helpers ──────────────────────────────────────────────────
+  // Canvas documents are unique per (user, file_hash, course_id) in the DB,
+  // but multiple courses can have a file with the same filename/hash.  We
+  // therefore use a composite key that embeds the course_id so that two docs
+  // with identical filenames in different courses are never conflated.
+  //
+  //  Canvas doc  →  "courseId::filename"  (e.g. "42::lecture1.pdf")
+  //  Upload doc  →  "filename"            (course_id is undefined)
+  const getDocSelectionKey = (doc: IndexedDocument): string => {
+    if (doc.course_id != null) {
+      return `${doc.course_id}::${doc.filename}`;
+    }
+    return doc.filename;
+  };
+
+  // Extract the plain filename from a selection key.
+  const getFilenameFromKey = (key: string): string => {
+    const sep = key.indexOf('::');
+    return sep === -1 ? key : key.slice(sep + 2);
+  };
+
+  // Extract course_id from a selection key.  Returns undefined for upload docs.
+  const getCourseIdFromKey = (key: string): number | undefined => {
+    const sep = key.indexOf('::');
+    if (sep === -1) return undefined;
+    const id = parseInt(key.slice(0, sep), 10);
+    return isNaN(id) ? undefined : id;
+  };
+
   // Load initial data
   useEffect(() => {
     loadIndexStats();
@@ -473,25 +502,46 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     setShowTopicModal(false);
   };
 
-  // Modal - Toggle document selection
-  const toggleDocumentInModal = async (filename: string) => {
-    const isCurrentlySelected = tempSelectedDocuments.includes(filename);
+  // Modal - Toggle document selection.
+  // Takes the full document object so we can build a composite selection key
+  // that is globally unique even when the same file (same filename/hash)
+  // exists in multiple Canvas courses.
+  const toggleDocumentInModal = async (doc: IndexedDocument) => {
+    const selectionKey = getDocSelectionKey(doc);   // e.g. "42::lecture1.pdf"
+    const filename = doc.filename;                   // plain filename for API/cache
+    const isCurrentlySelected = tempSelectedDocuments.includes(selectionKey);
     const stateKey = getTopicStateKey(topicSource, filename);
+
+    // Block cross-course selection: if a doc from a different Canvas course is
+    // already in the selection, reject the attempt with a clear message rather
+    // than silently letting a false-positive slip through.
+    if (!isCurrentlySelected && topicSource === 'canvas' && tempSelectedDocuments.length > 0) {
+      const alreadySelectedCourseId = getCourseIdFromKey(tempSelectedDocuments[0]);
+      if (alreadySelectedCourseId != null && doc.course_id !== alreadySelectedCourseId) {
+        setTopicErrorState(prev => ({
+          ...prev,
+          [stateKey]: 'Vui lòng chỉ chọn tài liệu trong cùng một khoá học.',
+        }));
+        return;
+      }
+    }
     
     if (isCurrentlySelected) {
-      // Remove document and its selected topics
-      setTempSelectedDocuments(prev => prev.filter(f => f !== filename));
-      setTempSelectedTopics(st => st.filter(t => t.documentFilename !== filename));
+      // Remove document and its selected topics (compare by composite key)
+      setTempSelectedDocuments(prev => prev.filter(k => k !== selectionKey));
+      setTempSelectedTopics(st => st.filter(t => t.documentFilename !== selectionKey));
       setTempTopicsByDocument(prev => {
         const updated = { ...prev };
-        delete updated[filename];
+        delete updated[selectionKey];
         return updated;
       });
     } else {
-      // Add document
-      setTempSelectedDocuments(prev => [...prev, filename]);
+      // Add document (store composite key)
+      setTempSelectedDocuments(prev => [...prev, selectionKey]);
       
-      // Auto-load topics for this document based on source
+      // Auto-load topics for this document based on source.
+      // Topic caches (canvasTopicsCache / topicsCache) continue to use the plain
+      // filename as the key — they are not affected by the selection key change.
       const cache = topicSource === 'canvas' ? canvasTopicsCache : topicsCache;
       
       if (!cache[filename]) {
@@ -499,9 +549,22 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         setTopicErrorState(prev => ({ ...prev, [stateKey]: null }));
         try {
           // Use appropriate API based on source
-          const response = topicSource === 'canvas' 
-            ? await getCanvasDocumentTopics(filename)
-            : await getDocumentTopics(filename);
+          let response;
+          if (topicSource === 'canvas') {
+            // course_id is already in the doc object — no extra lookup needed
+            const canvasCourseId = doc.course_id;
+            if (!canvasCourseId) {
+              setTopicErrorState(prev => ({
+                ...prev,
+                [stateKey]: 'Khong xac dinh duoc khoa hoc cho tai lieu nay.',
+              }));
+              setTopicLoadingState(prev => ({ ...prev, [stateKey]: false }));
+              return;
+            }
+            response = await getCanvasDocumentTopics(filename, canvasCourseId);
+          } else {
+            response = await getDocumentTopics(filename);
+          }
           
           if (response.success) {
             const topicNames = response.topics || [];
@@ -511,13 +574,14 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
               description: ''
             }));
             
-            // Update appropriate cache
+            // Update plain-filename-keyed caches (unchanged)
             if (topicSource === 'canvas') {
               setCanvasTopicsCache(prev => ({ ...prev, [filename]: topics }));
             } else {
               setTopicsCache(prev => ({ ...prev, [filename]: topics }));
             }
-            setTempTopicsByDocument(prev => ({ ...prev, [filename]: topics }));
+            // tempTopicsByDocument is keyed by composite selectionKey
+            setTempTopicsByDocument(prev => ({ ...prev, [selectionKey]: topics }));
             if (topics.length === 0) {
               setTopicErrorState(prev => ({ ...prev, [stateKey]: 'Tai lieu nay chua co chu de nao.' }));
             }
@@ -532,7 +596,8 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
         }
       } else {
         setTopicErrorState(prev => ({ ...prev, [stateKey]: cache[filename].length === 0 ? 'Tai lieu nay chua co chu de nao.' : null }));
-        setTempTopicsByDocument(prev => ({ ...prev, [filename]: cache[filename] }));
+        // tempTopicsByDocument is keyed by composite selectionKey
+        setTempTopicsByDocument(prev => ({ ...prev, [selectionKey]: cache[filename] }));
       }
     }
   };
@@ -576,14 +641,19 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
   };
 
   // ===== Edit Topics Modal Handlers =====
-  const openEditTopicsModal = (filename: string, preloadedTopics?: TopicSuggestion[]) => {
+  // docKey may be a composite selection key ("courseId::filename") or a plain
+  // filename (for upload docs).  We store the plain filename in editing state
+  // so that API calls and cache updates (which use plain filenames) work
+  // without change.  tempTopicsByDocument is looked up by composite key.
+  const openEditTopicsModal = (docKey: string, preloadedTopics?: TopicSuggestion[]) => {
+    const filename = getFilenameFromKey(docKey);  // plain filename for API/cache
     // Prefer caller-provided topics (avoids React stale-state when called right
     // after a setTopicsCache). Otherwise fall back to caches.
     const docTopics = preloadedTopics
       ?? (topicSource === 'canvas'
-          ? (tempTopicsByDocument[filename] || canvasTopicsCache[filename] || [])
-          : (tempTopicsByDocument[filename] || topicsCache[filename] || []));
-    setEditingDocumentFilename(filename);
+          ? (tempTopicsByDocument[docKey] || canvasTopicsCache[filename] || [])
+          : (tempTopicsByDocument[docKey] || topicsCache[filename] || []));
+    setEditingDocumentFilename(filename);  // always plain filename
     setEditingTopics(docTopics.map(t => t.name));
     setNewTopicInput('');
     setEditingTopicIndex(null);
@@ -1217,10 +1287,15 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     setEditingQuestionIndex(null);
     setEditingQuestion(null);
 
-    // Derive selected_documents from topics' source documents (not from ticked checkboxes)
-    const docsFromTopics = selectedTopics.length > 0
+    // Derive selected_documents from topics' source documents.
+    // selectedTopics.documentFilename now holds a composite selection key
+    // ("courseId::filename" for Canvas, plain "filename" for uploads).
+    const docsFromTopicsKeys = selectedTopics.length > 0
       ? [...new Set(selectedTopics.map(t => t.documentFilename))]
       : undefined;
+
+    // Extract plain filenames for the backend API (backend never sees composite keys)
+    const docsFromTopics = docsFromTopicsKeys?.map(getFilenameFromKey);
 
     const quizRequest = {
       topics: topicsList,
@@ -1231,19 +1306,56 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     };
 
     // V2: attach course-domain hints only for Canvas quiz generation.
+    // Canvas requires an explicit course_id — extract it directly from the
+    // composite selection keys (which already embed course_id), so we are
+    // immune to filename collisions across courses.
+    let canvasCourseId: number | null = null;
+    if (topicSource === 'canvas') {
+      const targetKeys = docsFromTopicsKeys ?? [];
+      const courseIdSet = new Set<number>();
+      for (const key of targetKeys) {
+        const courseId = getCourseIdFromKey(key);
+        if (typeof courseId === 'number') courseIdSet.add(courseId);
+      }
+      if (courseIdSet.size === 1) {
+        canvasCourseId = courseIdSet.values().next().value as number;
+      } else if (courseIdSet.size === 0) {
+        setQuizMessage(null);
+        setQuizError('Không xác định được khoá học cho các tài liệu đã chọn. Hãy chọn lại từ danh sách Canvas.');
+        setIsGeneratingQuiz(false);
+        return;
+      } else {
+        setQuizMessage(null);
+        setQuizError('Các tài liệu đã chọn thuộc nhiều khoá học khác nhau. Vui lòng chỉ chọn tài liệu trong cùng một khoá học để tạo quiz.');
+        setIsGeneratingQuiz(false);
+        return;
+      }
+    }
+
     const canvasQuizRequest =
-      topicSource === 'canvas' && publicConfig?.enable_course_domain_docs
+      topicSource === 'canvas'
         ? {
             ...quizRequest,
-            include_course_domain: includeCourseDomain,
-            domain_quota_ratio: Math.min(0.6, Math.max(0, domainQuotaPct / 100)),
+            course_id: canvasCourseId as number,
+            ...(publicConfig?.enable_course_domain_docs
+              ? {
+                  include_course_domain: includeCourseDomain,
+                  domain_quota_ratio: Math.min(0.6, Math.max(0, domainQuotaPct / 100)),
+                }
+              : {}),
           }
         : quizRequest;
 
     try {
       if (topicSource === 'canvas') {
-        // Canvas quiz — async via Celery
-        await quizJob.startJob(() => asyncCanvasGenerateQuiz(canvasQuizRequest));
+        // Canvas quiz — async via Celery. course_id is guaranteed above
+        // (the canvas branch above either set it or aborted early).
+        await quizJob.startJob(() =>
+          asyncCanvasGenerateQuiz({
+            ...canvasQuizRequest,
+            course_id: canvasCourseId as number,
+          }),
+        );
         // Result handled by useEffect on quizJob.job.status
       } else {
         // Document RAG quiz — async via Celery
@@ -1377,12 +1489,17 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
     setIsSavingToLibrary(true);
     setSaveLibrarySuccess(false);
     try {
-      // Try to resolve course info from selected canvas documents
+      // Try to resolve course info from selected canvas documents.
+      // selectedTopics[0].documentFilename is now a composite selection key;
+      // extract filename and course_id from it for the lookup.
       let courseId: number | null = null;
       let courseName: string | null = null;
       if (topicSource === 'canvas' && selectedTopics.length > 0) {
+        const firstKey = selectedTopics[0].documentFilename;
+        const firstFilename = getFilenameFromKey(firstKey);
+        const firstCourseId = getCourseIdFromKey(firstKey);
         const firstDoc = canvasIndexedDocuments.find(
-          d => d.filename === selectedTopics[0].documentFilename,
+          d => d.filename === firstFilename && d.course_id === firstCourseId,
         );
         if (firstDoc?.course_id) {
           courseId = firstDoc.course_id;
@@ -2249,7 +2366,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                     {topicSource === 'canvas' && (() => {
                       const courseIds = new Set(
                         tempSelectedTopics
-                          .map(t => canvasIndexedDocuments.find(d => d.filename === t.documentFilename)?.course_id)
+                          .map(t => getCourseIdFromKey(t.documentFilename))
                           .filter((id): id is number => id != null)
                       );
                       return courseIds.size > 1 ? ` (${courseIds.size} khóa học)` : '';
@@ -2282,13 +2399,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                       >
                         <div 
                           className="modal-doc-header"
-                          onClick={() => toggleDocumentInModal(doc.filename)}
+                          onClick={() => toggleDocumentInModal(doc)}
                         >
                           <div className="modal-doc-checkbox">
                             <input 
                               type="checkbox" 
                               checked={isDocSelected} 
-                              onChange={() => toggleDocumentInModal(doc.filename)}
+                              onChange={() => toggleDocumentInModal(doc)}
                               onClick={(e) => e.stopPropagation()}
                             />
                           </div>
@@ -2401,7 +2518,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                       const courseName = courseNameMap[courseId] || `Course #${courseId}`;
                       const isCollapsed = collapsedCourses.has(courseId);
                       const courseSelectedCount = tempSelectedTopics.filter(t =>
-                        courseDocs.some(d => d.filename === t.documentFilename)
+                        courseDocs.some(d => getDocSelectionKey(d) === t.documentFilename)
                       ).length;
 
                       return (
@@ -2430,27 +2547,28 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                           {!isCollapsed && (
                             <div className="course-group-docs">
                               {courseDocs.map((doc) => {
-                                const isDocSelected = tempSelectedDocuments.includes(doc.filename);
-                                const docTopics = tempTopicsByDocument[doc.filename] || [];
-                                const selectedCount = tempSelectedTopics.filter(t => t.documentFilename === doc.filename).length;
+                                const docKey = getDocSelectionKey(doc);
+                                const isDocSelected = tempSelectedDocuments.includes(docKey);
+                                const docTopics = tempTopicsByDocument[docKey] || [];
+                                const selectedCount = tempSelectedTopics.filter(t => t.documentFilename === docKey).length;
                                 const topicStateKey = getTopicStateKey('canvas', doc.filename);
                                 const isLoadingTopics = !!topicLoadingState[topicStateKey];
                                 const topicError = topicErrorState[topicStateKey];
 
                                 return (
                                   <div 
-                                    key={doc.filename} 
+                                    key={docKey} 
                                     className={`modal-doc-card ${isDocSelected ? 'expanded' : ''}`}
                                   >
                                     <div 
                                       className="modal-doc-header"
-                                      onClick={() => toggleDocumentInModal(doc.filename)}
+                                      onClick={() => toggleDocumentInModal(doc)}
                                     >
                                       <div className="modal-doc-checkbox">
                                         <input 
                                           type="checkbox" 
                                           checked={isDocSelected} 
-                                          onChange={() => toggleDocumentInModal(doc.filename)}
+                                          onChange={() => toggleDocumentInModal(doc)}
                                           onClick={(e) => e.stopPropagation()}
                                         />
                                       </div>
@@ -2479,12 +2597,12 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                                               <button
                                                 type="button"
                                                 className="btn-modal-select-all"
-                                                onClick={() => areAllTopicsSelectedInModal(doc.filename) 
-                                                  ? deselectAllTopicsInModal(doc.filename)
-                                                  : selectAllTopicsInModal(doc.filename)
+                                                onClick={() => areAllTopicsSelectedInModal(docKey) 
+                                                  ? deselectAllTopicsInModal(docKey)
+                                                  : selectAllTopicsInModal(docKey)
                                                 }
                                               >
-                                                {areAllTopicsSelectedInModal(doc.filename) ? (
+                                                {areAllTopicsSelectedInModal(docKey) ? (
                                                   <><X size={14} /> Bỏ chọn tất cả</>
                                                 ) : (
                                                   <><Check size={14} /> Chọn tất cả</>
@@ -2495,7 +2613,7 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                                                 className="btn-modal-edit-topics"
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  openEditTopicsModal(doc.filename);
+                                                  openEditTopicsModal(docKey);
                                                 }}
                                               >
                                                 <Pencil size={14} /> Sửa chủ đề
@@ -2503,13 +2621,13 @@ const DocumentRAGPanel: React.FC<DocumentRAGPanelProps> = ({ onDeployToCanvas })
                                             </div>
                                             <div className="modal-topics-grid">
                                               {docTopics.map((topic, idx) => {
-                                                const isSelected = isTopicSelectedInModal(topic.name, doc.filename);
+                                                const isSelected = isTopicSelectedInModal(topic.name, docKey);
                                                 return (
                                                   <button
                                                     key={idx}
                                                     type="button"
                                                     className={`modal-topic-tag ${isSelected ? 'selected' : ''}`}
-                                                    onClick={() => toggleTopicInModal(topic.name, doc.filename)}
+                                                    onClick={() => toggleTopicInModal(topic.name, docKey)}
                                                   >
                                                     {isSelected && <Check size={14} className="check-icon" />}
                                                     <span>{topic.name}</span>

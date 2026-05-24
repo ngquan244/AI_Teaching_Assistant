@@ -58,12 +58,19 @@ class RAGCollectionRepository:
         is_indexed: bool = True,
     ) -> RAGCollection:
         """
-        Upsert a collection entry.
+        Upsert an *upload* collection entry.
 
-        If a row with the same (user_id, file_hash, source) already exists,
-        update its ``chunk_count``, ``is_indexed``, and ``updated_at``.
-        Otherwise insert a new row.
+        Conflicts are resolved against the partial unique index
+        ``uq_rag_user_file_upload`` (user_id, file_hash) WHERE source='upload'.
+        Canvas rows MUST go through :meth:`register_canvas` because their
+        identity also includes ``course_id`` — registering a Canvas file
+        through this method would silently collide across courses.
         """
+        if source != RAGSourceType.UPLOAD:
+            raise ValueError(
+                "RAGCollectionRepository.register() only supports UPLOAD source; "
+                "use register_canvas() for Canvas files."
+            )
         stmt = (
             pg_insert(RAGCollection)
             .values(
@@ -77,7 +84,8 @@ class RAGCollectionRepository:
                 is_indexed=is_indexed,
             )
             .on_conflict_do_update(
-                constraint="uq_rag_user_file_source",
+                index_elements=["user_id", "file_hash"],
+                index_where=RAGCollection.source == RAGSourceType.UPLOAD.value,
                 set_={
                     "chunk_count": chunk_count,
                     "is_indexed": is_indexed,
@@ -296,7 +304,12 @@ class RAGCollectionRepository:
         user_id: uuid.UUID,
         source: RAGSourceType = RAGSourceType.UPLOAD,
     ) -> Optional[List[Dict[str, str]]]:
-        """Get topics by document filename."""
+        """Get topics by document filename.
+
+        NOTE: Not safe for Canvas — the same filename may exist in multiple
+        courses for the same user. Use :meth:`get_topics_by_filename_canvas`
+        for Canvas lookups.
+        """
         stmt = (
             select(RAGDocumentTopic.topics)
             .join(RAGCollection, RAGDocumentTopic.collection_id == RAGCollection.id)
@@ -308,6 +321,38 @@ class RAGCollectionRepository:
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_topics_by_filename_canvas(
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        filename: str,
+    ) -> Optional[List[Dict[str, str]]]:
+        """Get topics for a Canvas document scoped to a specific course.
+
+        Filters on (user_id, course_id, filename, source=CANVAS). Returns
+        ``None`` if no matching row has topics. Uses ``.first()`` rather than
+        ``scalar_one_or_none`` so collisions (e.g. same filename, different
+        hashes within the same course) never raise MultipleResultsFound;
+        the most recently updated row wins.
+        """
+        stmt = (
+            select(RAGDocumentTopic.topics)
+            .join(RAGCollection, RAGDocumentTopic.collection_id == RAGCollection.id)
+            .where(
+                RAGCollection.filename == filename,
+                RAGCollection.user_id == user_id,
+                RAGCollection.course_id == course_id,
+                RAGCollection.source == RAGSourceType.CANVAS,
+            )
+            .order_by(RAGDocumentTopic.updated_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        row = result.first()
+        return row[0] if row else None
 
     @staticmethod
     async def has_topics(
@@ -431,6 +476,11 @@ class SyncRAGCollectionRepository:
         is_indexed: bool = True,
         language: Optional[str] = None,
     ) -> RAGCollection:
+        if source != RAGSourceType.UPLOAD:
+            raise ValueError(
+                "SyncRAGCollectionRepository.register() only supports UPLOAD source; "
+                "use register_canvas() for Canvas files."
+            )
         values: Dict[str, Any] = dict(
             user_id=user_id,
             file_hash=file_hash,
@@ -454,7 +504,8 @@ class SyncRAGCollectionRepository:
             pg_insert(RAGCollection)
             .values(**values)
             .on_conflict_do_update(
-                constraint="uq_rag_user_file_source",
+                index_elements=["user_id", "file_hash"],
+                index_where=RAGCollection.source == RAGSourceType.UPLOAD.value,
                 set_=update_set,
             )
             .returning(RAGCollection)
@@ -841,6 +892,248 @@ class SyncRAGCollectionRepository:
         if course_id is not None:
             stmt = stmt.where(RAGCollection.course_id == course_id)
         return list(session.execute(stmt).scalars().all())
+
+    # ── Canvas-only helpers (per-course identity) ─────────────────────
+    #
+    # All lookups / writes for ``source=CANVAS`` MUST go through these
+    # helpers so they include ``course_id`` in the scoping clause. The
+    # legacy ``register / get / is_indexed / get_collection_name /
+    # unregister / has_topics / get_topics`` methods above match by
+    # ``(user_id, file_hash)`` only, which causes cross-course collision
+    # when the same file content is indexed in two different courses.
+    # See alembic migration 016_canvas_unique_per_course.
+
+    @staticmethod
+    def get_canvas_by_course_and_hash(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> Optional[RAGCollection]:
+        stmt = select(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.course_id == course_id,
+            RAGCollection.file_hash == file_hash,
+            RAGCollection.source == RAGSourceType.CANVAS,
+        )
+        return session.execute(stmt).scalar_one_or_none()
+
+    @staticmethod
+    def is_indexed_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> bool:
+        row = SyncRAGCollectionRepository.get_canvas_by_course_and_hash(
+            session, user_id=user_id, course_id=course_id, file_hash=file_hash,
+        )
+        return bool(row and row.is_indexed)
+
+    @staticmethod
+    def get_collection_name_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> Optional[str]:
+        row = SyncRAGCollectionRepository.get_canvas_by_course_and_hash(
+            session, user_id=user_id, course_id=course_id, file_hash=file_hash,
+        )
+        return row.collection_name if row else None
+
+    @staticmethod
+    def get_by_filename_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        filename: str,
+    ) -> Optional[RAGCollection]:
+        """Same fuzzy-match logic as :meth:`get_by_filename` but scoped
+        to (user_id, course_id, source=CANVAS)."""
+        stmt = select(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.course_id == course_id,
+            RAGCollection.source == RAGSourceType.CANVAS,
+            RAGCollection.filename == filename,
+        )
+        row = session.execute(stmt).scalar_one_or_none()
+        if row is not None:
+            return row
+
+        def _norm(name: str) -> str:
+            return " ".join(name.lower().replace(",", "").split())
+
+        target = _norm(filename)
+        target_base = target[:-4] if target.endswith(".pdf") else target
+
+        all_stmt = select(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.course_id == course_id,
+            RAGCollection.source == RAGSourceType.CANVAS,
+        )
+        for candidate in session.execute(all_stmt).scalars():
+            cand = _norm(candidate.filename or "")
+            cand_base = cand[:-4] if cand.endswith(".pdf") else cand
+            if cand == target or cand_base == target_base:
+                return candidate
+            if target_base and (target_base in cand_base or cand_base in target_base):
+                return candidate
+        return None
+
+    @staticmethod
+    def get_by_filenames_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        filenames: List[str],
+    ) -> List[RAGCollection]:
+        """Get Canvas collections matching a set of filenames, scoped to one course.
+
+        Use this instead of :meth:`get_by_filenames` for Canvas retrieval: the
+        same filename / file_hash can exist under multiple Canvas courses for
+        the same user, and a course-agnostic lookup will return ambiguous
+        cross-course rows that poison ``hash_to_collection_name`` and end up
+        querying the wrong (or a non-existent) Chroma collection.
+        """
+        if not filenames:
+            return []
+        stmt = select(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.course_id == course_id,
+            RAGCollection.source == RAGSourceType.CANVAS,
+            RAGCollection.filename.in_(filenames),
+        )
+        return list(session.execute(stmt).scalars().all())
+
+    @staticmethod
+    def unregister_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> bool:
+        stmt = delete(RAGCollection).where(
+            RAGCollection.user_id == user_id,
+            RAGCollection.course_id == course_id,
+            RAGCollection.file_hash == file_hash,
+            RAGCollection.source == RAGSourceType.CANVAS,
+        )
+        result = session.execute(stmt)
+        session.flush()
+        return result.rowcount > 0
+
+    @staticmethod
+    def register_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+        filename: str,
+        collection_name: str,
+        chunk_count: int = 0,
+        is_indexed: bool = True,
+        language: Optional[str] = None,
+    ) -> RAGCollection:
+        """Upsert a Canvas RAGCollection row scoped to
+        ``(user_id, course_id, file_hash)``.
+
+        Uses ON CONFLICT against the partial unique index
+        ``uq_rag_user_file_canvas_course`` so concurrent writers race
+        atomically at the DB level instead of two transactions both
+        passing a SELECT and one losing on INSERT. ``course_id`` is
+        required (not nullable) because the legacy partial index
+        ``uq_rag_user_file_canvas_legacy`` is only a safety net for
+        pre-V1 rows; all new Canvas writes go through this path.
+        """
+        if course_id is None:
+            raise ValueError("register_canvas requires course_id (got None)")
+
+        values: Dict[str, Any] = dict(
+            user_id=user_id,
+            file_hash=file_hash,
+            filename=filename,
+            collection_name=collection_name,
+            source=RAGSourceType.CANVAS,
+            course_id=course_id,
+            chunk_count=chunk_count,
+            is_indexed=is_indexed,
+        )
+        update_set: Dict[str, Any] = {
+            "filename": filename,
+            "collection_name": collection_name,
+            "chunk_count": chunk_count,
+            "is_indexed": is_indexed,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if language is not None:
+            values["language"] = language
+            update_set["language"] = language
+
+        stmt = (
+            pg_insert(RAGCollection)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["user_id", "file_hash", "course_id"],
+                index_where=and_(
+                    RAGCollection.source == RAGSourceType.CANVAS.value,
+                    RAGCollection.course_id.is_not(None),
+                ),
+                set_=update_set,
+            )
+            .returning(RAGCollection)
+        )
+        row = session.execute(stmt).scalar_one()
+        session.flush()
+        return row
+
+    @staticmethod
+    def has_topics_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> bool:
+        stmt = (
+            select(func.count())
+            .select_from(RAGDocumentTopic)
+            .join(RAGCollection, RAGDocumentTopic.collection_id == RAGCollection.id)
+            .where(
+                RAGCollection.user_id == user_id,
+                RAGCollection.course_id == course_id,
+                RAGCollection.file_hash == file_hash,
+                RAGCollection.source == RAGSourceType.CANVAS,
+            )
+        )
+        return session.execute(stmt).scalar_one() > 0
+
+    @staticmethod
+    def get_topics_canvas(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        course_id: int,
+        file_hash: str,
+    ) -> Optional[List[Dict[str, str]]]:
+        stmt = (
+            select(RAGDocumentTopic.topics)
+            .join(RAGCollection, RAGDocumentTopic.collection_id == RAGCollection.id)
+            .where(
+                RAGCollection.user_id == user_id,
+                RAGCollection.course_id == course_id,
+                RAGCollection.file_hash == file_hash,
+                RAGCollection.source == RAGSourceType.CANVAS,
+            )
+        )
+        return session.execute(stmt).scalar_one_or_none()
 
 
 # ═══════════════════════════════════════════════════════════════════════

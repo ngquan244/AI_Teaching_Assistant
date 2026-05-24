@@ -148,10 +148,17 @@ def retrieve_quiz_context(
     source: str = "document",
     include_course_domain: bool = False,
     domain_quota_ratio: Optional[float] = None,
+    course_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Retrieve quiz documents on the rag worker and serialize them for transport."""
     with SessionLocal() as rag_db:
         if source == "canvas":
+            if course_id is None:
+                return {
+                    "success": False,
+                    "documents": [],
+                    "error": "course_id is required for Canvas quiz generation",
+                }
             service = _get_canvas_rag_service()
             result = service.retrieve_documents_for_quiz(
                 topics=topics,
@@ -159,6 +166,7 @@ def retrieve_quiz_context(
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=rag_db,
+                course_id=course_id,
                 include_course_domain=include_course_domain,
                 domain_quota_ratio=domain_quota_ratio,
             )
@@ -674,9 +682,15 @@ def canvas_extract_topics(
     filename: str,
     num_topics: int = 8,
     user_id: Optional[str] = None,
+    course_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Extract topics from a Canvas file.
+
+    ``course_id`` is forwarded to the service so the file lookup is scoped
+    to the originating Canvas course. The same ``file_hash`` may exist in
+    multiple courses; without scoping, topic extraction could resolve to
+    the wrong (filename, course_id) pair.
     """
     job_service, db_session = get_sync_job_service()
     job_uuid = uuid.UUID(job_id)
@@ -704,6 +718,7 @@ def canvas_extract_topics(
                     groq_api_key=groq_key,
                     db_session=extract_db,
                     key_pool=key_pool,
+                    course_id=course_id,
                 )
             except Exception as extract_err:
                 # Topic extraction failed (e.g. Groq token exhausted on every

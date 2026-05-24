@@ -66,7 +66,10 @@ class CanvasDownloadRequest(BaseModel):
 class CanvasIndexRequest(BaseModel):
     """Request to index a downloaded Canvas file."""
     filename: str
-    course_id: Optional[int] = None
+    # ``course_id`` is REQUIRED post-016: Canvas indexing is course-scoped and
+    # the per-course unique constraint relies on this value. Routes reject
+    # any request that omits it (HTTP 400) instead of silently falling back.
+    course_id: int
     # When True, any existing index/topic/registry/Chroma data for this file
     # is removed before indexing. Used by the UI's "re-index after delete"
     # path so a stale cross-process registry cannot short-circuit the request
@@ -78,6 +81,10 @@ class CanvasExtractTopicsRequest(BaseModel):
     """Request to extract topics from a Canvas file."""
     filename: str
     num_topics: int = 8
+    # Optional: when supplied, the service scopes the file lookup to this
+    # course so a hash that exists in multiple courses cannot be resolved
+    # ambiguously.
+    course_id: Optional[int] = None
 
 
 class CanvasUpdateTopicsRequest(BaseModel):
@@ -102,6 +109,12 @@ class CanvasGenerateQuizRequest(BaseModel):
     language: str = "vi"
     k: int = 10
     selected_documents: Optional[List[str]] = None
+    # ── Canvas course identity (REQUIRED) ───────────────────────────────
+    # The same filename / file_hash can exist under multiple Canvas courses
+    # for the same user (see migration 016_canvas_unique_per_course).
+    # Retrieval MUST be course-scoped or it will pull the wrong collection
+    # (or fall back to course_id=None → 0 hits). No fallback is allowed.
+    course_id: int
     # ── V1: course-level shared domain knowledge ───────────────────────
     include_course_domain: bool = True
     domain_quota_ratio: Optional[float] = None  # clamped to [0.0, 0.6] downstream
@@ -372,6 +385,7 @@ async def extract_topics_for_canvas_file(
                 user_id=user_id,
                 db_session=db,
                 groq_api_key=groq_key,
+                course_id=request.course_id,
             )
 
     return await asyncio.to_thread(_do_extract)
@@ -382,45 +396,45 @@ async def get_canvas_document_topics(
     filename: str,
     http_request: Request,
     user: CurrentUser,
+    course_id: int = Query(
+        ...,
+        description="Canvas course ID — required so topics are scoped to the correct course.",
+    ),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Get topics for a Canvas document."""
+    """Get topics for a Canvas document scoped to a specific course."""
     user_id = str(user.id)
 
-    # Permission check using async DB (avoids sync thread hop)
-    cid = await _resolve_course_id_for_filename_async(filename, user_id, db)
-    if cid is not None:
-        canvas_token, canvas_base_url = await resolve_canvas_connection_async(
-            user_id=user_id, request=http_request, require=False,
+    # Permission check using the explicit course_id (no filename→course
+    # resolution because the same filename can map to multiple courses).
+    canvas_token, canvas_base_url = await resolve_canvas_connection_async(
+        user_id=user_id, request=http_request, require=False,
+    )
+    if canvas_token and canvas_base_url:
+        await canvas_permission.validate_course_access(canvas_base_url, canvas_token, course_id)
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Canvas token required to access course-scoped data. Please connect a Canvas token in Settings.",
         )
-        if canvas_token and canvas_base_url:
-            await canvas_permission.validate_course_access(canvas_base_url, canvas_token, cid)
-        elif cid is not None:
-            raise HTTPException(
-                status_code=403,
-                detail="Canvas token required to access course-scoped data. Please connect a Canvas token in Settings.",
-            )
 
     try:
-        # Try async DB first — fast path, no thread hop
-        topics = await RAGCollectionRepository.get_topics_by_filename(
-            db, filename, _uuid.UUID(user_id), source=RAGSourceType.CANVAS,
+        topics = await RAGCollectionRepository.get_topics_by_filename_canvas(
+            db,
+            user_id=_uuid.UUID(user_id),
+            course_id=course_id,
+            filename=filename,
         )
         if topics is not None:
             names = [t["name"] if isinstance(t, dict) else t for t in topics]
             return {"success": True, "topics": names, "filename": filename}
 
-        # Fallback to legacy file-based topic storage (sync)
-        def _fallback():
-            service = get_canvas_rag_service()
-            service._ensure_topic_storage()
-            raw = service._topic_storage.get_topics_by_filename(filename, user_id=user_id)
-            if raw:
-                return [t["name"] if isinstance(t, dict) else t for t in raw]
-            return []
-
-        names = await asyncio.to_thread(_fallback)
-        return {"success": True, "topics": names, "filename": filename}
+        # No DB row with topics → return empty rather than falling back to
+        # the course-agnostic legacy file storage (which cannot disambiguate
+        # the same filename across courses).
+        return {"success": True, "topics": [], "filename": filename}
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Error getting Canvas document topics")
         raise HTTPException(status_code=500, detail="Đã xảy ra lỗi khi xử lý yêu cầu")
@@ -636,6 +650,7 @@ async def generate_quiz_from_canvas_documents(
                 selected_documents=selected_documents,
                 user_id=user_id,
                 db_session=db,
+                course_id=req.course_id,
                 include_course_domain=req.include_course_domain,
                 domain_quota_ratio=req.domain_quota_ratio,
             )
@@ -652,24 +667,50 @@ def reset_canvas_index(admin: AdminUser):
 
 
 @router.delete("/files/{filename}")
-def delete_canvas_file(filename: str, user: CurrentUser):
-    """Delete a Canvas file's local cache and its index data."""
-    logger.info("Deleting Canvas file (local): %s", filename)
+def delete_canvas_file(
+    filename: str,
+    user: CurrentUser,
+    course_id: int = Query(..., description="Canvas course id the file belongs to. Required to avoid cross-course deletes when the same file_hash exists in multiple courses."),
+):
+    """Delete a Canvas file's local cache and its index data.
+
+    ``course_id`` is REQUIRED — a bare filename (or even a bare ``file_hash``)
+    is ambiguous across courses, and a destructive call without scoping can
+    wipe a sibling course's row in the per-course unique index.
+    """
+    logger.info("Deleting Canvas file (local): %s (course=%s)", filename, course_id)
     service = get_canvas_rag_service()
     with SessionLocal() as db:
-        result = service.delete_file(filename, user_id=str(user.id), db_session=db)
+        result = service.delete_file(
+            filename,
+            user_id=str(user.id),
+            db_session=db,
+            course_id=course_id,
+        )
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete file"))
     return result
 
 
 @router.delete("/index/{filename}")
-def remove_canvas_file_index(filename: str, user: CurrentUser):
-    """Remove index for a Canvas file (keep the local file)."""
-    logger.info("Removing index for Canvas file: %s", filename)
+def remove_canvas_file_index(
+    filename: str,
+    user: CurrentUser,
+    course_id: int = Query(..., description="Canvas course id the index entry belongs to. Required to avoid cross-course index removal."),
+):
+    """Remove index for a Canvas file (keep the local file).
+
+    ``course_id`` is REQUIRED — see :func:`delete_canvas_file`.
+    """
+    logger.info("Removing index for Canvas file: %s (course=%s)", filename, course_id)
     service = get_canvas_rag_service()
     with SessionLocal() as db:
-        result = service.remove_index(filename, user_id=str(user.id), db_session=db)
+        result = service.remove_index(
+            filename,
+            user_id=str(user.id),
+            db_session=db,
+            course_id=course_id,
+        )
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("error", "Failed to remove index"))
     return result
@@ -704,6 +745,7 @@ async def async_canvas_generate_quiz(
             "selected_documents": selected_documents,
             "user_id": str(user.id),
             "source": "canvas",
+            "course_id": request.course_id,
             "include_course_domain": request.include_course_domain,
             "domain_quota_ratio": request.domain_quota_ratio,
         }
@@ -720,6 +762,7 @@ async def async_canvas_generate_quiz(
             extra={
                 "include_course_domain": bool(request.include_course_domain),
                 "domain_quota_ratio": request.domain_quota_ratio,
+                "course_id": request.course_id,
             },
         )
         job, created = await job_service.get_or_create_job(
@@ -860,6 +903,7 @@ async def async_extract_topics(
             "filename": request.filename,
             "num_topics": request.num_topics,
             "user_id": str(user.id),
+            "course_id": request.course_id,
         }
 
         job = await job_service.create_job(
@@ -875,6 +919,7 @@ async def async_extract_topics(
             kwargs={
                 "num_topics": request.num_topics,
                 "user_id": str(user.id),
+                "course_id": request.course_id,
             },
         )
         await job_service.set_celery_task_id(job.id, result.id)

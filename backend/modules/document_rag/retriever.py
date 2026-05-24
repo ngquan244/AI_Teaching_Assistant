@@ -241,6 +241,9 @@ class MultiCollectionRetriever:
         target_file_hashes: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         hash_to_collection_name: Optional[Dict[str, str]] = None,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
+        roles_by_hash: Optional[Dict[str, str]] = None,
     ) -> List[Document]:
         """
         Retrieve relevant documents from target collections.
@@ -287,15 +290,24 @@ class MultiCollectionRetriever:
         all_documents = []
         
         _override_map = hash_to_collection_name or {}
+        _course_map = hash_to_course_id or {}
+        _roles_map = roles_by_hash or {}
 
         for file_hash in resolved_hashes:
+            _override = _override_map.get(file_hash)
+            _course = _course_map.get(file_hash, course_id)
+            quiz_logger.info(
+                "QUIZ_QUERY_TARGET hash=%s course_id=%s collection_name=%s role=%s",
+                file_hash[:8], _course, _override, _roles_map.get(file_hash),
+            )
             try:
                 docs = self.collection_manager.query_collection(
                     file_hash=file_hash,
                     query=query,
                     k=k,
                     user_id=user_id,
-                    override_collection_name=_override_map.get(file_hash),
+                    course_id=_course,
+                    override_collection_name=_override,
                 )
                 all_documents.extend(docs)
                 logger.debug(f"Retrieved {len(docs)} docs from collection for {file_hash[:8]}")
@@ -327,6 +339,8 @@ class MultiCollectionRetriever:
         translation_cache: Optional[Dict[str, str]] = None,
         llm_for_translation: Optional[Any] = None,
         lecture_floor: float = 0.60,
+        course_id: Optional[int] = None,
+        hash_to_course_id: Optional[Dict[str, int]] = None,
     ) -> List[Document]:
         """
         Retrieve documents with a global budget instead of a fixed per-collection k.
@@ -361,15 +375,24 @@ class MultiCollectionRetriever:
             return []
 
         _override_map = hash_to_collection_name or {}
+        _course_map = hash_to_course_id or {}
+        _roles_map = roles_by_hash or {}
 
         if len(resolved_hashes) == 1:
             file_hash = resolved_hashes[0]
+            _override = _override_map.get(file_hash)
+            _course = _course_map.get(file_hash, course_id)
+            quiz_logger.info(
+                "QUIZ_QUERY_TARGET hash=%s course_id=%s collection_name=%s role=%s",
+                file_hash[:8], _course, _override, _roles_map.get(file_hash),
+            )
             docs = self.collection_manager.query_collection(
                 file_hash=file_hash,
                 query=query,
                 k=max_total_docs,
                 user_id=user_id,
-                override_collection_name=_override_map.get(file_hash),
+                course_id=_course,
+                override_collection_name=_override,
             )
             logger.info(
                 "Budgeted retrieval (single collection): requested=%s returned=%s",
@@ -422,13 +445,20 @@ class MultiCollectionRetriever:
 
         per_collection_docs: Dict[str, List[Document]] = {}
         for file_hash in resolved_hashes:
+            _override = _override_map.get(file_hash)
+            _course = _course_map.get(file_hash, course_id)
+            quiz_logger.info(
+                "QUIZ_QUERY_TARGET hash=%s course_id=%s collection_name=%s role=%s",
+                file_hash[:8], _course, _override, _roles_map.get(file_hash),
+            )
             try:
                 docs = self.collection_manager.query_collection(
                     file_hash=file_hash,
                     query=query,
                     k=fetch_per_collection,
                     user_id=user_id,
-                    override_collection_name=_override_map.get(file_hash),
+                    course_id=_course,
+                    override_collection_name=_override,
                 )
             except Exception as e:
                 logger.warning(f"Error querying collection for {file_hash}: {e}")
@@ -448,7 +478,8 @@ class MultiCollectionRetriever:
                         query=translated_query,
                         k=fetch_per_collection,
                         user_id=user_id,
-                        override_collection_name=_override_map.get(file_hash),
+                        course_id=_course,
+                        override_collection_name=_override,
                     )
                 except Exception as exc:
                     logger.warning(

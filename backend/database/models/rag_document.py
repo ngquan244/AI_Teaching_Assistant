@@ -20,6 +20,7 @@ from sqlalchemy import (
     Enum as SQLAlchemyEnum,
     Index,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -150,7 +151,34 @@ class RAGCollection(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "file_hash", "source", name="uq_rag_user_file_source"),
+        # Upload rows: unique per (user_id, file_hash).
+        # Canvas rows: unique per (user_id, file_hash, course_id) so the
+        # same file content can co-exist in two different Canvas courses
+        # belonging to the same user. A third partial index keeps the
+        # legacy invariant for any old Canvas row that lacks a course_id.
+        # See alembic migration 016_canvas_unique_per_course.
+        Index(
+            "uq_rag_user_file_upload",
+            "user_id",
+            "file_hash",
+            unique=True,
+            postgresql_where=text("source = 'upload'"),
+        ),
+        Index(
+            "uq_rag_user_file_canvas_course",
+            "user_id",
+            "file_hash",
+            "course_id",
+            unique=True,
+            postgresql_where=text("source = 'canvas' AND course_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_rag_user_file_canvas_legacy",
+            "user_id",
+            "file_hash",
+            unique=True,
+            postgresql_where=text("source = 'canvas' AND course_id IS NULL"),
+        ),
         Index("ix_rag_collections_user_id", "user_id"),
         Index("ix_rag_collections_user_source", "user_id", "source"),
         Index("ix_rag_collections_file_hash", "file_hash"),

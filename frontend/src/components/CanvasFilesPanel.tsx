@@ -842,7 +842,7 @@ const CanvasFilesPanel: React.FC = () => {
     setFileActionStates(prev => new Map(prev).set(filename, 'extracting'));
     
     try {
-      const asyncResp = await asyncExtractCanvasTopics(filename, 10);
+      const asyncResp = await asyncExtractCanvasTopics(filename, 10, selectedCourse?.id);
       const jobId = asyncResp.job_id;
 
       // Poll until job completes
@@ -895,9 +895,14 @@ const CanvasFilesPanel: React.FC = () => {
     if (!ok) {
       return;
     }
-    
+
+    if (!selectedCourse?.id) {
+      console.warn('[remove-index] missing selectedCourse; aborting destructive call');
+      return;
+    }
+
     try {
-      const result = await removeCanvasFileIndex(filename);
+      const result = await removeCanvasFileIndex(filename, selectedCourse.id);
       if (result.success) {
         recentlyRemovedRef.current.add(filename);
         await refreshIndexedData(selectedCourse?.id, 1);
@@ -922,12 +927,17 @@ const CanvasFilesPanel: React.FC = () => {
     if (!ok) {
       return;
     }
-    
+
+    if (!selectedCourse?.id) {
+      console.warn('[remove-index] missing selectedCourse; aborting destructive call');
+      return;
+    }
+
     try {
       // Try with both original and sanitized name
-      let result = await removeCanvasFileIndex(sanitizedName);
+      let result = await removeCanvasFileIndex(sanitizedName, selectedCourse.id);
       if (!result.success) {
-        result = await removeCanvasFileIndex(file.display_name);
+        result = await removeCanvasFileIndex(file.display_name, selectedCourse.id);
       }
 
       if (result.success) {
@@ -949,8 +959,12 @@ const CanvasFilesPanel: React.FC = () => {
 
   // Edit topics modal handlers
   const openEditTopicsModal = async (filename: string) => {
+    if (!selectedCourse?.id) {
+      console.warn('[edit-topics] missing selectedCourse; cannot load Canvas topics');
+      return;
+    }
     try {
-      const response = await getCanvasDocumentTopics(filename);
+      const response = await getCanvasDocumentTopics(filename, selectedCourse.id);
       setEditingFilename(filename);
       setEditingTopics(response.topics || []);
       setNewTopicInput('');
@@ -1492,7 +1506,7 @@ const CanvasFilesPanel: React.FC = () => {
                             const actionState = fileActionStates.get(doc.filename);
                             const togglePending = domainTogglePending.has(doc.file_hash);
                             return (
-                              <tr key={doc.file_hash}>
+                              <tr key={`${doc.course_id ?? 'nocourse'}:${doc.file_hash}`}>
                                 <td>
                                   <div className="file-name">
                                     <FileText size={16} />
